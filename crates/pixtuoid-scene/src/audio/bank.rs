@@ -1,6 +1,6 @@
 //! The pre-rendered sample banks — the ONE place the office's sounds are
 //! synthesized into buffers, so the native rodio gateway (`pixtuoid`) and the
-//! wasm WebAudio painter (`pixtuoid-web`) build byte-identical audio from one
+//! any future audio backend can build byte-identical audio from one
 //! source (#633 web-audio). Pure: no device deps, `Arc<Vec<f32>>` buffers only.
 //!
 //! The `rng` DRAW ORDER is the sound — `AssetBank::build` then

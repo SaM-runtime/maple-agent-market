@@ -1,135 +1,62 @@
-# Configuration
+# 設定
 
-pixtuoid stores its settings in `~/.config/pixtuoid/config.toml` (respecting
-`$XDG_CONFIG_HOME`). The file is created on first launch. **Every user setting is
-optional** — omit a key to use its default. CLI flags override the file
-(e.g. `pixtuoid run --theme dracula`).
+Maple Agent Market 沿用 Pixtuoid 的設定位置：
 
-## Example
+- Windows：`%USERPROFILE%\.config\pixtuoid\config.toml`
+- macOS／Linux：`~/.config/pixtuoid/config.toml`，並遵守 `XDG_CONFIG_HOME`
+
+所有欄位都可省略。CLI 參數優先於設定檔。
+
+## 建議起始設定
 
 ```toml
-theme = "cyberpunk"
-max-desks = 8
-pack-dir = "~/.config/pixtuoid/packs/robot"
+theme = "maple"
+# pack-dir = "C:/Users/you/.config/pixtuoid/packs/my-local-pack"
 
-# One stanza per pet. Omit the whole section to show all pets with default
-# names; use `pets = []` to disable all pets. `name` is optional (shown in
-# the pet's hover tooltip). Keep [[pets]] last — it's a table section.
-[[pets]]
-kind = "cat"
-name = "Whiskers"   # optional — omit for "Office Cat"
+[floating]
+width = 1280
+height = 560
 
-[[pets]]
-kind = "dog"        # name omitted → "Office Dog"
+[audio]
+muted = true
+volume = 0.35
+# bgm-path = "C:/Music/your-licensed-track.mp3"
 ```
 
-## User settings (safe to edit)
+`[floating]` 的位置與尺寸會在關閉視窗時更新。太小的數值會被夾到安全下限；也可在視窗內按 `z` 切換尺寸預設。
 
-| Key | Default | Description |
-|-----|---------|-------------|
-| `theme` | `"normal"` | Color theme — `normal`, `cyberpunk`, `dracula`, `tokyo-night`, `catppuccin`, `gruvbox`. |
-| `max-desks` | auto | Cap desks per floor (≥ 1; `0` is ignored with a warning). If unset, auto-computed from terminal size. Excess agents overflow to additional floors. Applies to the `run` TUI; `pixtuoid floating` sizes its floors from the window. |
-| `pack-dir` | — | Custom sprite pack directory. Supports `~` expansion. See [Custom sprite packs](#custom-sprite-packs). |
-| `[[pets]]` | all kinds, default names | One stanza per pet. `kind` (`"cat"`/`"dog"`) is required; `name` is optional (the hover-tooltip label, default `Office Cat`/`Office Dog`). Omit the section for all pets; `pets = []` for none; an unknown `kind` is skipped without affecting other settings. Keep it last (it's a table section). |
+## 常用欄位
 
-## System-managed (don't edit — pixtuoid writes these for you)
+| 欄位 | 說明 |
+|---|---|
+| `theme = "maple"` | 使用 Maple Agent Market 雙地圖主題 |
+| `pack-dir` | 使用者自己的本機 sprite pack；支援 `~` 展開 |
+| `max-desks` | TUI 每層最多座位數；floating 會依視窗大小配置 |
+| `[floating].width/height/x/y` | 浮動視窗幾何資訊 |
+| `[audio].muted` | 是否靜音；可在視窗按 `m` 切換 |
+| `[audio].volume` | `0.0` 到 `1.0`；可按 `+`／`-` 調整 |
+| `[audio].bgm-path` | 本機 MP3、WAV、OGG 或 FLAC；不支援 YouTube 下載或串流 |
+| `[sources]` | `connect`／`disconnect` 寫入的 agent source 開關 |
 
-| Key | Purpose |
-|-----|---------|
-| `last-seen-version` | Tracks the last version whose "what's new" popup you've seen, so the popup only fires once per upgrade. Pixtuoid rewrites it when the popup fires, on first launch, or to repair an unparseable value — not on every launch. |
-| `[sources]` | Per-agent-CLI connection state (`source-id = true/false`), written when you connect/disconnect a source in the in-TUI **Sources panel** (`s`) or via the scriptable CLI (`pixtuoid connect`/`disconnect`/`sources set`/`setup --yes`). When a source has no entry it is simply not connected (since 0.12.0; on a first run — no `[sources]` yet — the onboarding wizard offers the detected CLIs to connect). A disconnected source's characters are hidden even if its hooks/transcripts are still present. |
-| `[floating]` | Geometry of the `pixtuoid floating` desktop window (`width`/`height`/`x`/`y`), rewritten when the window closes. Sizes below 240×160 clamp up on load; `x`/`y` are dropped when the OS can't report the position (the next launch is OS-placed). A user-set `opacity` is accepted (clamped 0.2–1.0) and preserved across the rewrite, but isn't applied yet. |
-| `[audio]` | Ambient office sound — **starts muted** (`muted = true` is the default; a terminal app never speaks uninvited). Press `m` — in the TUI or the floating window — to turn it on; the toggle persists here, so the office boots exactly as you left it, and the sound system only spins up on the first unmute (muted costs nothing). A ♩ in the TUI footer means you'd hear sound right now. `volume` (0.0–1.0, clamped, default 1.0) scales everything on a perceptual curve — low percents get genuinely quiet, and the whole bus sits under your real work audio by design; `+`/`-` nudge it live (±0.05, persisted, a `♩ N%` readout flashes in the footer — the floating window flashes the same readout in its bottom-right corner; `+` from muted also unmutes). Unmuted: a lofi office soundscape — after dark (the same sundown the office lights follow) or in rain it crossfades to a slower night take — mixed live from how busy **the floor you're viewing** is (a warm band layers up with active agents; typing density tracks them; other floors are silent until you ride to them), gentle rain when the office weather rains (weather is global — it's outside the windows), plus one-shots — a door chime on walk-ins and printer/vending moments. Every sound is synthesized at startup (no audio files). Prebuilt **Linux** binaries ship without audio (ALSA can't link into the static/cross builds); building from source on Linux enables it when the ALSA headers (`libasound2-dev`) are present. |
+`last-seen-version` 也是系統管理欄位，用來避免同一版更新訊息重複出現，不建議手動修改。
 
-## Themes
+## 自訂 sprite pack
 
-Press `t` in the TUI to switch themes with a live preview picker (`j`/`k` or
-`↑`/`↓` to navigate); your choice is written back to `config.toml` and persists
-across sessions. Override for a single run with `--theme <name>`. Six themes ship
-built-in: `normal`, `cyberpunk`, `dracula`, `tokyo-night`, `catppuccin`,
-`gruvbox`.
-
-## Custom sprite packs
-
-Create your own character sprites:
-
-```bash
-pixtuoid init-pack ./my-pack     # extract skeleton template
-# edit the .sprite files in ./my-pack
-pixtuoid validate-pack ./my-pack # check for missing animations
-pixtuoid run --pack-dir ./my-pack
+```powershell
+.\target\debug\pixtuoid.exe init-pack .\my-local-pack
+.\target\debug\pixtuoid.exe validate-pack .\my-local-pack
+.\target\debug\pixtuoid.exe --theme maple floating --pack-dir .\my-local-pack
 ```
 
-A **robot** pack ships as an example at `crates/pixtuoid/sprites/robot/`. See the
-[binary guide](../crates/pixtuoid/CLAUDE.md) for pack loading, and the
-[scene engine guide](../crates/pixtuoid-scene/CLAUDE.md) for the recolor palette keys.
+repo 內的 `crates/pixtuoid/sprites/skeleton/` 是格式範本。使用者素材、轉換結果、preview、cache 與 BGM 必須放在 repo 外，除非它們具有可驗證的公開再散布授權。
 
-## Logging & troubleshooting
+Windows 也提供 `tools/windows/MapleSkinWorkshop.psm1` 協助建立與驗證本機角色 pack；其測試位於 `tools/windows/tests/`。
 
-The TUI owns your terminal (alternate screen), so runtime diagnostics go to a
-**log file** instead of stderr:
+## 診斷
 
-| | |
-|-----|-----|
-| Default path | `~/.cache/pixtuoid/log` (or `$XDG_STATE_HOME/pixtuoid/log` if set) |
-| Custom path | set `$PIXTUOID_LOG=/path/to/file` |
-| Level | `warn` and above by default; `--log-level debug` or `trace` (or `$RUST_LOG`) raises it |
-| Rotation | one generation: past 5 MB the file rotates to `<name>.old` at startup |
+```powershell
+.\target\debug\pixtuoid.exe sources
+.\target\debug\pixtuoid.exe doctor
+```
 
-Warnings about a misconfigured `config.toml` (unknown theme, bad `[[pets]]`
-kind, malformed TOML) are also printed to stderr **before** the office takes
-over the screen — scroll back after quitting to see them. If a data source
-dies mid-run (e.g. the hook listener), the footer shows a persistent ⚠ warning
-and the full error is in the log file.
-
-Crashes are reported separately to `~/.cache/pixtuoid/crash.log`.
-
-Non-TUI commands (`--headless`, `validate-pack`, …) log to stderr directly.
-
-### `pixtuoid connect` says it can't locate `pixtuoid-hook`
-
-Connecting a source installs a hook that runs the small `pixtuoid-hook` shim,
-so `connect` has to find it: first on `$PATH`, then next to the `pixtuoid`
-binary itself. Every packaged install (Homebrew, npm, the release archives)
-ships both, but `cargo install pixtuoid` installs only the main binary, and a
-hand-relocated install can separate them.
-
-Either install the shim (`cargo install pixtuoid-hook`) or set
-**`$PIXTUOID_HOOK`** to an absolute path to it — that override wins over both
-lookups and is embedded into the agent CLI's config, so it must be absolute.
-
-### Truecolor preflight
-
-The pixel-art office renders in 24-bit color. On launch, `pixtuoid run`
-**asks your terminal** whether it supports truecolor — it sets an unlikely
-24-bit color and queries it back (a `DECRQSS` probe) — rather than guessing from
-the terminal's name. If the terminal doesn't confirm, it prints a one-line
-stderr warning. It's **warn-only** (never blocks) and scrolls away once the
-office takes over. (`$COLORTERM=truecolor` is taken as a yes and skips the query;
-the query runs only otherwise.) Run `pixtuoid doctor` for the detected
-`terminal:` verdict.
-
-A terminal that's genuinely truecolor but doesn't answer the query (rare) may
-still get warned. If you know your terminal is fine, silence the warning with
-`$PIXTUOID_NO_TRUECOLOR_WARN=1` (any of `1`/`true`/`yes`/`on`). Note: `tmux`
-doesn't implement the `DECRQSS` query, so a truecolor tmux session can trip this
-warning — set `$PIXTUOID_NO_TRUECOLOR_WARN=1` (tmux usually advertises
-`$COLORTERM`, which skips the query, so most setups never see it).
-
-### When color is disabled (`$NO_COLOR`, `$TERM=dumb`)
-
-The office has **no legible monochrome mode** — it's color end to end. So rather
-than render unreadable blocks, `pixtuoid run` refuses to launch the canvas and
-explains why when color is turned off:
-
-- **`$NO_COLOR`** (the [no-color.org](https://no-color.org) convention; any
-  non-empty value): color output is disabled, so the office can't render. Unset
-  `NO_COLOR`, or override per the standard precedence with **`$CLICOLOR_FORCE=1`**
-  (forces color on despite `$NO_COLOR`; a `0` value does not force). An *empty*
-  `$NO_COLOR` is ignored (it doesn't actually disable color).
-- **`$TERM=dumb`**: the terminal can't render escape sequences or color at all.
-
-In both cases use a graphical terminal, or `pixtuoid run --headless` for a plain
-text summary (which works fine without color). `pixtuoid doctor` reports the
-active color status. This gate applies only to the terminal `run` TUI —
-`--headless`, `doctor`, `sources`, and the `floating` window are unaffected.
+一般紀錄位於 `~/.cache/pixtuoid/log`，crash 紀錄位於 `~/.cache/pixtuoid/crash.log`。可用 `PIXTUOID_LOG` 指定其他 log 路徑。

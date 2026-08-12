@@ -6,7 +6,7 @@
 //!
 //! SystemTime: matches existing animation state (FloorTransition,
 //! LightingState, PoseHistory) — serializable, no out-of-process consumer
-//! today. See CLAUDE.md "Known sharp edges".
+//! today. Keep all painter backends on this same timing authority.
 
 use std::time::{Duration, SystemTime};
 

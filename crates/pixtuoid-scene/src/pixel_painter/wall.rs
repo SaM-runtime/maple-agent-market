@@ -6,8 +6,7 @@
 //! whole render half: the paint fns (`paint_glass_wall_*`, `paint_door_jamb_*`)
 //! AND the `enqueue_room_walls_*` that emit the y-sorted `RoomWall{H,V}` drawables
 //! (the `drawable.rs` dispatch arms just delegate back here). The rendering WHY
-//! lives in this header + the scene CLAUDE.md room-dividers entry ("How do the
-//! room dividers render (frosted-glass partitions)?").
+//! lives in this header and the room-divider implementation.
 
 use pixtuoid_core::sprite::{Rgb, RgbBuffer};
 

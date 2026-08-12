@@ -8,7 +8,7 @@
 //! WITHOUT any decoder signature change — the emit is an ambient side effect, so
 //! the per-source `fn(&Value) -> Result<Vec<AgentEvent>>` seam (invariant #3)
 //! is untouched. This is layer 2 of the upstream-drift defense ("self-monitoring
-//! from the real stream", `pixtuoid-core/CLAUDE.md`) finally made VISIBLE instead
+//! from the real stream") is made visible instead
 //! of stranded in a log nobody reads — the gap the Task→Agent rename exposed.
 //!
 //! **The flood-safe axis rule (`unknown_event` has NO dedup — it warns per

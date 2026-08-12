@@ -727,7 +727,7 @@ pub(crate) fn window_buffer_geometry(win_w: u32, win_h: u32) -> (u32, u16, u16) 
 /// (immutable → invisible-but-alive until a resize). A floor whose layout rejects
 /// the size falls back to `FALLBACK_DESKS`, matching the TUI boot helper.
 ///
-/// KNOWN RESIDUAL — see the boot-seed sharp edge in `crates/pixtuoid/CLAUDE.md`.
+/// Known residual: this path intentionally keeps the historical boot seed.
 /// The only caller, `floating::run`, has just the
 /// `[floating]` config size, which is LOGICAL — so on a HiDPI display the seed is
 /// still computed for a window the redraw will not measure (default 360×240

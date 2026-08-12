@@ -868,7 +868,7 @@ fn meeting_slots_face_the_table() {
 // in-body slots: the chair has no furniture body to sit inside
 // (`Furniture::MeetingChair` keeps `footprint: None`, the painted 7×7 chair
 // blocks nothing), and blocking the cell would ripple the mask/approach for
-// a piece walkers can visually clip at worst. See the scene CLAUDE.md decor
+// a piece walkers can visually clip at worst. See the decor placement
 // entry.
 #[test]
 fn meeting_chair_cells_stay_walkable() {

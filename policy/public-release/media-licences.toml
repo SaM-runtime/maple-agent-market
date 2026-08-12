@@ -15,11 +15,16 @@ patterns = [
   "crates/pixtuoid-scene/sprites/default/**",
   "crates/pixtuoid-scene/tests/fixtures/**",
   "crates/pixtuoid/sprites/**",
-  "docs/images/**",
-  "integrations/raycast/assets/**",
-  "integrations/raycast/metadata/**",
-  "site/public/**",
-  "site/src/assets/**",
+]
+
+[[asset_group]]
+id = "maple-agent-market-mit"
+spdx = "MIT"
+source_url = "https://github.com/SaM-runtime/maple-agent-market"
+licence_file = "LICENSE"
+notice_file = "THIRD_PARTY_NOTICES.md"
+patterns = [
+  "assets/readme/**",
 ]
 
 [[asset_group]]

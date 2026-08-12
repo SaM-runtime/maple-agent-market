@@ -13,7 +13,7 @@ use pixtuoid::{config, sources};
 
 use crate::logging::log_file_path;
 
-/// `pixtuoid setup [--yes]` — the headless onboarding twin (Raycast / CI /
+/// `pixtuoid setup [--yes]` — the headless onboarding twin (CI /
 /// scripting). Detects installed agent CLIs and connects them via the SAME
 /// `sources::apply_choices` the in-TUI onboarding uses. Without `--yes` it is a
 /// DRY RUN (prints the detected set only) — writing to another tool's config is
@@ -56,7 +56,7 @@ pub(crate) fn run_sources_list(json: bool) -> Result<()> {
     // Same NotFound-vs-everything-else split `doctor` makes: an unreadable log
     // leaves `health` under-reported, so say so instead of returning a silent
     // clean bill. It rides tracing (stderr in every non-TUI mode) rather than
-    // stdout — `--json` stdout is the frozen Raycast array.
+    // stdout — `--json` stdout is the stable machine-readable array.
     let (log, log_warning) = pixtuoid::doctor::read_log(&log_file_path());
     if let Some(w) = log_warning {
         tracing::warn!("{w}");
@@ -129,7 +129,7 @@ pub(crate) fn run_change(
 
 /// The shared tail of `run_change` / `run_sources_set`: emit the batch, then fail
 /// the command if any row failed. Emits BEFORE bailing — the `--json` rows must
-/// reach stdout even on the non-zero exit (the delivery contract the Raycast
+/// reach stdout even on the non-zero exit (the delivery contract an automation
 /// consumer rides, pinned by
 /// `cli_json::a_failing_connect_emits_the_outcome_rows_and_exits_nonzero`).
 /// `any_failed` is DERIVED from the rows (their `outcome` token), so the emitted
@@ -146,7 +146,7 @@ fn report_batch(rows: &[sources::OutcomeRow], json: bool) -> Result<()> {
 }
 
 /// Print an [`sources::OutcomeRow`] batch as a text table or the `--json` array —
-/// the schema-backed envelope the Raycast extension parses back from
+/// the stable envelope external automation parses back from
 /// `connect`/`disconnect`/`sources set` (pinned by
 /// `outcome_envelope_is_the_id_outcome_raycast_contract` here plus the
 /// byte-shape + committed-schema goldens in `sources.rs`).
@@ -181,7 +181,7 @@ fn text_line(row: &sources::OutcomeRow) -> String {
 ///
 /// Owned here, not written at each call site, so `connect` and `setup --yes` cannot
 /// disagree on the gate or the glyph. HUMAN output only: the `--json` envelope is
-/// the frozen `{id, outcome, message?}` Raycast contract where `message` means
+/// the stable `{id, outcome, message?}` JSON contract where `message` means
 /// FAILURE, so an advisory there would change its meaning.
 fn hint_line(row: &sources::OutcomeRow) -> Option<String> {
     (row.outcome == sources::WireOutcome::Connected)
@@ -195,20 +195,10 @@ mod tests {
     use super::*;
 
     #[test]
-    fn outcome_envelope_is_the_id_outcome_raycast_contract() {
-        // Pins the exact `{id, outcome, message?}` JSON rows `connect`/
-        // `disconnect`/`sources set --json` emit — the batch envelope the
-        // Raycast extension parses. A key rename must break THIS test, not the
-        // consumer. The outcome TOKEN set itself ("connected"/"disconnected"/
-        // "no_op"/"failed") is pinned by sources.rs's
-        // `change_outcome_wire_tokens_are_stable`, and every emission site
-        // routes through `OutcomeRow::new`, so the failed row below exercises
-        // the same token+message split the CLI ships.
-        //
-        // Raycast is not the only consumer: homebrew-core's formula `test do`
-        // parses `connect claude-code --json` and asserts the row equals
-        // `{"id" => "claude-code", "outcome" => "connected"}`. Reshaping this
-        // envelope breaks Homebrew's CI on the next autobump.
+    fn outcome_envelope_is_the_id_outcome_automation_contract() {
+        // External automation may depend on this exact
+        // `{id, outcome, message?}` envelope. Every emission site routes through
+        // `OutcomeRow::new`, so this test protects both success and failure rows.
         let rows = vec![
             sources::OutcomeRow::new("codex".to_string(), &sources::ChangeOutcome::Connected),
             sources::OutcomeRow::new(

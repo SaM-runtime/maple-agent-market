@@ -22,15 +22,7 @@ path = "src/main.rs"
 [dependencies]
 pixtuoid-core  = { path = "../pixtuoid-core", version = "0.16.0" }
 pixtuoid-scene = { path = "../pixtuoid-scene", version = "0.16.0" }
-# AA text rasterizer (Monaspace Neon) for the binary's pixel surfaces: the
-# floating window's name badges + wall board (src/aa_text.rs) AND the --proof
-# example panel. On Linux it's already resolved transitively via sctk-adwaita
-# (winit's Wayland CSD titlebar text — see Cargo.lock), so the direct entry adds
-# no new crate/license there; on mac/Windows it's a small pure-Rust link-time
-# dep. Its per-pixel coverage callback (`OutlinedGlyph::draw`) suits our
-# callback-based `aa_text::draw_text_at` better than fontdue's raw-bitmap API.
-# pixtuoid-scene (the wasm-compiled engine) never sees this dep — binary-only, so
-# the wasm hero renders text as a crisp DOM overlay, not baked pixels.
+# Monaspace Neon 的 AA 文字 rasterizer，只存在於 floating／TUI binary。
 ab_glyph = "0.2"
 tokio              = { workspace = true, features = ["rt-multi-thread", "macros", "signal", "sync", "time", "net", "fs", "io-util"] }
 ratatui            = { workspace = true }
@@ -38,14 +30,7 @@ crossterm          = { workspace = true }
 unicode-width      = { workspace = true }
 clap               = { workspace = true }
 serde              = { workspace = true }
-# `preserve_order` is enabled HERE, not workspace-wide: config merges
-# (claude/cursor/reasonix settings.json, openclaw.json) are a READ→MERGE→WRITE
-# round-trip, and serde_json's default BTreeMap-backed `Map` re-emits every object
-# ALPHABETICALLY — silently reordering the user's own hand-authored file on a
-# `connect`. IndexMap-backed order keeps their key order (and ours) stable, so a
-# merge only ever adds our block. Scoped to this crate because it is the only one
-# that WRITES a user's config, and because `pixtuoid-web` (which does not depend on
-# it) must not pay indexmap's code size in the committed wasm artifact.
+# connect／disconnect 會合併使用者既有 JSON 設定；保留原本 key 順序以減少噪音 diff。
 serde_json         = { workspace = true, features = ["preserve_order"] }
 toml               = { workspace = true }
 toml_edit          = { workspace = true }
@@ -130,14 +115,8 @@ windows-sys = { version = "0.61", features = [
 
 [dev-dependencies]
 tempfile = "3"
-# End-to-end CLI golden for `sources --json` (the Raycast contract): runs the real
-# binary in an isolated empty HOME and pins its stdout JSON order-insensitively.
-# Goldens update with SNAPSHOTS=overwrite. See tests/cli_json.rs.
+# `sources --json` 的 end-to-end CLI golden。
 snapbox  = { version = "1", features = ["json"] }
-# Emits the SourceStatus JSON Schema (the Raycast --json contract) — test/gen
-# only, so the `JsonSchema` derive is `cfg_attr(test)` and this stays a dev-dep
-# (no production-binary impact). See sources.rs + `just gen-contract`.
-schemars = "1"
 # test-util: paused-clock signal-arm tests in runtime/driver.rs (headless_loop).
 tokio    = { workspace = true, features = ["test-util"] }
 image    = { version = "0.25", default-features = false, features = ["png", "gif"] }
@@ -145,15 +124,3 @@ insta    = "1"
 # Integration tests parse the `--json` CLI output back (the delivery-contract
 # e2e in cli_json.rs). Already a normal dep, so no new lockfile entry.
 serde_json = { workspace = true }
-
-[[example]]
-name = "snapshot"
-path = "examples/snapshot/main.rs"
-test = true
-
-[package.metadata.deb]
-section = "utils"
-assets = [
-    ["target/release/pixtuoid", "usr/bin/", "755"],
-]
-extended-description = "Terminal-native, multi-agent pixel-art visualizer for AI coding agents. Each running Claude Code session appears as an animated sprite in a top-down ASCII office."

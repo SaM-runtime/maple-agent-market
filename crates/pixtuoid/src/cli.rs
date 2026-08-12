@@ -100,13 +100,13 @@ pub enum Cmd {
     /// the log. Read-only.
     Doctor,
     /// List agent sources + their connection state, or apply a set. The
-    /// scriptable twin of the in-TUI Sources panel (Raycast / automation).
+    /// scriptable twin of the in-TUI Sources panel.
     Sources {
         #[command(subcommand)]
         action: Option<SourcesAction>,
         /// Emit machine-readable JSON instead of a table. `global` so it's
         /// honored both before and after `set` (`sources --json set …` ==
-        /// `sources set … --json`) — the natural Raycast/script form.
+        /// `sources set … --json`) — the natural automation form.
         #[arg(long, global = true)]
         json: bool,
     },
@@ -128,7 +128,7 @@ pub enum Cmd {
         json: bool,
     },
     /// First-run setup: detect installed agent CLIs and connect them — the headless
-    /// twin of the in-TUI onboarding (for Raycast / CI / scripting). Without
+    /// twin of the in-TUI onboarding (for CI and scripting). Without
     /// `--yes` it's a DRY RUN that only prints what it would connect (writing to
     /// another tool's config is opt-in).
     Setup {
@@ -164,7 +164,7 @@ pub enum Cmd {
 #[derive(Debug, Subcommand)]
 pub enum SourcesAction {
     /// Make the connected set EXACTLY these ids (declarative — everything else
-    /// disconnects). Backs the Raycast multi-select checkbox-form. `--json` is
+    /// disconnects). `--json` is
     /// the global flag on `sources` (works before or after `set`).
     Set {
         #[arg(required = true)]
@@ -387,7 +387,7 @@ mod tests {
     #[test]
     fn sources_json_is_global_across_the_set_subcommand() {
         // --json must bind the same flag whether it precedes OR follows `set`
-        // (the natural Raycast/script form) — the global-arg fix.
+        // (the natural automation form) — the global-arg fix.
         for args in [
             ["pixtuoid", "sources", "--json", "set", "codex"],
             ["pixtuoid", "sources", "set", "codex", "--json"],

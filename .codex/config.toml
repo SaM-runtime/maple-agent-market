@@ -1,2 +1,0 @@
-# Applicable root+nested AGENTS.md chains exceed Codex's 32 KiB default.
-project_doc_max_bytes = 262144

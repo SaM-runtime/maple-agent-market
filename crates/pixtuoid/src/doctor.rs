@@ -17,7 +17,7 @@
 //! TUI. The PROBED CLI is not read-only about its own state, though — several
 //! bootstrap their state dir on any invocation — so the probe is gated by
 //! `may_probe_version` on evidence the user already runs that CLI; see the
-//! `doctor`-probe sharp edge in `crates/pixtuoid/CLAUDE.md`. The untrusted wire
+//! `doctor` probe. The untrusted wire
 //! values (event/tool names) it samples are
 //! `sanitize`d before display (R0615-06) — `doctor` is the third consumer of
 //! those breadcrumbs and must hold the same line as the headless path + footer.

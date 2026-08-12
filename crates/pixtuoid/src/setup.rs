@@ -2,7 +2,7 @@
 //!
 //! `pixtuoid run` (the TUI) plays a one-time "move-in" overlay on its first ever
 //! launch; the headless `pixtuoid setup [--yes]` presenter (in the binary's
-//! `sources_cli.rs`) is the scriptable twin (Raycast / CI / scripting). The signal lives here as ONE pure
+//! `sources_cli.rs`) is the scriptable twin (CI / scripting). The signal lives here as ONE pure
 //! predicate so both surfaces — and their tests — agree on what "first run" means.
 //!
 //! `pub` (not `pub(crate)`) because the binary's `main.rs` is a separate crate

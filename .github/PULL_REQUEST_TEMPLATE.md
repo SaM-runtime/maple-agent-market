@@ -1,60 +1,16 @@
-<!--
-Thanks for contributing to Maple Agent Market! Before you open this PR:
-- Read CLAUDE.md (root) — architecture invariants & conventions are load-bearing.
-- Run `just preflight` locally (it IS what CI runs: fmt + machete + deny + clippy -D warnings + tests).
-Delete sections that don't apply. Keep it short — the diff speaks for itself.
--->
+## 變更內容
 
-## Summary
+請簡述這次修改解決的問題，以及對 floating 視窗或 agent 狀態的影響。
 
-<!-- What does this change and why? One or two sentences. -->
+## 驗證
 
-## Related issue
+- [ ] `cargo fmt --all -- --check`
+- [ ] `cargo test --locked --workspace`
+- [ ] `python scripts/public-release-audit.py`
+- [ ] 若修改畫面，已用公開安全素材目視確認
 
-<!-- e.g. "Closes #123" / "Part of #123" — or "n/a". -->
+## 素材確認
 
-## Type of change
-
-- [ ] Bug fix
-- [ ] New feature
-- [ ] New theme / sprite pack
-- [ ] New `Source` adapter (another agent CLI)
-- [ ] Docs only
-- [ ] Refactor / chore
-
-## How I tested it
-
-<!--
-- `cargo test --workspace`  (or `just test`)
-- just preflight (full CI gate)
-- Live: ./target/release/pixtuoid run --headless --projects-root ~/.claude/projects
--->
-
-## Visual verification (required for sprite / rendering changes)
-
-<!--
-Skip this block for non-visual changes. For any .sprite edit or change to the
-pixel painter, attach a cropped snapshot and self-critique:
-  cargo build --release --example snapshot
-  ./target/release/examples/snapshot --cols 192 --rows 80 /tmp/snap.png
-  .venv/bin/python3 scripts/crop-snapshot.py /tmp/snap.png --scale 3
--->
-
-- [ ] Not a visual change, or — screenshot/GIF attached below and it reads at half-block scale.
-
-## Checklist
-
-- [ ] I read the relevant `CLAUDE.md` (root + the nested one for the crate I touched).
-- [ ] New behavior has a test (this repo is TDD-first).
-- [ ] No `unwrap()` in non-test code; errors propagate via `anyhow`/`thiserror`.
-- [ ] No new `println!`/`eprintln!` on a production path (use `tracing`).
-- [ ] Docs updated in the same commit if I changed module structure, architecture, or public API (`CLAUDE.md` / `README.md`).
-- [ ] Checked against the [recurring pitfalls](https://github.com/SaM-runtime/maple-agent-market/blob/main/docs/CONTRIBUTING.md#recurring-pitfalls-this-codebases-review-history-distilled): char-safe slicing · no parallel copies without a bridge test · sanitize at the decode boundary · negative branches pinned.
-- [ ] `just preflight` passes locally.
-
-## AI assistance
-
-<!-- If this PR was authored or heavily assisted by an AI agent, say so — a maintainer
-     will visually verify before merge (see the `needs-human-verify` label). -->
-
-- [ ] This PR was written/heavily-assisted by an AI agent.
+- [ ] 沒有提交 NEXON / MapleStory 遊戲素材、音樂、截圖或其衍生檔
+- [ ] 新增的第三方素材具有明確再散布授權，並已更新 NOTICE 與 hash inventory
+- [ ] 沒有提交本機 session、cache、private pack、絕對路徑或秘密資訊

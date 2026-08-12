@@ -391,7 +391,7 @@ mod tests {
 
     // The documented "a source registered in the core registry but NOT wired
     // into run_async passes every conformance/manifest test yet never spawns"
-    // gap (core/CLAUDE.md) — closed. `build_source_set` constructs the shared-
+    // gap — closed. `build_source_set` constructs the shared-
     // socket `HookRouter` PLUS every transcript-bearing registered source
     // (`line_decoder().is_some()`); it reads names off the real boxes, so it
     // can't drift from a hand-maintained second list. Hook-only sources + the

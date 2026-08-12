@@ -23,11 +23,8 @@ pub(in crate::pixel_painter) enum Weather {
 }
 
 impl Weather {
-    /// All variants, in canonical order — single source for `--weather` parsing
-    /// and the valid-names list. The site's gallery manifest
-    /// (site/src/weather.json) mirrors it; the bridge is the
-    /// `weather_gallery_manifest_matches_the_weather_enum` test, which fails on
-    /// any add/rename here until the manifest (+ gen-media art) follows.
+    /// All variants, in canonical order — the single source for `--weather`
+    /// parsing and the valid-names list.
     pub(in crate::pixel_painter) const ALL: [Weather; 8] = [
         Weather::Clear,
         Weather::Rain,

@@ -163,7 +163,7 @@ fn lightning_envelope(since_strike_ms: u64) -> f32 {
 // The two-multiply-xor finalizer is `pixtuoid_core::id::splitmix64`, open-coded
 // here (and in `sky::weather_state` + `ambient::dust_mote_positions`) by
 // DELIBERATE choice: each is an independent noise source over a disjoint input
-// domain (no two sites need equal output — see the scene CLAUDE.md sharp edge).
+// domain; separate call sites do not need equal output.
 // The canonical fn is `#[doc(hidden)] pub` (off the semver surface but shared
 // cross-crate — `physics`/`pose` already call it), so the open-coding is for
 // domain-independence, not a visibility barrier.

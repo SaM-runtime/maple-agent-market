@@ -11,7 +11,7 @@
 //! a contract that genuinely needs the real process — rather than letting this
 //! become a general binary-test dumping ground.
 //!
-//! 1. `sources --json` — the shape the Raycast extension parses. Exercises clap
+//! 1. `sources --json` — the stable shape external automation parses. Exercises clap
 //!    parse → `sources::status` → the JSON presenter → stdout, which the
 //!    in-process `source_status_*` unit tests (struct shape + committed schema)
 //!    never cover.
@@ -29,7 +29,7 @@
 //! env and point HOME at an empty tempdir so every presence/hook probe sees nothing
 //! (see the e2e-isolate-home lesson). Unix-only: the Windows home-var isolation
 //! differs and can't be verified from here; the wire SHAPE is pinned cross-platform
-//! by `source_status_json_shape_is_the_raycast_contract` + the schema golden.
+//! by `source_status_json_shape_is_stable` and this end-to-end golden.
 #![cfg(unix)]
 
 #[test]
@@ -62,7 +62,7 @@ fn sources_json_lists_every_source_in_an_isolated_home() {
 /// The `--json` DELIVERY contract, not just its row shape: a FAILING
 /// `connect`/`disconnect` still prints the `OutcomeRow` array to STDOUT and
 /// exits NON-ZERO. `run_change` emits BEFORE it bails, so a `$?`-checking caller
-/// (Raycast's `execFile` catch recovers the rows via `stdout.startsWith("[")`,
+/// (an `execFile` consumer can recover rows via `stdout.startsWith("[")`,
 /// then reads `rows[0]`) gets BOTH the per-source detail and a real error signal.
 /// The exit-code + stream + cardinality invariant is invisible to the row-shape
 /// schema goldens — this is its only gate (design review finding #2).
@@ -90,7 +90,7 @@ fn a_failing_connect_emits_the_outcome_rows_and_exits_nonzero() {
     );
     let stdout = String::from_utf8(output.stdout).expect("utf-8 stdout");
     // Stream: the rows land on STDOUT even though the process exits non-zero, and
-    // they PARSE as the OutcomeRow array — the exact value the Raycast consumer
+    // they parse as the OutcomeRow array — the exact value an automation consumer
     // recovers from a rejected execFile (`stdout.startsWith("[")` then `rows[0]`).
     let rows: Vec<serde_json::Value> = serde_json::from_str(stdout.trim()).unwrap_or_else(|e| {
         panic!("failing connect must still print the OutcomeRow array to stdout: {e}: {stdout:?}")
@@ -106,7 +106,7 @@ fn a_failing_connect_emits_the_outcome_rows_and_exits_nonzero() {
         "the row names the requested id"
     );
     // The blocked install is a `failed` outcome, not a silent success — the token
-    // Raycast's `rows[0].outcome === "failed"` branch surfaces per-source.
+    // a `rows[0].outcome === "failed"` branch surfaces per-source.
     assert_eq!(
         rows[0]["outcome"], "failed",
         "a blocked install surfaces as `failed`, never a clean success: {rows:?}"

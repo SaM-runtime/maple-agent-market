@@ -6,10 +6,8 @@
 //! ([`UiState::build_frames`] → [`RenderFrames`]). `run_tui` keeps the event
 //! loop, the terminal lifecycle, and every renderer/config/install side
 //! effect; the blocking-I/O sites (`build_rows`, connect/disconnect, the
-//! onboarding apply) stay at the loop as brief inline stalls (block_in_place
-//! removed in #603 — inert on the block_on thread; see the tui/CLAUDE.md sharp
-//! edge) and reach the state through these methods' closure parameters or the
-//! `pub(crate)` fields.
+//! onboarding apply) stay at the loop as brief inline stalls and reach the
+//! state through these methods' closure parameters or the `pub(crate)` fields.
 
 use std::time::{Instant, SystemTime};
 

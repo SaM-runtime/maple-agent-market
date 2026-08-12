@@ -1,104 +1,61 @@
 [workspace]
 resolver = "2"
-members  = [
+members = [
     "crates/pixtuoid-core",
     "crates/pixtuoid-scene",
     "crates/pixtuoid",
     "crates/pixtuoid-hook",
-    "crates/pixtuoid-web",
 ]
 
 [workspace.package]
-version      = "0.16.0"
-edition      = "2021"
+version = "0.16.0"
+edition = "2021"
 rust-version = "1.89"
-license      = "MIT"
-repository   = "https://github.com/SaM-runtime/maple-agent-market"
-authors      = ["Ivan Wang <ivanwng97@icloud.com>", "SaM-runtime contributors"]
-description  = "Unofficial 2D multi-agent visualizer based on Pixtuoid"
-homepage     = "https://github.com/SaM-runtime/maple-agent-market"
-keywords     = ["terminal", "tui", "pixel-art", "ai-agents", "claude"]
-categories   = ["command-line-utilities", "visualization"]
+license = "MIT"
+repository = "https://github.com/SaM-runtime/maple-agent-market"
+authors = ["Ivan Wang <ivanwng97@icloud.com>", "SaM-runtime contributors"]
+description = "Unofficial local 2D multi-agent visualizer based on Pixtuoid"
+homepage = "https://github.com/SaM-runtime/maple-agent-market"
+keywords = ["tui", "pixel-art", "ai-agents", "codex", "visualizer"]
+categories = ["command-line-utilities", "visualization"]
 
-# Workspace-wide lints, inherited by every crate via `[lints] workspace = true`.
-# `unreachable_pub` forces every `pub` in a private module tree down to
-# `pub(crate)` — so a layer-internal item can't silently leak as crate API. It's
-# warn here; CI's `cargo clippy -- -D warnings` (just clippy) makes it a hard
-# gate. Semver-neutral: cargo-semver-checks never sees an unreachable item.
-#
-# `missing_docs` is NOT here on purpose: it is a PUBLIC-API gate, and the public
-# API is exactly the two PUBLISHED crates (the binary lib target is not a semver
-# surface). So it's enabled per-crate via `#![warn(missing_docs)]` in
-# pixtuoid-core/pixtuoid-scene `lib.rs` — scoped identically to the semver-checks
-# + api-surface gates, not fanned out over the binary crates' non-API internals.
 [workspace.lints.rust]
 unreachable_pub = "warn"
 
-# Doc-rendering hygiene. Unlike `missing_docs` (a public-API contract, scoped to
-# the published crates), a broken or private-target intra-doc link is a DEAD LINK
-# in the rendered docs for ANY crate — a plain correctness bug — so this gate is
-# workspace-wide. Rustdoc lints only fire during a doc build (`cargo doc` /
-# `cargo test --doc`), so they're invisible to `cargo build`/`clippy`; the CI
-# `docs` job (`just doc-check`) runs `cargo doc` to execute them. `deny` here +
-# `-D warnings` in that recipe together keep the rendered docs pristine.
 [workspace.lints.rustdoc]
 broken_intra_doc_links = "deny"
 private_intra_doc_links = "deny"
 
 [profile.release]
-lto           = true
+lto = true
 codegen-units = 1
-strip         = "debuginfo"
-panic         = "abort"
+strip = "debuginfo"
+panic = "abort"
 
 [profile.dev]
-# Keep file:line in backtraces (line-tables-only) but drop the heavier
-# variable/type debuginfo — faster local incremental builds + smaller cached
-# target dirs. Independent of release above (which strips debuginfo entirely).
 debug = "line-tables-only"
 
 [profile.dev.package."*"]
-# Dependencies never need debuginfo for our own backtraces.
 debug = false
 
 [profile.dev.package.pixtuoid-scene]
-# The audio DSP (radix-2 FFT + per-sample synthesis over ~2^21-point buffers) is
-# the one genuinely compute-bound thing in the workspace, and `test` inherits
-# `dev` — so the synth fingerprint tests were paying ~6x for unoptimized
-# butterflies and sin loops, NOT for doing too much work (#795: the whole
-# pixtuoid-scene suite 87s -> 15s, `day_take_stems…` 72s -> 12s, at +3.5s of
-# one-time codegen). Debug assertions stay ON. This cannot perturb the ratified
-# spectral pins, because none of them asserts bit equality: the fingerprints
-# compare centroid within ±20% and band-energy shares within ±0.10 (drums ±0.15,
-# fresh noise per build), and the sample checks are `is_finite() && abs() <= 1.0`
-# — tolerances orders of magnitude wider than any codegen-level float difference.
-# (rustc also has no fast-math on stable; reassociation / FMA contraction are
-# opt-in per operation via `f32::algebraic_*`. That is a second reason, not the
-# load-bearing one — the tolerances are.) Verified by running the pins at both
-# opt-levels, not by reading.
 opt-level = 2
 
-# Opt-in full debuginfo for an actual debugger session (the third stanza of the
-# official Cargo build-performance recipe): `cargo build --profile debugging`.
 [profile.debugging]
 inherits = "dev"
 debug = true
 
 [workspace.dependencies]
-tokio              = { version = "1", default-features = false }
-serde              = { version = "1", features = ["derive"] }
-serde_json         = "1"
-toml               = "1"
-# Format-preserving TOML editing for config.toml saves (comments + unknown keys
-# survive). The toml crate's own sibling (same toml-rs maintainers).
-toml_edit          = "0.25"
-anyhow             = "1"
-tracing            = "0.1"
+tokio = { version = "1", default-features = false }
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+toml = "1"
+toml_edit = "0.25"
+anyhow = "1"
+tracing = "0.1"
 tracing-subscriber = { version = "0.3", features = ["env-filter"] }
-notify             = "8"
-ratatui            = "0.30"
-crossterm          = "0.29"
-# Terminal display-column width (the authority ratatui itself uses). ONE measure
-# for footer right-flush / truncation so wide glyphs don't miscount.
-unicode-width      = "0.2"
-clap               = { version = "4", features = ["derive"] }
+notify = "8"
+ratatui = "0.30"
+crossterm = "0.29"
+unicode-width = "0.2"
+clap = { version = "4", features = ["derive"] }

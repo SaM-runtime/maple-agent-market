@@ -11,7 +11,7 @@
 // The PURE synthesis + direction stack (#633 web-audio): dsp kernels, the
 // frozen lofi compositions, the per-voice synth recipes, and the runtime
 // mixer/schedulers. Moved here from the binary so BOTH the native device
-// gateway (rodio, in `pixtuoid`) AND the wasm WebAudio painter (`pixtuoid-web`)
+// gateway (rodio, in `pixtuoid`) and any future painter backend
 // build the SAME sample buffers — the sound twin of `render_to_rgb_buffer`.
 // NO audio-device deps live here (pure math; the rodio/cpal ban still holds).
 // `#[doc(hidden)]`: workspace-internal, not stable engine API (overlay/board pattern).

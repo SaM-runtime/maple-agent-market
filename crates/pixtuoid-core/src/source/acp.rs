@@ -5,7 +5,7 @@
 //! ACP is a versioned, published, multi-vendor wire STANDARD (a Rust crate + a
 //! JSON Schema + git tags + a changelog), so this is "a shared serde model for a
 //! protocol", NOT per-source format knowledge — the documented cross-source
-//! exception to architecture invariant #3 (see `pixtuoid-core/CLAUDE.md`), of the
+//! exception to the source registry boundary, of the
 //! same shape as the shared CC-hook arms in `decoder.rs`. What stays PER-SOURCE
 //! (invariant #3, injected by the caller): the tool-detail vocabulary + any
 //! Task-detection (dispatch judgment), and a source's OWN extension namespace

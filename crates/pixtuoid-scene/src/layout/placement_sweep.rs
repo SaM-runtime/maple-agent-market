@@ -807,7 +807,7 @@ fn every_wander_destination_is_routable_from_its_desk() {
 /// for the desks on the severed side degraded to a straight `door→chair` line
 /// through the desk body and the pantry wall (measured on narrow tall layouts,
 /// widths 32-39, production floors 4 and 6 — the census is in the scene
-/// CLAUDE.md sharp edge).
+/// placement invariant).
 ///
 /// A free fn, not a closure, because THREE sweeps need it at different
 /// resolutions: the placement seed axis, the production floor seeds, and the

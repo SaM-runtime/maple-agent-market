@@ -1,212 +1,40 @@
-# Architecture
+# 架構
 
-How a running coding-agent session becomes a moving sprite in the office.
+Maple Agent Market 是 Pixtuoid 的桌面視覺化 fork。為了不破壞既有 hook、設定檔與事件格式，部分 crate、環境變數及執行檔名稱仍沿用 `pixtuoid`。
 
-> This file is the **single source** for pixtuoid's architecture overview. It
-> renders on the website at [`/architecture`](https://pixtuoid.dev/architecture)
-> and on GitHub (the diagram below is native Mermaid). `CLAUDE.md` (the agent
-> guide) links here; per-crate "sharp edges" live in the nested `CLAUDE.md` files.
-
-## The shape of it
-
-pixtuoid is a Cargo workspace of **five crates** wired as a strict
-**producer → reducer → renderer** pipeline:
-
-- **`pixtuoid-core`** — the headless library. It has **no terminal dependencies**
-  (no `ratatui`, no `crossterm`); terminal-specific code lives downstream in the
-  binary's thin painters, which render through the engine's seam
-  (`pixtuoid_scene::floor::render_floor` / `pixel_painter::render_to_rgb_buffer`).
-  Owns sources, the reducer + scene state, the sprite format,
-  and the grid/walkable vocabulary (the sim geometry — layout/physics/pose —
-  lives in `pixtuoid-scene`; only the coherence-bound `walkable.rs` stays).
-- **`pixtuoid-scene`** — the backend-agnostic render + simulation **engine**: the
-  office world itself (`render_to_rgb_buffer`, layout geometry, walk physics,
-  pose/motion/pathfinding, the theme model, pets, chitchat, the embedded default
-  pack). It is
-  terminal- AND window-free **by crate boundary** (no `ratatui`/`crossterm`/
-  `winit`/`softbuffer` in its `Cargo.toml` — compiler-enforced, not just a lint).
-  Depends on `pixtuoid-core`.
-- **`pixtuoid`** — the binary: `clap` CLI, `tokio` runtime wiring, and two of the
-  three thin painters over the engine — the TUI renderer (`ratatui` + `crossterm`)
-  and the `floating` desktop window (`winit` + `softbuffer`). Depends on
-  `pixtuoid-scene`.
-- **`pixtuoid-web`** — the third painter: a publish-excluded `wasm-bindgen` crate
-  that renders the same engine into a browser `<canvas>` (the site's live-office
-  hero). Depends on `pixtuoid-scene` with default features off — core's `native`
-  feature (the async source runtime: `tokio`/`notify`, the watchers and probes)
-  is disabled, leaving the pure decode/reducer core that compiles to
-  `wasm32-unknown-unknown`. A scripted event loop drives the real reducer; the
-  built artifact is committed under `site/public/wasm/` (`just gen-wasm`).
-- **`pixtuoid-hook`** — a tiny shim Claude Code invokes per hook event. It depends
-  on no other crate; it reads stdin JSON, forwards it over a local IPC
-  endpoint — a Unix socket on macOS/Linux, a named pipe on Windows (selected in
-  `pixtuoid-hook/src/transport.rs`) — and **always exits 0** so it can never
-  block your agent.
-
-Dependency direction is one-way: `pixtuoid-core ← pixtuoid-scene ← {pixtuoid, pixtuoid-web}`. The
-engine's render seam (`render_floor` / `render_to_rgb_buffer` in `pixtuoid-scene`)
-is the inversion point that keeps the core terminal-free — the same pixel pass
-drives the terminal, the desktop window, and a browser `<canvas>`.
-
-A **`Source`** is one of two classes (`source/registry.rs`'s `SourceKind`):
-
-- an **Agent** — a transcript- or hook-bearing coding CLI (Claude Code, Codex,
-  Cursor, …) that produces `AgentEvent`s → `SceneState::agents` → a **desk
-  sprite**; or
-- a **Daemon** — a long-running gateway with no transcript and no desk that
-  produces `DaemonPresenceUpdate`s → `SceneState::daemons` → one
-  **presence-gated wandering mascot** per running INSTANCE (OpenClaw supports
-  several isolated gateways per host, keyed on the resolved port), each mascot's
-  *motion* encoding that instance's liveness.
-
-The OpenClaw gateway is the first daemon — it ambles the office floor as a
-lobster (idle), shuttles when a turn is in flight (busy), turns a sickly red
-when its model backend is failing (degraded), and walks out when it goes down.
-The two classes share the socket and the registry but never the reducer: the
-daemon lane below is deliberately `AgentId`-free.
-
-## Data flow
+## 資料流
 
 ```mermaid
-flowchart TB
-  accTitle: pixtuoid data flow
-  accDescr: A hook or transcript event flows from a coding agent (Claude Code, Codex) through the pixtuoid-hook shim into pixtuoid-core, where a HookRouter demuxes agent payloads to the Transport-tagged reducer and SceneState.agents. A daemon gateway (OpenClaw) shares the same shim and socket but is routed instead to apply_presence and SceneState.daemons over a sibling channel that bypasses the reducer. The pixtuoid TUI renderer then paints the whole scene through the pixtuoid-scene engine's terminal-agnostic pixel pass and a half-block flush.
-  CC["Claude Code / Codex<br/>(agent source)"]
-  OC["OpenClaw gateway<br/>(daemon source)"]
-
-  subgraph hook["pixtuoid-hook (shim)"]
-    SH["enrich + forward<br/>200ms timeout · exit 0"]
-  end
-
-  subgraph core["pixtuoid-core (headless)"]
-    L["HookRouter<br/>(shared socket: Unix / named pipe)"]
-    D["decode_hook_payload"]
-    J["JsonlWatcher · walk_jsonl"]
-    R["Reducer::apply<br/>(Transport-tagged)"]
-    AP["apply_presence<br/>(AgentId-free · bypasses Reducer)"]
-    S["SceneState<br/>agents + daemons"]
-    L -->|agent payload| D
-    L -.->|"daemon payload<br/>is_daemon()"| AP
-    D -->|"(Hook, AgentEvent)"| R
-    J -->|"(Jsonl, AgentEvent)"| R
-    R --> S
-    AP -.->|"PresenceMsg{source, delta}<br/>sibling channel"| S
-    R -.->|"scope tree:<br/>cascade ↓ · liveness ↑"| R
-  end
-
-  subgraph bin["pixtuoid (binary · TUI)"]
-    W["watch&lt;Arc&lt;SceneState&gt;&gt;"]
-    TR["TuiRenderer"]
-    FL["flush · ½-block cells"]
-  end
-
-  subgraph scene["pixtuoid-scene (engine)"]
-    PX["render_to_rgb_buffer<br/>(desks + mascots)"]
-  end
-
-  W --> TR --> PX --> FL
-
-  CC -->|hook event| SH
-  OC -->|hook event| SH
-  SH --> L
-  CC -.->|writes transcript JSONL| J
-  S -. Arc per mutation .-> W
+flowchart LR
+    A["Codex／其他 agent 事件"] --> B["pixtuoid-hook 或 transcript source"]
+    B --> C["pixtuoid-core：解析與狀態歸約"]
+    C --> D["pixtuoid-scene：場景、角色與動作"]
+    D --> E["pixtuoid：floating／TUI renderer"]
+    E --> F["Maple Agent Market 視窗"]
 ```
 
-**Walking the pipeline (real symbols):**
+視覺化程式只觀察 agent 活動，不會替 agent 排程工作，也不會把 transcript 傳到網路服務。
 
-1. **Ingest.** Claude Code fires a hook → the **`pixtuoid-hook`** shim
-   (`enrich_payload` stamps `_pixtuoid_source`, a 200 ms watchdog-bounded send,
-   exit 0) →
-   `HookSocketListener` on a Unix socket (a named pipe on Windows) →
-   **`decode_hook_payload`** turns the JSON into one or more `AgentEvent`s —
-   tool/permission payloads are preceded by an `Identity` event the reducer uses
-   to register live-but-invisible sessions with real identity (mid-attach).
-   In parallel, **`JsonlWatcher` → `walk_jsonl`** tails each
-   agent's transcript file (with a first-sight gate so historical/ended sessions
-   don't resurrect) and decodes lines via a per-source decoder (`decode_cc_line` /
-   `decode_codex_line`).
-2. **One channel.** Every source multiplexes onto a single
-   `mpsc::Sender<(Transport, AgentEvent)>` (buffer 256). The `Transport`
-   (`Hook` | `Jsonl`) tag is load-bearing: the reducer uses it for **hook-wins
-   dedup** so a hook and its transcript echo don't double-count.
-3. **Reduce.** `reducer_task` drains the channel into **`Reducer::apply`**, which
-   updates a `SceneState`, runs garbage-collection/stale sweeps on a 1 Hz tick,
-   and delegates single-slot transitions to the FSM. After every change it
-   publishes a fresh `Arc<SceneState>` on a `watch` channel.
-4. **Render.** `TuiRenderer` (in the binary) borrows the latest scene (O(1), no
-   lock) and paints it through **`pixtuoid_scene::pixel_painter::render_to_rgb_buffer`**
-   — a *terminal-agnostic* pixel pass that lives in the engine crate — then
-   `flush_buffer_to_term` compresses pairs of pixel rows into half-block (`▀`)
-   terminal cells.
+## Workspace
 
-**The daemon lane (the OpenClaw gateway).** A daemon source creates no
-`AgentSlot` and writes no transcript, so it skips the whole agent pipeline. The
-**`HookRouter`** at the shared socket reads each payload's source: an agent's
-goes to `decode_hook_payload`; a daemon's (`is_daemon()`) is decoded by the
-source's own `presence_decoder` into `DaemonPresenceUpdate`s and pushed onto a
-**sibling channel** as `PresenceMsg { key, delta }` — where the key is a
-`DaemonInstanceKey { source, instance }`, so N concurrent instances of one daemon
-route to distinct entries (invariant #2 — NOT the one `AgentEvent` channel). The
-reducer task merges those via **`apply_presence`** — which is `AgentId`-free and
-never touches `Reducer::apply` — into `SceneState::daemons`. The render pass then
-draws one mascot per live daemon INSTANCE, its motion encoding that instance's
-`DaemonState` (`Idle` / `Busy` / `Degraded` / `Down`).
-A daemon has no per-session pid, so *silence* is its abrupt-down signal (a TTL
-sweep, decayed per instance), while each gateway's own process pid is armed for
-instant `ExitWatch`.
+| 路徑 | 責任 |
+|---|---|
+| `crates/pixtuoid-core` | source registry、hook 事件、session 狀態、parent/subagent 關係與 reducer |
+| `crates/pixtuoid-scene` | 後端無關的像素場景、Maple 雙地圖、角色／怪物動作、程式化特效與 sprite pack 格式 |
+| `crates/pixtuoid` | CLI、設定、source 連接、floating 視窗、TUI、音訊與作業系統整合 |
+| `crates/pixtuoid-hook` | 低延遲、本機 IPC 的 hook shim |
 
-## Seams & invariants
+依賴方向維持單向：`pixtuoid-core → pixtuoid-scene → pixtuoid`。`pixtuoid-hook` 是獨立的小型入口；核心與場景 crate 不應依賴視窗或終端後端。
 
-These are load-bearing — see `CLAUDE.md` and the nested guides before changing them.
+## Maple 顯示層
 
-- **The `Source` trait is the only seam for adding a transcript-bearing agent
-  CLI** (Codex, Copilot CLI, Antigravity, …). Per-source format knowledge lives in that source's
-  own decoder functions (injected into `JsonlWatcher` as fn pointers), not in a
-  shared decoder. Hook-only CLIs (Reasonix, opencode, Cursor CLI, CodeWhale,
-  Hermes, Kimi Code CLI — none exposes a transcript pixtuoid watches; for
-  Kimi and Cursor CLI one DOES exist but is deliberately unwatched, see
-  `crates/pixtuoid-core/CLAUDE.md`) are the documented exception: no
-  `Source` impl and no runtime wiring; their registry rows set
-  `transcript: None` and supply a custom hook decoder, and each ships an
-  install `Target` instead (bound via the in-TUI Sources panel).
-- **A `Source` is an `Agent` or a `Daemon`** (`SourceKind`). A daemon (the
-  OpenClaw gateway is the first) earns a presence-gated wandering mascot per
-  running instance, not a desk: its deltas ride a **sibling channel**
-  (`PresenceMsg { key: DaemonInstanceKey, delta }`,
-  invariant #2 — NOT the one `AgentEvent` channel) and merge via `apply_presence`,
-  never `Reducer::apply` (which is `AgentId`-pure). The `HookRouter` demux and
-  the daemon-sweep loop both dispatch on this enum, so a **second daemon is one
-  registry `Daemon` row + one mascot arm + one badge arm** — no `handle_conn`
-  edit and no new reducer arm.
-- **Cross-source facts live in ONE registry row** (`source/registry.rs`,
-  internal): each CLI's `SourceDescriptor` carries its label prefix, JSONL
-  decoder, hook keying (`transcript_path` vs `session_id`, plus an optional
-  source-specific hook decoder for events the shared arms can't express —
-  Codex's subagent hooks, Reasonix's whole alien envelope), and capability
-  flags. The reducer derives lifecycle policy from those flags — e.g. the
-  short idle reaper is `!has_exit_signal && resurrects_on_prompt`, which today
-  holds only for Codex (no exit signal of any kind, but a swept session walks
-  back in on the next prompt) — instead of matching CLI names.
-- **Events flow through ONE tagged channel.** Producers tag their own events; the
-  reducer never hardcodes `Transport::Hook` — it reads the producer's tag.
-- **`pixtuoid-core` has no terminal dependencies.** Anything terminal-specific
-  lives in a thin painter over the engine's render seam (`render_floor` /
-  `render_to_rgb_buffer`), never in the core or the scene engine.
-- **The hook shim must never block the agent** — always exit 0, and the 200 ms
-  send bound is enforced by a watchdog thread that hard-exits the process, on
-  both platforms.
-- **Subagent supervision is a scope tree** (`state/scope.rs`): exit cascades
-  *down* (a parent's `SessionEnd` reaps its subtree), liveness flows *up* (a
-  working subagent keeps its ancestors fresh), and permission-blocked subagents
-  are exempt from the stale sweep.
-- **The walkable mask is the ground footprint only** — a top-down view, so a
-  sprite can be visually taller/wider than the tile its base occupies.
+- `crates/pixtuoid-scene/src/maple_world/`：雙地圖狀態、角色路徑、商店、訓練與 UI 模型。
+- `crates/pixtuoid-scene/src/pixel_painter/maple/`：公開安全的程式繪製背景、角色狀態與特效。
+- `crates/pixtuoid/src/floating/`：無邊框視窗、縮放、拖曳、地圖切換與輸入事件。
+- `crates/pixtuoid/examples/floating_snapshot.rs`：在沒有私人素材包的情況下產生文件畫面。
 
-## Where to go next
+## 素材邊界
 
-- **Configure it:** [`docs/CONFIGURATION.md`](CONFIGURATION.md) ·
-  [live `/config`](https://pixtuoid.dev/config)
-- **Contribute:** [`CONTRIBUTING.md`](CONTRIBUTING.md)
-- **Agent/contributor detail:** the workspace `CLAUDE.md` + the nested per-crate
-  `CLAUDE.md` files.
+Renderer 先嘗試載入使用者指定的本機 sprite pack；缺少對應素材時回到 repo 內可再散布的 Pixtuoid 預設素材與程式化畫面。NEXON／MapleStory 圖像、音樂、API 紙娃娃、遊戲截圖與衍生檔不屬於此架構的公開輸入，請保持在 repo 外。
+
+公開候選版的媒體與路徑規則由 `policy/public-release/` 和 `scripts/public-release-audit.py` 管理。

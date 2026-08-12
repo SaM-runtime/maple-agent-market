@@ -3,7 +3,7 @@
 //! ONE home for "which agent CLIs exist, their connection state, and how to
 //! change it." Three thin presenters sit on top: the in-TUI Sources panel
 //! (`tui::connection` + `tui::mod::{connect_source,disconnect_source}`), the
-//! scriptable CLI (`pixtuoid sources|connect|disconnect`, Raycast-facing), and
+//! scriptable CLI (`pixtuoid sources|connect|disconnect`), and
 //! first-run onboarding (`crate::setup`). The mutating ops here are the
 //! PERSISTED half — they write the `[sources]` flag + install/uninstall hooks,
 //! exactly as the panel does, but DON'T touch a running instance's live
@@ -24,14 +24,8 @@ use crate::install::{
     InstallReport, UninstallReport,
 };
 
-/// The wire-facing outcome token — a CLOSED set, published in the JSON schema
-/// as an `enum` so the generated Raycast type is a string-literal UNION (a
-/// consumer typo like `"conected"` is a `tsc` error, not a runtime miss).
-/// Widening the set is additive for the PRODUCER only — an installed store
-/// copy still won't match a new token, so it is a wire change under the
-/// `OutcomeRow` handshake rule below, not a free extension.
+/// The wire-facing outcome token used by JSON CLI consumers.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize)]
-#[cfg_attr(test, derive(schemars::JsonSchema))]
 #[serde(rename_all = "snake_case")]
 pub enum WireOutcome {
     Connected,
@@ -100,25 +94,9 @@ impl ChangeOutcome {
     }
 }
 
-/// One row of the `--json` batch envelope `pixtuoid connect|disconnect|sources set`
-/// print — the SECOND stable wire contract the Raycast extension parses (alongside
-/// `SourceStatus`), with the same treatment: a committed JSON Schema
-/// (`integrations/raycast/contract/outcome-row.schema.json`, golden-tested below)
-/// the extension's TS type is generated from (`gen:contract`). The wire shape is
-/// `{id, outcome, message?}` — a bare machine token plus an optional human-detail
-/// field, split from the older folded `failed: <msg>` string on the ASSUMPTION
-/// that the in-repo extension, which ships atomically with the binary, was the
-/// only consumer. It was not: the last `ray publish` marker PREDATES the split,
-/// so the break reached the store. Treat this wire as PUBLISHED — installed
-/// copies parse it independently of the binary's version, and a further shape
-/// change needs a version handshake, never another flag-day edit;
-/// see the sharp edge in `crates/pixtuoid/CLAUDE.md`. Pinned by
-/// `outcome_row_json_shape_is_the_raycast_contract` + the envelope test in
-/// `sources_cli.rs`.
+/// One row of the stable `--json` batch envelope emitted by
+/// `connect`, `disconnect` and `sources set`.
 #[derive(Debug, Clone, PartialEq, Eq, serde::Serialize)]
-// Same rationale as `SourceStatus` below: `additionalProperties: false` so the
-// generated TS type has no index signature and a consumer typo is a `tsc` error.
-#[cfg_attr(test, derive(schemars::JsonSchema), schemars(deny_unknown_fields))]
 pub struct OutcomeRow {
     /// The registry source id the outcome applies to (e.g. `codex`).
     pub id: String,
@@ -152,30 +130,14 @@ impl OutcomeRow {
     }
 }
 
-/// A serializable status row for `pixtuoid sources --json` — the STABLE wire
-/// contract the Raycast extension parses (pinned by `source_status_json_shape`).
-/// Deliberately a flat DTO, NOT the internal `ConnectionRow` (whose shape is a
-/// UI concern free to change).
+/// A serializable status row for `pixtuoid sources --json`.
 #[derive(Debug, Clone, PartialEq, Eq, serde::Serialize)]
-// `deny_unknown_fields` stamps `additionalProperties: false` into the emitted
-// schema so the generated TS type has NO `[k: string]: unknown` index signature —
-// then a renamed/typo'd field in the consumer is a `tsc` error, not silently
-// `unknown`. Matches the wire reality: the CLI never emits extra keys.
-#[cfg_attr(test, derive(schemars::JsonSchema), schemars(deny_unknown_fields))]
 pub struct SourceStatus {
     pub id: String,
     pub display_name: String,
     pub connected: bool,
     pub cli_present: bool,
     /// A health/issue summary (install-broken / decode-drift), or `null` when n/a.
-    // Generates `health?: string | null`, kept OPTIONAL on purpose. The wire always
-    // emits `health` (no `skip_serializing_if`; pinned by `source_status_json_shape`),
-    // so the `?` is a harmless SUPERSET, and the consumer only does `if (s.health)`
-    // — identical for optional vs required. The one schemars knob to force `required`
-    // (`schemars(required)`) STRIPS the `| null` → the WRONG `health: string` (the
-    // wire CAN be null), the very "mis-specified nullability" pitfall
-    // PARALLEL-DELIVERY.md names. So nullable is preserved (it matters); optional is
-    // kept (it doesn't).
     pub health: Option<String>,
 }
 
@@ -328,7 +290,7 @@ pub enum Action {
 
 /// PURE diff: given the CURRENT connected-set and the DESIRED set, decide each
 /// registered source's action. The declarative "connected set = exactly these"
-/// semantics the Raycast checkbox-form / `sources set` needs: a source in
+/// semantics a declarative `sources set` consumer needs: a source in
 /// `desired` but not `current` → Connect; in `current` but not `desired` →
 /// Disconnect; otherwise NoOp. Ids outside the source registry are ignored
 /// here (the I/O wrapper validates them up front so an unknown id is a loud
@@ -351,7 +313,7 @@ pub(crate) fn plan_reconcile(
         .collect()
 }
 
-/// Declarative apply: make the connected set EXACTLY `desired` (the Raycast
+/// Declarative apply: make the connected set exactly `desired` (the automation
 /// checkbox-form / `sources set` semantics). For each registered source: connect
 /// the newly-desired, disconnect the no-longer-desired, NoOp the rest — reporting
 /// each (a failed item doesn't abort the batch). The CURRENT set is computed the
@@ -466,7 +428,7 @@ pub(crate) fn freeze_for_skip(
 /// same layer that owns connect/disconnect's install calls — rather than reaching
 /// out of the TUI event loop. Does per-target config reads (`has_hooks`), which
 /// the caller runs inline — a brief one-shot stall, like the rest of the skip I/O
-/// (block_in_place was removed in #603; see the tui/CLAUDE.md sharp edge).
+/// (`block_in_place` was removed in #603 because it is inert on this thread).
 pub(crate) fn skip_freeze(
     detected: impl IntoIterator<Item = &'static str>,
     connected: &HashSet<String>,
@@ -628,7 +590,7 @@ pub fn build_rows(connected: &HashSet<String>, log: &str) -> Vec<ConnectionRow> 
     build_rows_from(inputs)
 }
 
-/// Map a status row to the serializable `SourceStatus` DTO (the CLI/Raycast wire shape).
+/// Map a status row to the serializable `SourceStatus` DTO used by the JSON CLI.
 ///
 /// NOTE: the wire `connected` here is deliberately PRESENT-AND-BOUND
 /// (`state == Connected`), NOT the persisted `[sources]` intent bit
@@ -980,9 +942,7 @@ mod tests {
     }
 
     #[test]
-    fn source_status_json_shape_is_the_raycast_contract() {
-        // Pins the exact JSON the Raycast extension parses. Changing a key here
-        // is a breaking change to that contract — update both sides deliberately.
+    fn source_status_json_shape_is_stable() {
         let s = SourceStatus {
             id: "codex".into(),
             display_name: "Codex".into(),
@@ -997,7 +957,7 @@ mod tests {
     }
 
     #[test]
-    fn outcome_row_json_shape_is_the_raycast_contract() {
+    fn outcome_row_json_shape_is_stable() {
         // Pins the exact `{id, outcome, message?}` JSON row `connect`/
         // `disconnect`/`sources set --json` emit per source: a bare machine
         // token in `outcome`, the human detail in `message` — present exactly
@@ -1035,60 +995,6 @@ mod tests {
                 .message
                 .as_deref(),
             Some(clean)
-        );
-    }
-
-    #[test]
-    fn outcome_row_schema_matches_the_committed_contract() {
-        // The `OutcomeRow` twin of `source_status_schema_matches_the_committed_contract`
-        // below (same regenerate flow: `UPDATE_CONTRACT_SCHEMA=1`, then the raycast
-        // `gen:contract`). Shares the `schema_matches_the_committed_contract`
-        // name suffix so one test filter regenerates both goldens.
-        let schema = schemars::schema_for!(OutcomeRow);
-        let generated = serde_json::to_string_pretty(&schema).unwrap() + "\n";
-        let path = concat!(
-            env!("CARGO_MANIFEST_DIR"),
-            "/../../integrations/raycast/contract/outcome-row.schema.json"
-        );
-        if std::env::var_os("UPDATE_CONTRACT_SCHEMA").is_some() {
-            let p = std::path::Path::new(path);
-            std::fs::create_dir_all(p.parent().unwrap()).unwrap();
-            std::fs::write(p, &generated).unwrap();
-        }
-        let committed = std::fs::read_to_string(path).unwrap_or_default();
-        assert_eq!(
-            generated, committed,
-            "OutcomeRow schema drifted from the committed contract \
-             (integrations/raycast/contract/outcome-row.schema.json). \
-             Run `just gen-contract`, then regen + commit the raycast .d.ts."
-        );
-    }
-
-    #[test]
-    fn source_status_schema_matches_the_committed_contract() {
-        // The Raycast extension GENERATES its SourceStatus type from this committed
-        // JSON Schema (`integrations/raycast/contract/source-status.schema.json`),
-        // so the two can't hand-drift. This test fails if the struct changes
-        // without the schema being regenerated — regenerate with
-        // `just gen-contract` (UPDATE_CONTRACT_SCHEMA=1), then the raycast
-        // `gen:contract` + tsc catches any consumer break.
-        let schema = schemars::schema_for!(SourceStatus);
-        let generated = serde_json::to_string_pretty(&schema).unwrap() + "\n";
-        let path = concat!(
-            env!("CARGO_MANIFEST_DIR"),
-            "/../../integrations/raycast/contract/source-status.schema.json"
-        );
-        if std::env::var_os("UPDATE_CONTRACT_SCHEMA").is_some() {
-            let p = std::path::Path::new(path);
-            std::fs::create_dir_all(p.parent().unwrap()).unwrap();
-            std::fs::write(p, &generated).unwrap();
-        }
-        let committed = std::fs::read_to_string(path).unwrap_or_default();
-        assert_eq!(
-            generated, committed,
-            "SourceStatus schema drifted from the committed contract \
-             (integrations/raycast/contract/source-status.schema.json). \
-             Run `just gen-contract`, then regen + commit the raycast .d.ts."
         );
     }
 

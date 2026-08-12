@@ -330,12 +330,12 @@ pub fn frame_epilogue(
 /// bookkeeping epilogue (coffee-carrier persistence + the door-anim clamp
 /// refresh) in ONE compiler-owned place, because a convention-mirrored
 /// epilogue drifts across consumers — the #423 class, concrete enough to
-/// have bitten twice (a dropped-carriers bug in the TUI transition path; the
-/// web hero without eviction — the loop-2 teleport).
+/// have bitten more than once (for example, a dropped-carriers bug in the TUI
+/// transition path).
 ///
-/// Consumers: the TUI floor-slide (`TuiRenderer::render_transition`), the
-/// floating window (`OfficeRenderer::render`), and the web hero
-/// (`pixtuoid-web::Office`). The TUI's NORMAL draw path (`draw_scene`) is the
+/// Consumers include the TUI floor-slide (`TuiRenderer::render_transition`) and
+/// the floating window (`OfficeRenderer::render`). The TUI's normal draw path
+/// (`draw_scene`) is the
 /// deliberate exception — it needs the full `PixelPassResult` (pet/mascot
 /// positions, chitchat bubbles) and holds only immutable coffee borrows
 /// mid-flush — so it stays on raw `render_to_rgb_buffer` and routes its
@@ -641,9 +641,9 @@ impl PerOffice {
 /// [`CoffeeState`], chitchat map} plus the dual `evict_missing` protocol behind
 /// one type, so a painter can't hand-roll (and silently skip) the eviction — a
 /// skipped eviction leaks per-agent state or teleports a recurring agent. One
-/// floor + one office: the single-floor painters (`floating::offscreen::OfficeRenderer`,
-/// `pixtuoid-web::Office`) own a `FloorSession`; a multi-floor painter (the
-/// TUI) composes `Vec<`[`PerFloor`]`>` + one [`PerOffice`] and drives
+/// floor + one office: a single-floor painter such as
+/// `floating::offscreen::OfficeRenderer` owns a `FloorSession`; a multi-floor
+/// painter (the TUI) composes `Vec<`[`PerFloor`]`>` + one [`PerOffice`] and drives
 /// [`render_floor`] / `draw_scene` itself.
 pub struct FloorSession {
     /// This session's single floor — its sim/paint stores + pixel buffer.

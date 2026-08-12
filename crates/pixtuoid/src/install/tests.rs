@@ -1347,6 +1347,15 @@ fn a_config_we_cannot_parse_but_never_wrote_is_not_reported_as_installed() {
 
 #[test]
 fn every_target_that_writes_a_config_names_us_in_it() {
+    // OpenClaw writes extra artifacts beneath its process-global state dir.
+    // Serialize the override so this all-target loop cannot race another
+    // install test and accidentally share its temporary plugin directory.
+    let _env = crate::TEST_ENV_LOCK
+        .lock()
+        .unwrap_or_else(|error| error.into_inner());
+    let openclaw_state = tempfile::TempDir::new().unwrap();
+    let _state = EnvVarOverride::set("OPENCLAW_STATE_DIR", openclaw_state.path());
+
     // The invariant `has_hooks`'s unparseable-config fallback rests on: a config we
     // wrote mentions us, so a substring probe can answer "is this ours?" when the
     // parse fails. In production the shim IS named `pixtuoid-hook`, so every target

@@ -13,7 +13,7 @@
 //!
 //! This module ALSO owns the shared per-scene activity tally (`StateCounts` +
 //! `scene_stats`/`per_floor_counts`/`gateway_rollup`) — pure, backend-free, and
-//! now reachable by every painter crate (the binary's footer AND `pixtuoid-web`),
+//! now reachable by every painter backend,
 //! which is why it moved here out of the binary's tui widgets.
 
 use std::time::SystemTime;

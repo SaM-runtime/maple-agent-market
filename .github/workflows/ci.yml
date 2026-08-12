@@ -1,56 +1,29 @@
-name: ci
+name: CI
 
 on:
   push:
     branches: [main]
   pull_request:
-  workflow_dispatch: # manual re-run of the full matrix (mutants has its own workflow)
-
-concurrency:
-  group: ci-${{ github.ref }}
-  # Cancel superseded PR runs (push-over-push), but NEVER cancel an in-flight
-  # main run — back-to-back merges would otherwise abort each other's CI
-  # verdict + Codecov upload. Main runs are cheap and rare; let them finish.
-  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
 permissions:
   contents: read
 
 jobs:
-  lint:
-    name: Lint & Hygiene
-    uses: ./.github/workflows/ci-lint.yml
-
-  builds:
-    name: Builds & Packaging
-    uses: ./.github/workflows/ci-builds.yml
-
-  tests:
-    name: Test Suite & Coverage
-    permissions:
-      contents: read
-      id-token: write
-    uses: ./.github/workflows/ci-tests.yml
-
-  # Advisory checks stay visible without entering the stable protected gate.
-  supplemental:
-    name: Supplemental Checks
-    uses: ./.github/workflows/ci-supplemental.yml
-
-  gate:
-    name: ci-gate
-    if: ${{ always() }}
-    needs: [lint, builds, tests]
-    runs-on: ubuntu-latest
-    timeout-minutes: 5
+  verify:
+    runs-on: windows-latest
     steps:
-      - name: Require every CI group to pass
-        env:
-          LINT_RESULT: ${{ needs.lint.result }}
-          BUILDS_RESULT: ${{ needs.builds.result }}
-          TESTS_RESULT: ${{ needs.tests.result }}
-        run: |
-          if [[ "$LINT_RESULT" != success || "$BUILDS_RESULT" != success || "$TESTS_RESULT" != success ]]; then
-            echo "::error::CI group failed: lint=$LINT_RESULT builds=$BUILDS_RESULT tests=$TESTS_RESULT"
-            exit 1
-          fi
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: rustfmt, clippy
+      - uses: Swatinem/rust-cache@v2
+      - name: Rust format
+        run: cargo fmt --all -- --check
+      - name: Rust lint
+        run: cargo clippy --locked --workspace --all-targets -- -D warnings
+      - name: Rust tests
+        run: cargo test --locked --workspace
+      - name: Public release audit self-test
+        run: python scripts/public-release-audit.py --selftest
+      - name: Public release audit
+        run: python scripts/public-release-audit.py

@@ -1,6 +1,6 @@
 [package]
 name                   = "pixtuoid-core"
-description            = "Headless engine for pixtuoid — sources, state, sprites"
+description            = "Maple Agent Market headless engine — sources, state and sprites"
 publish                = false
 version.workspace      = true
 edition.workspace      = true
@@ -11,30 +11,14 @@ authors.workspace      = true
 homepage.workspace     = true
 keywords.workspace     = true
 categories.workspace   = true
-# Workspace-only tests that read a sibling file absent from the published
-# tarball — shipping them would make `cargo test` fail on the .crate (publish
-# itself is unaffected: its verify step builds, not tests). socket_path_parity
-# #[path]-includes ../../pixtuoid-hook/src/paths.rs; supported_sources_manifest
-# reads ../../site/src/sources.json at runtime (runtime-read spares the publish
-# build-verify, NOT cargo test on an extracted crate — so it must be excluded too).
-# proof_fixture_disjointness reads ../../site/src/components/Statusline.astro
-# the same way.
-exclude                = [
-    "tests/socket_path_parity.rs",
-    "tests/supported_sources_manifest.rs",
-    "tests/proof_fixture_disjointness.rs",
-]
+# 這個 workspace 測試會引用 sibling crate 的 socket path 實作。
+exclude                = ["tests/socket_path_parity.rs"]
 
 [lints]
 workspace = true
 
-# `native` (default) pulls the async runtime + filesystem-watcher layer — the
-# whole source/ transport+watcher+probe machinery (tokio, notify, the Unix/Windows
-# hook listeners, the JSONL watcher, the liveness probes). Building WITHOUT it
-# (`--no-default-features`) yields a pure core that compiles to
-# wasm32-unknown-unknown: the event vocabulary + reducer + state + the
-# sprite/render surface, no tokio/notify. That no-default
-# build is what pixtuoid-scene → the WebAssembly office hero compiles against.
+# `native` 啟用 async runtime、檔案 watcher、hook listener 與 liveness probe；
+# `--no-default-features` 則只保留可攜的事件、reducer 與 state。
 [features]
 default = ["native"]
 native  = ["dep:tokio", "dep:notify"]

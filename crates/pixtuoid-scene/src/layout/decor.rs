@@ -621,7 +621,7 @@ pub const fn furniture_def(kind: Furniture) -> FurnitureDef {
             // sit inside (unlike the island's in-body slots) — its cell stays
             // walkable exactly as the old stand's did, and blocking it would
             // ripple mask/approach for a 7x7 body walkers can at worst
-            // visually clip. Sharp edge in the scene CLAUDE.md decor entry.
+            // visually clip; the footprint still stays outside walkable cells.
             footprint: None,
             visual: Size { w: 7, h: 7 },
             occupies_pos: true,

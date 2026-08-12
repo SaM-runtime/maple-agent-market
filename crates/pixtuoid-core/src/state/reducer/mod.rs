@@ -1292,7 +1292,7 @@ impl Reducer {
                 // tombstones, so membership means fresh.
                 //
                 // Not slot-gated (unlike the hook-wins dedup record): the orphan
-                // is harmless + reaped by tick — see CLAUDE.md "active_tasks insert".
+                // is harmless and reaped by tick.
                 if self
                     .corr
                     .active_tasks

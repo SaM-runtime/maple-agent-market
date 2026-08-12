@@ -197,23 +197,14 @@ use wall::{
     paint_glass_wall_h, paint_glass_wall_v, DOOR_JAMB_PX,
 };
 
-/// The weather names accepted by [`force_weather`], canonical order — for
-/// `--weather` error text and the manifest drift-guard test. (The gallery
-/// generator itself reads site/src/weather.json; the
-/// `weather_gallery_manifest_matches_the_weather_enum` test keeps that manifest
-/// aligned with this list.)
+/// The weather names accepted by [`force_weather`], in canonical order.
 pub fn weather_names() -> Vec<&'static str> {
     background::Weather::ALL.iter().map(|w| w.name()).collect()
 }
 
 /// Force every subsequent render **on this thread** to a specific weather (by
 /// name, case-insensitive), or `None` to restore the clock-based selection.
-/// `snapshot --weather` drives the docs stills; the wasm `Office` (pixtuoid-web)
-/// ALSO re-applies its OWN override every `step` — the hero backdrop defaults
-/// `None` (clock-based), the VIBING playground sets its chip. It's a thread-local
-/// shared by every `Office` in the one wasm module, so the last writer before a
-/// render wins and each surface must set its own value each frame. `Err` carries
-/// the valid names when `name` is unknown.
+/// `Err` carries the valid names when `name` is unknown.
 pub fn force_weather(name: Option<&str>) -> Result<(), Vec<&'static str>> {
     match name {
         None => {

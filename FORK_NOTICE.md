@@ -1,68 +1,34 @@
-# Maple Agent Market fork notice
+# Fork 與非官方聲明
 
-Maple Agent Market is an unofficial, fan-made agent-orchestration visualizer
-based on [Pixtuoid](https://github.com/IvanWng97/pixtuoid).
+Maple Agent Market 是以 [Pixtuoid](https://github.com/IvanWng97/pixtuoid) 為基礎開發的非官方 agents orchestration visualizer。
 
-It is not affiliated with, endorsed, sponsored or approved by NEXON, Gamania or
-the Pixtuoid maintainers. MapleStory and related names and marks belong to their
-respective owners.
+Fork 基準為 Pixtuoid `v0.16.0` commit [`ac06cc00c3cf18f3f67eab730a37f0c7e5787fc8`](https://github.com/IvanWng97/pixtuoid/commit/ac06cc00c3cf18f3f67eab730a37f0c7e5787fc8)。本 repo 保留 Pixtuoid 原作者 Ivan Wang 的 MIT 版權與授權聲明；Maple Agent Market 貢獻者的聲明只涵蓋後續修改，不取代上游權利。
 
-## Code license and attribution
+本專案未受 NEXON、遊戲橘子、OpenAI、Pixtuoid 維護者或其他第三方贊助、認可、核准或背書。MapleStory、NEXON 與相關名稱、角色及標誌屬其各自權利人。
 
-The Pixtuoid-derived source remains under the MIT license in `LICENSE`. The
-original `Copyright (c) 2026 Ivan Wang` notice must remain with redistributed
-copies. A future project copyright notice may be added for original changes; it
-must not replace the upstream notice.
+## 不屬於 MIT repo 的本機素材
 
-## Assets not covered by the MIT license
+下列檔案不能被本專案的 MIT License 覆蓋，也不會隨 source、release、binary 或文件截圖發布：
 
-Do not publish or bundle the local Maple-inspired test pack, including:
+- NEXON ranking／Open API 紙娃娃及生成的 `.sprite`；
+- 自由市場、弓箭手村等遊戲截圖、重建或 WZ／client 衍生背景；
+- NEXON／MapleStory 商店框、角色、怪物、傳送點、動作與技能影格；
+- MapleStory 音樂、YouTube 下載內容與包含上述素材的 preview／QA 截圖；
+- 使用者提供的 skin、cache、backup 與 active pack。
 
-- NEXON ranking or Open API paperdolls and their generated `.sprite` files;
-- Free Market/Henesys screenshots, reconstructed or WZ-derived backdrops;
-- NEXON-derived shop frames, monsters, portals, character actions and
-  skill-effect art;
-- MapleStory music, YouTube downloads, extracted client/WZ assets or QA images
-  containing those materials.
+這些內容若供個人本機評估，只能留在 repo 外的 `private-assets` 或自訂 pack 位置。其暫存日期、來源 manifest 與 refresh／delete 規則由本機 pack 自己管理，不可加入公開 Git 歷史或 release artifact。
 
-Those files belong in the install-local `private-assets` or local sprite-pack
-folders only. They are intentionally absent from the source repository.
+## 可公開內容
 
-### Local cache lifecycle
+公開 repo 可包含：
 
-Every NEXON renderer response and every derivative or copy made from it inherits
-the deadline in its local `source-manifest.json`. This includes PNG sources,
-`.sprite` frames, previews, caches, backups, and QA screenshots. The applicable
-local manifest owns each cache's retrieval and refresh/delete deadline. A
-refresh means fetching the source again, rebuilding all derivatives, recording
-new hashes and deadline, and removing old copies. Temporary dates and local
-provenance records do not belong in the public source repository. These files
-must never be committed or added to release artifacts.
+- Pixtuoid MIT 原始碼與預設素材；
+- Maple Agent Market 的原創程式碼、UI、狀態映射與程式化特效；
+- Monaspace Neon OFL 字型；
+- sprite pack 格式、驗證器與本機 skin workshop 程式。
 
-The character skin workshop follows the same boundary. User-supplied PNGs,
-converted `.sprite` files, previews, settings and generated active packs remain
-under `private-assets/skins`; only the importer code and format documentation
-may be published with the MIT source.
+使用者可在自己電腦以 `--pack-dir` 載入有權使用的素材；載入行為不會把該素材改成 MIT，也不代表本專案取得其再散布權。
 
-## Intended public release model
+## 本機 BGM
 
-The public repository may contain the MIT code, its inherited Pixtuoid default
-sprites, the OFL-licensed Monaspace font, format documentation and local import
-tools. Original programmatic combat/task effects in the source are also MIT
-code and contain no copied game frame. Other players can build or select a
-private pack on their own machine; the repository and official releases do not
-host that pack.
-
-This separation does not claim that non-commercial fan UGC is prohibited. It
-keeps NEXON-derived files out of the project's open-source licence and prevents
-downstream users from mistaking them for assets they may freely sublicense or
-sell. Screenshots or demonstrations require separate, deliberate UGC review and
-clear unofficial/non-commercial attribution.
-
-## Local BGM contract
-
-The app supports native looping playback of a user-selected MP3, WAV, OGG or
-FLAC. The user is responsible for choosing a file they have the right to use.
-The launcher copies it into the isolated install's `private-assets/bgm` folder;
-that folder is excluded from Git. The project contains no YouTube downloader,
-audio extractor or hidden web player.
+程式可循環播放使用者指定的 MP3、WAV、OGG 或 FLAC。專案不含 YouTube downloader、音訊擷取器或隱藏 web player，也不會把該音樂自動加入 Git。使用者須自行確認檔案的使用權。

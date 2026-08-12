@@ -1,4 +1,4 @@
-/target
+/target/
 /target-maple/
 /.codex/
 /private-assets/
@@ -19,15 +19,10 @@
 Cargo.lock.bak
 .DS_Store
 *.swp
-.claude/settings.local.json
-.claude/scheduled_tasks.lock
 /*.png
 .venv
-.superpowers/
-docs/superpowers/
-.claude/worktrees/
-docs/superpowers/
-drift-report.md
+/.superpowers/
+/docs/superpowers/
 __pycache__/
 lcov.info
 mutants.out/

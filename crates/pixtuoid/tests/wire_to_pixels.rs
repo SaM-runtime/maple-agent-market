@@ -192,7 +192,7 @@ struct WireCase {
     /// carry no permission/dispatch event, so they reach only Active — seven for
     /// lack of such an event in the fixture, plus codewhale which is
     /// architecturally no-Waiting (its `ApprovalRequired` fires no hook, core
-    /// CLAUDE.md). The four richer rows carry a real permission (`Waiting`) or
+    /// architecture notes). The four richer rows carry a real permission (`Waiting`) or
     /// Task dispatch (`Delegating`). Registration alone was the only prior pin —
     /// this proves the wire drives the reducer to the RIGHT lifecycle state, not
     /// merely a slot.
@@ -495,7 +495,7 @@ fn agent_case(source: &str) -> WireCase {
 /// each DAEMON source has its own presence test (the openclaw lobster below).
 /// A newly registered source with no wire case FAILS here instead of silently
 /// shipping untested (the same "registration is not coverage" pin
-/// `supported_sources_manifest.rs` gives `site/src/sources.json`).
+/// the source registry gives the canonical supported-source set).
 #[test]
 fn wire_matrix_covers_every_registered_source() {
     use std::collections::BTreeSet;

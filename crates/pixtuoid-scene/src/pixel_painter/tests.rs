@@ -2133,41 +2133,6 @@ fn force_weather_sets_known_clears_none_and_errs_on_unknown() {
 }
 
 #[test]
-fn weather_gallery_manifest_matches_the_weather_enum() {
-    // site/src/weather.json drives the site's weather gallery AND the gen-media
-    // render loop; the `Weather` enum drives what actually renders. Site CI never
-    // runs the binary, so nothing else ties the two together — this test is the
-    // bridge: manifest ids must equal the canonical names, in order. (A new or
-    // renamed variant fails here until the manifest + `just gen-media` art
-    // are updated with it.)
-    let path = concat!(env!("CARGO_MANIFEST_DIR"), "/../../site/src/weather.json");
-    let json = match std::fs::read_to_string(path) {
-        Ok(s) => s,
-        // crates.io-packaged test runs don't ship the repo's site/ tree.
-        Err(_) => {
-            eprintln!("skipping: {path} not present (packaged build)");
-            return;
-        }
-    };
-    let manifest: Vec<serde_json::Value> =
-        serde_json::from_str(&json).expect("weather.json parses");
-    let ids: Vec<&str> = manifest
-        .iter()
-        .map(|w| {
-            w["id"]
-                .as_str()
-                .expect("weather.json entry has a string id")
-        })
-        .collect();
-    assert_eq!(
-        ids,
-        weather_names(),
-        "site/src/weather.json ids must match Weather::ALL names in order — \
-         update the manifest + run `just gen-media` when the enum changes"
-    );
-}
-
-#[test]
 fn agent_palette_outfit_is_keyed_by_cwd_not_id() {
     let base = Palette::default();
     // Same cwd, DIFFERENT agent ids.

@@ -1395,9 +1395,9 @@ mod teardown_tests {
 
 #[cfg(test)]
 mod runtime_model {
-    // Pins WHY #603 removed the wraps — see the tui/CLAUDE.md `block_on` sharp
-    // edge for the full model. Deterministic: worker_threads(1) + a std channel
-    // happens-before, no sleeps.
+    // Pins why #603 removed the wrappers: `block_in_place` is inert when the
+    // current task is already inside `block_on`. Deterministic: one worker plus
+    // a standard channel gives a happens-before edge without sleeps.
     #[test]
     fn block_in_place_is_inert_on_the_block_on_thread() {
         let rt = tokio::runtime::Builder::new_multi_thread()

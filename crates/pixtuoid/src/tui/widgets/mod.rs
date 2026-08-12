@@ -65,7 +65,7 @@ pub(crate) fn display_width(s: &str) -> usize {
 
 // --- Shared scene stats (spine 1: footer + board agree) -----------------------
 // The per-scene activity tally, the gateway rollup, and `compact_hms` moved to
-// the backend-agnostic `pixtuoid_scene::board` module so `pixtuoid-web` can build
+// the backend-agnostic `pixtuoid_scene::board` module so every painter can build
 // the wall board too (not just this binary). Re-exported here under their original
 // names, so the footer/board call sites are unchanged. `StateCounts` stays `pub`
 // (reachable via the pub `DrawCtx::per_floor` field, like its peer `FloorInfo`);

@@ -1,7 +1,7 @@
 //! Seat orientation + seated/standing character painting. `SeatView` is the
 //! single source of truth for how a waypoint occupant faces (sprite + flip +
 //! sit-down glide + z-key); `paint_character_at` is the shared recolor-blit.
-//! Extracted from mod.rs; see tui/CLAUDE.md ("How is the office rendered").
+//! Character seating and scale-aware sprite painting.
 
 use super::*;
 

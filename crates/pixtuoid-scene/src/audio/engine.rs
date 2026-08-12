@@ -1,6 +1,6 @@
 //! The per-frame audio engine — the ONE place the office's sound is advanced
 //! each tick, so the native rodio gateway (`pixtuoid`) and the wasm WebAudio
-//! painter (`pixtuoid-web`) run byte-identical mixing/crossfade/scheduling
+//! painter backend can run byte-identical mixing/crossfade/scheduling
 //! logic instead of two hand-kept-in-sync copies (#633 web-audio deepened the
 //! shared surface from just [`TrackSwitch`] to the whole tick).
 //!

@@ -20,7 +20,7 @@ A scenario ships the transports its source actually has: both files
 here is a registered source. Single-owner fixtures read by one module — decode's
 `sources/decode/fixtures/`, codex's `sources/codex/fixtures/`, render's
 `render/fixtures/` — live with their module, NOT here. See
-[`tests/CLAUDE.md`](../../CLAUDE.md) for the governing principle.)
+[`docs/ARCHITECTURE.md`](../../../../../docs/ARCHITECTURE.md) for the governing principle.)
 
 The harness, for each fixture dir:
 1. decodes the transcript lines (via the source's `LineDecoder`) and the hook
@@ -76,7 +76,7 @@ CC's hook `transcript_path` == its transcript via `{{TRANSCRIPT_PATH}}`).
   non-interactive `reasonix run` has no approval gate, so it never fires — that
   arm is unit-pinned in `source/reasonix.rs` instead (closes #135).
 - **`claude-code/proof-session/`** — the §3 site proof-split timeline: one root
-  session, Read → Edit → Bash over `site/src/components/ElevatorShaft.astro`,
+  session, Read → Edit → Bash over `crates/pixtuoid/src/floating/offscreen.rs`,
   self-referentially fixing the elevator-LED-lags-the-statusline desync (its
   own real bottom-clamp logic — see `Statusline.astro`'s `clampToLastFloorAtBottom`).
   ALSO read at render time by the `snapshot --proof` site-media renderer
