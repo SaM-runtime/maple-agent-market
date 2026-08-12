@@ -87,7 +87,7 @@ libc = "0.2"
 # activate API — so dependabot is told to ignore it (.github/dependabot.yml)
 # until winit itself moves.
 [target.'cfg(target_os = "macos")'.dependencies]
-objc2-app-kit = { version = "0.2.2", features = ["NSRunningApplication", "libc"] }
+objc2-app-kit = { version = "0.3.2", features = ["NSRunningApplication", "libc"] }
 
 # Focus-jump on Linux (focus/linux.rs): the EWMH _NET_ACTIVE_WINDOW protocol
 # needs an X11 client; x11rb is already in-tree transitively via winit — so this
