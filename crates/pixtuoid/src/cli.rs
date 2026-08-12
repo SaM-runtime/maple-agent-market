@@ -12,35 +12,16 @@ pub struct Cli {
     #[command(subcommand)]
     pub cmd: Option<Cmd>,
 
-    /// Log verbosity. The TUI always logs warn+ to a file
+    /// Log verbosity. The floating window logs warn+ to a file
     /// (~/.cache/pixtuoid/log, or $PIXTUOID_LOG /
     /// $XDG_STATE_HOME/pixtuoid/log); debug/trace raise the file's
-    /// verbosity. Non-TUI commands log to stderr at this level.
+    /// verbosity. Foreground CLI commands log to stderr at this level.
     /// ($RUST_LOG remains the escape hatch for full directive syntax.)
     #[arg(long, global = true, value_enum, default_value = "info")]
     pub log_level: LogLevel,
-
-    #[arg(long, global = true, help = theme_help())]
-    pub theme: Option<String>,
 }
 
-/// `--theme`'s help text, DERIVED from the `ALL_THEMES` registry rather than
-/// hand-copied: this clap tree is what `--help`, the generated shell completions
-/// AND the packaged man page all render from, so a stale enumeration would ship
-/// into three surfaces at once with nothing to catch it. The flag stays an
-/// untyped `Option<String>` on purpose — `config::resolve_theme` is the ONE place
-/// a theme name is validated.
-fn theme_help() -> String {
-    let names: Vec<&str> = pixtuoid_scene::theme::ALL_THEMES
-        .iter()
-        .map(|t| t.name)
-        .collect();
-    format!("Color theme: {}.", names.join(", "))
-}
-
-/// The source-input flags shared VERBATIM by `run` and `floating` (the two
-/// commands that wire sources → reducer → renderer). Flattened in via
-/// `#[command(flatten)]` so the four flags can't drift between the two commands.
+/// Source inputs for the floating window's source → reducer → renderer pipeline.
 #[derive(Debug, clap::Args)]
 pub struct SourceArgs {
     /// Empty/whitespace is rejected: an explicit override deserves a loud
@@ -50,7 +31,7 @@ pub struct SourceArgs {
     #[arg(long, value_hint = clap::ValueHint::DirPath)]
     pub projects_root: Option<PathBuf>,
     /// Override the Codex sessions root (default ~/.codex/sessions).
-    /// Point at a temp dir to replay fixtures into a headless run.
+    /// Point at a temp dir to replay fixtures into an isolated window.
     #[arg(long, value_hint = clap::ValueHint::DirPath)]
     pub codex_sessions_root: Option<PathBuf>,
     #[arg(long, value_hint = clap::ValueHint::DirPath)]
@@ -59,29 +40,12 @@ pub struct SourceArgs {
 
 #[derive(Debug, Subcommand)]
 pub enum Cmd {
-    /// Run the TUI (default if no subcommand given).
-    Run {
-        #[command(flatten)]
-        source: SourceArgs,
-        /// Cap desks per floor, ≥ 1 (auto-computed from terminal size if
-        /// unset). 0 is rejected: it would permanently zero every floor's
-        /// capacity and silently drop every agent (the boot atomics only
-        /// grow via fetch_max, gated on capacity > 0).
-        #[arg(long, hide = true, value_parser = clap::builder::RangedU64ValueParser::<usize>::new().range(1..))]
-        max_desks: Option<usize>,
-        /// Skip the TUI entirely — useful for CI / scripting.
-        /// Prints a one-line `agents=[label@desk:state, ...]` summary every
-        /// 200ms when it changes.
-        #[arg(long, default_value_t = false)]
-        headless: bool,
-    },
-    /// Render the live office in a frameless, always-on-top desktop window
-    /// (no TUI). Shares the same source flags as `run`.
+    /// Open the live Maple Agent Market desktop window (the default command).
     Floating {
         #[command(flatten)]
         source: SourceArgs,
     },
-    /// Install, import, list, and verify content-addressed local sprite packs.
+    /// Import, list, and verify content-addressed local sprite packs.
     Assets {
         /// Managed pack root. Defaults to the application's config directory.
         #[arg(long, global = true, value_hint = clap::ValueHint::DirPath)]
@@ -95,20 +59,11 @@ pub enum Cmd {
         #[arg(value_hint = clap::ValueHint::DirPath)]
         pack_dir: PathBuf,
     },
-    /// Extract a skeleton sprite pack to a directory for customization.
-    InitPack {
-        /// Destination directory (created if absent).
-        #[arg(value_hint = clap::ValueHint::DirPath)]
-        dest: PathBuf,
-        /// Overwrite existing files.
-        #[arg(long, default_value_t = false)]
-        force: bool,
-    },
     /// Diagnose source health: connection, hooks, and decode drift recorded in
     /// the log. Read-only.
     Doctor,
     /// List agent sources + their connection state, or apply a set. The
-    /// scriptable twin of the in-TUI Sources panel.
+    /// scriptable source-management surface for the floating window.
     Sources {
         #[command(subcommand)]
         action: Option<SourcesAction>,
@@ -119,7 +74,7 @@ pub enum Cmd {
         json: bool,
     },
     /// Connect one or more sources: install their hooks + persist the choice.
-    /// A running office reflects it on its next launch.
+    /// A running visualizer reflects it on its next launch.
     Connect {
         /// Source ids, e.g. `claude-code codex`.
         #[arg(required = true)]
@@ -135,38 +90,14 @@ pub enum Cmd {
         #[arg(long)]
         json: bool,
     },
-    /// First-run setup: detect installed agent CLIs and connect them — the headless
-    /// twin of the in-TUI onboarding (for CI and scripting). Without
-    /// `--yes` it's a DRY RUN that only prints what it would connect (writing to
-    /// another tool's config is opt-in).
+    /// Detect installed agent CLIs and optionally connect them. Without `--yes`
+    /// this is a dry run; writing another tool's hook config remains opt-in.
     Setup {
         /// Apply: actually connect the detected CLIs (install their hooks). Without
         /// it, `setup` only previews the detected set.
         #[arg(long)]
         yes: bool,
     },
-    /// Print a shell completion script to stdout, e.g.
-    /// `pixtuoid completions zsh > ~/.zfunc/_pixtuoid`. Package managers install
-    /// these automatically; this command lets `cargo install` / `npm` users do it
-    /// themselves for any shell.
-    // A `///` here would be SHIPPED PRODUCT COPY (clap renders it as this
-    // subcommand's long help), so the maintainer note stays a `//`.
-    // homebrew-core contract: their `install` block calls
-    // `generate_completions_from_executable(bin/"pixtuoid", "completions")`, so
-    // renaming this subcommand breaks their BUILD (not just a test) on the next
-    // autobump. The same applies to `Man`, which carries its own note.
-    Completions {
-        /// Target shell.
-        shell: clap_complete::Shell,
-    },
-    /// Print the roff man page to stdout (`pixtuoid man > pixtuoid.1`). A
-    /// packaging interface — generated from the same clap definitions as `--help`.
-    // `hide = true` drops this from the PARENT listing, not from `pixtuoid man
-    // --help`, so this note is a `//` for the same reason `Completions`' is.
-    // homebrew-core's `install` captures this via `Utils.safe_popen_read` — see
-    // the contract note on `Completions`.
-    #[command(hide = true)]
-    Man,
 }
 
 #[derive(Debug, Subcommand)]
@@ -182,19 +113,8 @@ pub enum SourcesAction {
 
 #[derive(Debug, Subcommand)]
 pub enum AssetsAction {
-    /// List the bundled public pack and locally installed packs.
+    /// List locally imported packs.
     List {
-        /// Emit machine-readable JSON.
-        #[arg(long)]
-        json: bool,
-    },
-    /// Install a bundled, redistributable pack by id.
-    Install {
-        /// Pack id. The initial public catalog contains `public-classic`.
-        id: String,
-        /// Replace an existing managed installation of the same id.
-        #[arg(long, default_value_t = false)]
-        force: bool,
         /// Emit machine-readable JSON.
         #[arg(long)]
         json: bool,
@@ -257,20 +177,17 @@ impl LogLevel {
 }
 
 impl Cli {
-    pub fn cmd_or_default(self) -> (LogLevel, Option<String>, Cmd) {
+    pub fn cmd_or_default(self) -> (LogLevel, Cmd) {
         let level = self.log_level;
-        let theme = self.theme;
-        let cmd = self.cmd.unwrap_or(Cmd::Run {
+        let cmd = self.cmd.unwrap_or(Cmd::Floating {
             source: SourceArgs {
                 socket: None,
                 projects_root: None,
                 codex_sessions_root: None,
                 pack_dir: None,
             },
-            max_desks: None,
-            headless: false,
         });
-        (level, theme, cmd)
+        (level, cmd)
     }
 }
 
@@ -302,7 +219,8 @@ mod tests {
         // An explicit override deserves a loud answer: bind("") would die
         // late with an opaque error and strand a relative `.lock` in the CWD.
         for v in ["", "   "] {
-            let err = Cli::try_parse_from(["pixtuoid", "run", "--socket", v]).unwrap_err();
+            let err =
+                Cli::try_parse_from(["maple-agent-market", "floating", "--socket", v]).unwrap_err();
             assert_eq!(err.kind(), clap::error::ErrorKind::ValueValidation);
         }
     }
@@ -314,15 +232,6 @@ mod tests {
         // ValueEnum makes it a loud clap error at the seam.
         let err = Cli::try_parse_from(["pixtuoid", "--log-level", "dbug"]).unwrap_err();
         assert_eq!(err.kind(), clap::error::ErrorKind::InvalidValue);
-    }
-
-    #[test]
-    fn max_desks_zero_is_a_hard_parse_error() {
-        // 0 would permanently zero every floor's capacity (the per-frame
-        // re-seed guards `> 0`, so the atomics never grow) — every agent
-        // silently dropped. Rejected at the clap seam.
-        let err = Cli::try_parse_from(["pixtuoid", "run", "--max-desks", "0"]).unwrap_err();
-        assert_eq!(err.kind(), clap::error::ErrorKind::ValueValidation);
     }
 
     #[test]
@@ -348,35 +257,14 @@ mod tests {
     }
 
     #[test]
-    fn max_desks_positive_parses() {
-        let cli = Cli::try_parse_from(["pixtuoid", "run", "--max-desks", "4"]).unwrap();
-        assert!(matches!(
-            cli.cmd,
-            Some(Cmd::Run {
-                max_desks: Some(4),
-                ..
-            })
-        ));
-    }
-
-    #[test]
-    fn cmd_or_default_returns_run_when_no_subcommand() {
+    fn cmd_or_default_returns_floating_when_no_subcommand() {
         let cli = Cli {
             cmd: None,
             log_level: LogLevel::Info,
-            theme: None,
         };
-        let (level, theme, cmd) = cli.cmd_or_default();
+        let (level, cmd) = cli.cmd_or_default();
         assert_eq!(level, LogLevel::Info);
-        assert!(theme.is_none());
-        assert!(matches!(
-            cmd,
-            Cmd::Run {
-                headless: false,
-                max_desks: None,
-                ..
-            }
-        ));
+        assert!(matches!(cmd, Cmd::Floating { .. }));
     }
 
     #[test]
@@ -386,11 +274,9 @@ mod tests {
                 pack_dir: PathBuf::from("/some/pack"),
             }),
             log_level: LogLevel::Debug,
-            theme: Some("cyberpunk".into()),
         };
-        let (level, theme, cmd) = cli.cmd_or_default();
+        let (level, cmd) = cli.cmd_or_default();
         assert_eq!(level, LogLevel::Debug);
-        assert_eq!(theme.as_deref(), Some("cyberpunk"));
         assert!(matches!(cmd, Cmd::ValidatePack { .. }));
     }
 
@@ -494,21 +380,6 @@ mod tests {
             })
         ));
 
-        let install =
-            Cli::try_parse_from(["pixtuoid", "assets", "install", "public-classic", "--force"])
-                .unwrap();
-        assert!(matches!(
-            install.cmd,
-            Some(Cmd::Assets {
-                action: AssetsAction::Install {
-                    id,
-                    force: true,
-                    ..
-                },
-                ..
-            }) if id == "public-classic"
-        ));
-
         let import = Cli::try_parse_from([
             "pixtuoid",
             "assets",
@@ -545,111 +416,5 @@ mod tests {
                 ..
             })
         ));
-    }
-
-    #[test]
-    fn completions_takes_a_shell_value() {
-        let c = Cli::try_parse_from(["pixtuoid", "completions", "zsh"]).unwrap();
-        assert!(matches!(
-            c.cmd,
-            Some(Cmd::Completions {
-                shell: clap_complete::Shell::Zsh
-            })
-        ));
-        // A bogus shell is a hard parse error (typed ValueEnum), not a runtime bail.
-        assert!(Cli::try_parse_from(["pixtuoid", "completions", "nonsense"]).is_err());
-    }
-
-    /// `--theme`'s help must be DERIVED from `ALL_THEMES`, never a hand-copied
-    /// enumeration: `cli.rs` is the tree `completions` and `man` render from, so a
-    /// stale copy ships into installed shell completions and the packaged man page.
-    #[test]
-    fn theme_help_names_every_registered_theme() {
-        use clap::CommandFactory;
-        let cmd = Cli::command();
-        let help = cmd
-            .get_arguments()
-            .find(|a| a.get_id() == "theme")
-            .and_then(|a| a.get_help())
-            .map(ToString::to_string)
-            .expect("--theme carries help text");
-        for t in pixtuoid_scene::theme::ALL_THEMES {
-            assert!(
-                help.contains(t.name),
-                "--theme help omits the registered theme {:?} — it must read the \
-                 ALL_THEMES authority, not a copy",
-                t.name
-            );
-        }
-    }
-
-    /// A `///` on a clap variant is not a code comment — it is SHIPPED PRODUCT
-    /// COPY (clap renders it as that subcommand's long help). Maintainer-only
-    /// notes belong on `//`, on hidden variants too: `hide = true` drops a
-    /// subcommand from the PARENT listing, never from its own `--help`.
-    #[test]
-    fn packaging_subcommand_help_carries_no_maintainer_only_prose() {
-        use clap::CommandFactory;
-        let mut cmd = Cli::command();
-        for name in ["completions", "man"] {
-            let help = cmd
-                .find_subcommand_mut(name)
-                .expect("subcommand exists")
-                .render_long_help()
-                .to_string()
-                .to_lowercase();
-            for marker in [
-                "homebrew",
-                "autobump",
-                "generate_completions_from_executable",
-            ] {
-                assert!(
-                    !help.contains(marker),
-                    "`pixtuoid {name} --help` leaks the maintainer note {marker:?} to end users"
-                );
-            }
-        }
-    }
-
-    /// The packaging guard (ripgrep's zsh-coverage check analogue): a clap-derive
-    /// change can't silently ship a binary whose generated completions/man are
-    /// empty or miss a subcommand. Cheap — generate into a buffer in-process.
-    #[test]
-    fn completions_and_man_generate_non_empty_and_cover_subcommands() {
-        use clap::CommandFactory;
-
-        for shell in [
-            clap_complete::Shell::Bash,
-            clap_complete::Shell::Zsh,
-            clap_complete::Shell::Fish,
-        ] {
-            let mut buf = Vec::new();
-            clap_complete::generate(shell, &mut Cli::command(), "maple-agent-market", &mut buf);
-            let script = String::from_utf8(buf).expect("completion script is utf-8");
-            assert!(!script.is_empty(), "{shell:?} completion script is empty");
-            // A representative subcommand from across the tree must be present, so a
-            // dropped/renamed subcommand trips this rather than shipping silently.
-            assert!(
-                script.contains("floating") && script.contains("doctor"),
-                "{shell:?} completion script is missing a known subcommand"
-            );
-        }
-
-        let mut man = Vec::new();
-        clap_mangen::Man::new(Cli::command())
-            .render(&mut man)
-            .expect("man render");
-        let man = String::from_utf8(man).expect("man page is utf-8");
-        assert!(
-            man.contains("maple-agent-market"),
-            "man page missing program name"
-        );
-        // Same dropped-subcommand teeth as the completions loop: clap_mangen
-        // renders a SUBCOMMANDS section, so a removed/renamed subcommand trips this
-        // rather than shipping a man page that silently lost it.
-        assert!(
-            man.contains("doctor"),
-            "man page SUBCOMMANDS section is missing a known subcommand"
-        );
     }
 }

@@ -104,19 +104,18 @@ fn rejects_palette_value_not_six_hex_digits() {
 }
 
 #[test]
-fn validate_reports_insufficient_frames_for_single_frame_typing() {
-    // `typing` requires >= 2 frames (MULTI_FRAME_REQUIREMENTS). A 1-frame
-    // typing animation must populate insufficient_frames and set has_errors().
+fn validate_reports_incomplete_supplied_maple_cycle() {
     let pack_toml = "[pack]\nname=\"x\"\nversion=\"1\"\n\
          [palette]\n\"A\"=\"#010203\"\n\
-         [animations.typing]\nframes=[\"t.sprite\"]\nframe_ms=100\n";
+         [animations.training_skill_holy_light]\n\
+         frames=[\"t.sprite\",\"t.sprite\",\"t.sprite\"]\nframe_ms=100\n";
     let pack = load_pack_from_strings(pack_toml, &[("t.sprite", "@frame 0\nA")]).unwrap();
     let report = validate_pack_animations(&pack);
     assert!(
         report
             .insufficient_frames
-            .contains(&("typing".to_string(), 2, 1)),
-        "single-frame typing must report (typing, 2, 1); got: {:?}",
+            .contains(&("training_skill_holy_light".to_string(), 4, 3)),
+        "an incomplete supplied skill cycle must be rejected; got: {:?}",
         report.insufficient_frames
     );
     assert!(report.has_errors());
@@ -138,98 +137,13 @@ fn missing_animation_returns_none() {
 }
 
 #[test]
-fn default_pack_loads_with_required_animations() {
+fn default_pack_is_metadata_only_and_valid() {
     let pack = load_pack(Path::new("../pixtuoid-scene/sprites/default")).unwrap();
-    for name in &[
-        "seated",
-        "typing",
-        "standing",
-        "walking",
-        "desk",
-        "plant",
-        "pantry",
-        "whiteboard",
-        "bookshelf",
-    ] {
-        assert!(pack.animation(name).is_some(), "missing animation: {name}");
-    }
-    let seated = pack.animation("seated").unwrap();
-    assert_eq!(seated.frames[0].width(), 8);
-    assert_eq!(seated.frames[0].height(), 10);
-
-    let standing = pack.animation("standing").unwrap();
-    assert_eq!(standing.frames[0].width(), 8);
-    assert_eq!(standing.frames[0].height(), 12);
-
-    let walking = pack.animation("walking").unwrap();
-    assert_eq!(walking.frames.len(), 2);
-}
-
-#[test]
-fn default_pack_passes_validation() {
-    let pack = load_pack(Path::new("../pixtuoid-scene/sprites/default")).unwrap();
+    assert_eq!(pack.name, "Maple Agent Market Original");
+    assert!(pack.animation_names().is_empty());
     let report = validate_pack_animations(&pack);
-    assert!(
-        report.missing_required.is_empty(),
-        "missing required: {:?}",
-        report.missing_required
-    );
-    assert!(
-        report.insufficient_frames.is_empty(),
-        "insufficient frames: {:?}",
-        report.insufficient_frames
-    );
-}
-
-#[test]
-fn robot_pack_passes_validation() {
-    let pack = load_pack(Path::new("../pixtuoid/sprites/robot")).unwrap();
-    let report = validate_pack_animations(&pack);
-    assert!(
-        report.missing_required.is_empty(),
-        "missing required: {:?}",
-        report.missing_required
-    );
-    assert!(
-        report.insufficient_frames.is_empty(),
-        "insufficient frames: {:?}",
-        report.insufficient_frames
-    );
-    // The bridge the side_seated drift slipped through: every animation a
-    // bundled pack ships must be IN the registry, or validate-pack falsely
-    // reports it "unused by renderer" to every pack author.
-    assert!(
-        report.unknown.is_empty(),
-        "bundled-pack animation missing from the registry: {:?}",
-        report.unknown
-    );
-}
-
-#[test]
-fn skeleton_pack_passes_validation() {
-    let pack = load_pack(Path::new("../pixtuoid/sprites/skeleton")).unwrap();
-    let report = validate_pack_animations(&pack);
-    assert!(
-        report.missing_required.is_empty(),
-        "missing required: {:?}",
-        report.missing_required
-    );
-    assert!(
-        report.unknown.is_empty(),
-        "bundled-pack animation missing from the registry: {:?}",
-        report.unknown
-    );
-}
-
-#[test]
-fn mini_pack_reports_missing_required() {
-    let pack = load_pack(Path::new("tests/render/fixtures/mini_pack")).unwrap();
-    let report = validate_pack_animations(&pack);
-    assert!(
-        !report.missing_required.is_empty(),
-        "mini pack should be missing required animations"
-    );
-    assert!(report.has_errors());
+    assert!(!report.has_errors());
+    assert!(report.unknown.is_empty());
 }
 
 #[test]
@@ -291,52 +205,52 @@ fn load_pack_rejects_absolute_frame_path_escaping_dir() {
 
 #[test]
 fn merge_from_inherits_furniture_only_and_never_clobbers_own() {
-    // base: a furniture anim custom lacks (plant), a furniture anim custom owns
-    // (desk, wider here), and a REQUIRED_CHARACTER anim (standing).
+    // Base: one map plate the custom lacks, one it owns, and an optional
+    // character set. Map layers may merge; actor identity never does.
     let base_dir = tempfile::TempDir::new().unwrap();
     write_pack_files(
         base_dir.path(),
         "[pack]\nname=\"base\"\nversion=\"1\"\n[palette]\n\".\"=\"transparent\"\n\"A\"=\"#010203\"\n\
-         [animations.desk]\nframes=[\"d.sprite\"]\nframe_ms=100\n\
-         [animations.plant]\nframes=[\"p.sprite\"]\nframe_ms=100\n\
-         [animations.standing]\nframes=[\"s.sprite\"]\nframe_ms=100\n",
+         [animations.scene_background]\nframes=[\"d.sprite\"]\nframe_ms=100\n\
+         [animations.training_background]\nframes=[\"p.sprite\"]\nframe_ms=100\n\
+         [animations.market_avatar]\nframes=[\"s.sprite\"]\nframe_ms=100\n",
         &[
             ("d.sprite", "@frame 0\nA A"),
             ("p.sprite", "@frame 0\nA"),
             ("s.sprite", "@frame 0\nA"),
         ],
     );
-    // custom: owns a 1-wide desk; lacks plant (furniture) and standing (character).
+    // Custom owns a one-pixel market plate and lacks the training plate/actor.
     let custom_dir = tempfile::TempDir::new().unwrap();
     write_pack_files(
         custom_dir.path(),
         "[pack]\nname=\"custom\"\nversion=\"1\"\n[palette]\n\".\"=\"transparent\"\n\"A\"=\"#010203\"\n\
-         [animations.desk]\nframes=[\"d.sprite\"]\nframe_ms=100\n",
+         [animations.scene_background]\nframes=[\"d.sprite\"]\nframe_ms=100\n",
         &[("d.sprite", "@frame 0\nA")],
     );
 
     let base = load_pack(base_dir.path()).unwrap();
     let mut custom = load_pack(custom_dir.path()).unwrap();
-    assert_eq!(custom.animation("desk").unwrap().frames[0].width(), 1);
+    assert_eq!(
+        custom.animation("scene_background").unwrap().frames[0].width(),
+        1
+    );
 
     custom.merge_from(&base);
 
-    // Own `desk` preserved (NOT clobbered by base's 2-wide desk).
+    // The custom market plate is not clobbered by the base's wider plate.
     assert_eq!(
-        custom.animation("desk").unwrap().frames[0].width(),
+        custom.animation("scene_background").unwrap().frames[0].width(),
         1,
         "merge_from must not overwrite an animation the custom pack already defines"
     );
-    // Furniture anim absent from custom is inherited from base.
     assert!(
-        custom.animation("plant").is_some(),
-        "missing OPTIONAL_FURNITURE anim should be inherited"
+        custom.animation("training_background").is_some(),
+        "a missing optional map layer should be inherited"
     );
-    // REQUIRED_CHARACTER anim is NEVER inherited (a robot pack must not show
-    // human sprites for poses it lacks).
     assert!(
-        custom.animation("standing").is_none(),
-        "REQUIRED_CHARACTER anim must never be inherited via merge_from"
+        custom.animation("market_avatar").is_none(),
+        "an actor set must never be inherited from another pack"
     );
 }
 

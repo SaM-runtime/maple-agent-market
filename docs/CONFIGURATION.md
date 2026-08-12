@@ -1,73 +1,58 @@
 # 設定
 
-Maple Agent Market 沿用 Pixtuoid 的設定位置：
+為了讓既有使用者平順升級，設定目錄仍使用相容路徑：
 
 - Windows：`%USERPROFILE%\.config\pixtuoid\config.toml`
-- macOS／Linux：`~/.config/pixtuoid/config.toml`，並遵守 `XDG_CONFIG_HOME`
+- macOS / Linux：`~/.config/pixtuoid/config.toml`
+- 設定了絕對路徑 `XDG_CONFIG_HOME` 時：`$XDG_CONFIG_HOME/pixtuoid/config.toml`
 
-所有欄位都可省略。CLI 參數優先於設定檔。
-
-## 建議起始設定
+現行產品只讀四類設定：頂層 `pack-dir`、`[sources]`、`[floating]` 與 `[audio]`。舊辦公室的 `theme`、`max-desks`、`pets`、`last-seen-version` 等 key 會被忽略，不會重新啟用已移除功能。
 
 ```toml
-theme = "maple"
-# pack-dir = "C:/Users/you/.config/pixtuoid/packs/my-local-pack"
+pack-dir = "C:/team/authorized-pack"
+
+[sources]
+codex = true
+claude-code = false
 
 [floating]
-width = 1280
-height = 560
+width = 720
+height = 480
+x = 120
+y = 80
+opacity = 1.0
 
 [audio]
 muted = true
 volume = 0.35
-# bgm-path = "C:/Music/your-licensed-track.mp3"
+bgm-path = "C:/Music/your-licensed-track.mp3"
 ```
 
-`[floating]` 的位置與尺寸會在關閉視窗時更新。太小的數值會被夾到安全下限；也可在視窗內按 `z` 切換尺寸預設。
+## 行為
 
-## 常用欄位
+- 視窗預設為 `360 x 240`，最小 `240 x 160`。
+- `opacity` 會限制在 `0.2..1.0`。
+- 音訊預設靜音；`volume` 會限制在 `0.0..1.0`。
+- `bgm-path` 只讀本機 MP3、WAV、OGG 或 FLAC，不會下載遠端內容。
+- CLI 的 `--pack-dir` 優先於設定檔。
+- malformed config 只會回到安全預設並發出警告，不會覆寫原檔。
 
-| 欄位 | 說明 |
-|---|---|
-| `theme = "maple"` | 使用 Maple Agent Market 雙地圖主題 |
-| `pack-dir` | 使用者自己的本機 sprite pack；支援 `~` 展開 |
-| `max-desks` | TUI 每層最多座位數；floating 會依視窗大小配置 |
-| `[floating].width/height/x/y` | 浮動視窗幾何資訊 |
-| `[audio].muted` | 是否靜音；可在視窗按 `m` 切換 |
-| `[audio].volume` | `0.0` 到 `1.0`；可按 `+`／`-` 調整 |
-| `[audio].bgm-path` | 本機 MP3、WAV、OGG 或 FLAC；不支援 YouTube 下載或串流 |
-| `[sources]` | `connect`／`disconnect` 寫入的 agent source 開關 |
+視窗位置、大小、靜音和音量會在操作後寫回設定。`sources`、`connect` 與 `disconnect` 會維持既有註解與不認識的 sibling key。
 
-`last-seen-version` 也是系統管理欄位，用來避免同一版更新訊息重複出現，不建議手動修改。
-
-## 自訂 sprite pack
+## CLI 與環境變數
 
 ```powershell
-.\target\debug\pixtuoid.exe init-pack .\my-local-pack
-.\target\debug\pixtuoid.exe validate-pack .\my-local-pack
-.\target\debug\pixtuoid.exe --theme maple floating --pack-dir .\my-local-pack
+.\target\debug\maple-agent-market.exe sources
+.\target\debug\maple-agent-market.exe doctor
+.\target\debug\maple-agent-market.exe floating --pack-dir C:\team\authorized-pack
 ```
 
-repo 內的 `crates/pixtuoid/sprites/skeleton/` 是格式範本。使用者素材、轉換結果、preview、cache 與 BGM 必須放在 repo 外，除非它們具有可驗證的公開再散布授權。
+進階顯示調整保留上游相容環境變數：
 
-Windows 也提供 `tools/windows/MapleSkinWorkshop.psm1` 協助建立與驗證本機角色 pack；其測試位於 `tools/windows/tests/`。
+- `PIXTUOID_LABEL_SCALE`：字卡比例，限制在 `0.75..2.0`。
+- `PIXTUOID_FLOATING_SCALE`：整數 pixel scale，限制在 `1..8`。
+- `PIXTUOID_CJK_FONT`：指定本機 CJK 字型檔。
+- `PIXTUOID_LOG`：指定 log 檔位置。
+- `PIXTUOID_HOOK`：指定 `pixtuoid-hook` 絕對路徑。
 
-## 素材管理器
-
-```powershell
-.\target\debug\pixtuoid.exe assets list
-.\target\debug\pixtuoid.exe assets install public-classic
-.\target\debug\pixtuoid.exe assets import C:\team\authorized-pack --id team-pack
-.\target\debug\pixtuoid.exe assets verify team-pack --expect <64位SHA-256>
-```
-
-managed packs 預設位於設定目錄下的 `packs/`；所有子命令都可在 `assets` 後加上 `--root <PATH>` 使用隔離位置。安裝／匯入結果會印出可直接傳給 `--pack-dir` 的路徑。完整協作流程見 [`ASSET_COLLABORATION.md`](ASSET_COLLABORATION.md)。
-
-## 診斷
-
-```powershell
-.\target\debug\pixtuoid.exe sources
-.\target\debug\pixtuoid.exe doctor
-```
-
-一般紀錄位於 `~/.cache/pixtuoid/log`，crash 紀錄位於 `~/.cache/pixtuoid/crash.log`。可用 `PIXTUOID_LOG` 指定其他 log 路徑。
+這些名稱是 wire / config 相容層，不代表舊 Pixtuoid UI 仍存在。

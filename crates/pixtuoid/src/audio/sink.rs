@@ -82,7 +82,7 @@ pub(crate) mod rodio_sink {
             // recovered. rodio's `tracing` feature (Cargo.toml) routes a MID-SESSION
             // stream error (device unplugged, sample-rate change) — fired on the
             // audio thread — to `tracing::error!` instead of the default callback's
-            // `eprintln!`, which mid-altscreen would corrupt the TUI. rodio 0.22 has
+            // `eprintln!`, which would bypass the floating window's file log. rodio 0.22 has
             // no reconnect, so this is observability, not recovery — audio just goes
             // silent, now logged. `with_stderr_silenced` still wraps the call for
             // ALSA's C-level fd-2 chatter (below rodio's Rust logging).
@@ -138,9 +138,8 @@ pub(crate) mod rodio_sink {
     }
 
     /// Run `f` with fd 2 pointed at /dev/null (Unix): ALSA and friends
-    /// print raw diagnostics to stderr during device open, and with the
-    /// lazy spawn that happens MID-ALTSCREEN — one stray line corrupts the
-    /// TUI (lowfi's first-ever issue was exactly this). rodio's own logs
+    /// print raw diagnostics to stderr during device open. Keep those messages
+    /// inside the application's tracing log. rodio's own logs
     /// are already off via `log_on_drop(false)`.
     #[cfg(unix)]
     fn with_stderr_silenced<T>(f: impl FnOnce() -> T) -> T {

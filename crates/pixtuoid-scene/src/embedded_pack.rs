@@ -57,32 +57,17 @@ fn xdg_config_base(xdg: Option<std::ffi::OsString>, home: Option<PathBuf>) -> Op
         .or_else(|| home.map(|h| h.join(".config")))
 }
 
-/// Log a custom pack's animation-validation gaps at load time. A pack missing
-/// a required character pose — or carrying an empty `frames = []` entry —
-/// LOADS fine and then renders those poses as NOTHING (`paint_character_at`
-/// early-returns on an absent/empty animation), so without this the only
-/// signal is agents silently vanishing whenever they sleep / sit on a couch.
-/// `pixtuoid validate-pack` reports the same facts, but nothing forces a pack
-/// author to run it. Warn, don't fail: a partially-authored pack still
-/// renders every pose it does carry. Runs AFTER `merge_from` so furniture
-/// inherited from the embedded default isn't misreported as missing.
+/// Warn when a supplied optional animation is incomplete. Missing animations
+/// are valid because every public Maple layer has a programmatic fallback.
 fn warn_pack_validation_gaps(pack: &Pack, origin: &str) -> ValidationReport {
     let report = validate_pack_animations(pack);
-    for name in &report.missing_required {
-        tracing::warn!(
-            origin,
-            animation = %name,
-            "custom sprite pack is missing a REQUIRED character animation — \
-             agents will be invisible in that pose (run `pixtuoid validate-pack`)"
-        );
-    }
     for (name, min, got) in &report.insufficient_frames {
         tracing::warn!(
             origin,
             animation = %name,
             min,
             got,
-            "custom sprite pack animation has too few frames — it will render as nothing"
+            "custom Maple pack animation has too few frames — the built-in fallback remains active"
         );
     }
     report
@@ -131,94 +116,14 @@ pub fn load_sprite_pack(pack_dir: Option<PathBuf>) -> Result<Pack> {
 /// come through here, never a bare `load_sprite_pack(None)`.
 #[cfg(test)]
 pub(crate) fn test_default_pack() -> Pack {
-    let _env = crate::TEST_ENV_LOCK
-        .lock()
-        .unwrap_or_else(|e| e.into_inner());
-    load_sprite_pack(None).expect("default pack loads")
+    test_fixture_pack("fixture.sprite")
 }
 
 fn load_embedded_pack() -> Result<Pack> {
-    load_pack_from_strings(
-        include_str!("../sprites/default/pack.toml"),
-        &embedded_sprite_srcs(),
-    )
-}
-
-/// Every default sprite as `(filename, source)`. The macro expands each entry to
-/// `("<name>", include_str!(concat!("../sprites/default/", "<name>")))`, so a new
-/// sprite is a SINGLE line — not a `let`-binding AND a matching tuple entry that
-/// can silently drift. Extracted (vs inlined in [`load_embedded_pack`]) so the
-/// wide-pack test fixture ([`test_wide_pack`]) reuses the EXACT sprite set and
-/// only overrides `standing.sprite`; `build.rs` still emits per-file rerun-if-changed.
-fn embedded_sprite_srcs() -> Vec<(&'static str, &'static str)> {
-    macro_rules! embedded_sprites {
-        ($($name:literal),+ $(,)?) => {
-            vec![$(($name, include_str!(concat!("../sprites/default/", $name)))),+]
-        };
-    }
-    embedded_sprites![
-        "seated.sprite",
-        "side_seated.sprite",
-        "typing_0.sprite",
-        "typing_1.sprite",
-        "standing.sprite",
-        "walking_0.sprite",
-        "walking_1.sprite",
-        "walking_back_0.sprite",
-        "walking_back_1.sprite",
-        "walking_coffee_0.sprite",
-        "walking_coffee_1.sprite",
-        "desk.sprite",
-        "plant.sprite",
-        "plant_tall.sprite",
-        "plant_flower.sprite",
-        "plant_succulent.sprite",
-        "floor_lamp.sprite",
-        "door.sprite",
-        "door_half.sprite",
-        "door_open.sprite",
-        "bulletin_board.sprite",
-        "exit_sign.sprite",
-        "filing_cabinet.sprite",
-        "cat_walk_0.sprite",
-        "cat_walk_1.sprite",
-        "cat_sit.sprite",
-        "cat_sleep.sprite",
-        "dog_walk_0.sprite",
-        "dog_walk_1.sprite",
-        "dog_sit.sprite",
-        "dog_sleep.sprite",
-        "lobster_walk_0.sprite",
-        "lobster_walk_1.sprite",
-        "lobster_rest.sprite",
-        "meeting_sofa.sprite",
-        "meeting_screen.sprite",
-        "back_couch.sprite",
-        "seated_sleeping.sprite",
-        "seated_sleeping_alt.sprite",
-        "holding_coffee.sprite",
-        "pantry.sprite",
-        "pantry_small.sprite",
-        "whiteboard.sprite",
-        "bookshelf.sprite",
-        "snack_shelf.sprite",
-        "tv_stand.sprite",
-        "phone_booth.sprite",
-        "standing_desk.sprite",
-    ]
-}
-
-/// Exact redistributable default-pack sources embedded in the binary.
-///
-/// This is an in-workspace extraction seam for the asset manager. It returns
-/// the same bytes [`load_embedded_pack`] consumes, so an installed
-/// `public-classic` pack cannot drift from the standalone fallback renderer.
-#[doc(hidden)]
-pub fn embedded_default_pack_sources() -> Vec<(&'static str, &'static str)> {
-    let mut files = Vec::with_capacity(1 + embedded_sprite_srcs().len());
-    files.push(("pack.toml", include_str!("../sprites/default/pack.toml")));
-    files.extend(embedded_sprite_srcs());
-    files
+    // The public clean-clone pack is deliberately metadata-only. All visible
+    // Maple elements have an original procedural painter; local packs may add
+    // optional animation overrides at runtime.
+    load_pack_from_strings(include_str!("../sprites/default/pack.toml"), &[])
 }
 
 /// The default pack with a 10px-wide `standing` frame (robot packs go up to 10)
@@ -247,14 +152,139 @@ pub(crate) fn test_wide_pack() -> Pack {
 . . P P P P P P . .
 . . P . . . . P . .
 ";
-    let mut srcs = embedded_sprite_srcs();
-    for entry in &mut srcs {
-        if entry.0 == "standing.sprite" {
-            entry.1 = WIDE_STANDING;
-        }
+    let toml = test_fixture_pack_toml("wide.sprite");
+    load_pack_from_strings(
+        &toml,
+        &[
+            ("fixture.sprite", TEST_FIXTURE_SPRITE),
+            ("wide.sprite", WIDE_STANDING),
+        ],
+    )
+    .expect("wide test pack loads")
+}
+
+#[cfg(test)]
+const TEST_FIXTURE_SPRITE: &str = "\
+@frame 0
+. . H H H H . .
+. H H H H H H .
+. H S S S S H .
+. S e S S e S .
+. . S S S S . .
+. . B B B B . .
+. B B B B B B .
+. . P P P P . .
+. . P . . P . .
+. . P . . P . .
+. . n . . n . .
+. . . . . . . .
+@frame 1
+. . H H H H . .
+. H H H H H H .
+. H S S S S H .
+. S e S S e S .
+. . S S S S . .
+. . B B B B . .
+. B B B B B B .
+. . P P P P . .
+. P P . . P . .
+. P . . . P . .
+. n . . . n . .
+. . . . . . . .
+@frame 2
+. . H H H H . .
+. H H H H H H .
+. H S S S S H .
+. S e S S e S .
+. . S S S S . .
+. . B B B B . .
+. B B B B B B .
+. . P P P P . .
+. . P . . P P .
+. . P . . . P .
+. . n . . . n .
+. . . . . . . .
+@frame 3
+. . H H H H . .
+. H H H H H H .
+. H S S S S H .
+. S e S S e S .
+. . S S S S . .
+. . B B B B . .
+. B B B B B B .
+. . P P P P . .
+. . P P P P . .
+. . P . . P . .
+. . n . . n . .
+. . . . . . . .
+";
+
+#[cfg(test)]
+fn test_fixture_pack(standing: &str) -> Pack {
+    let toml = test_fixture_pack_toml(standing);
+    load_pack_from_strings(&toml, &[("fixture.sprite", TEST_FIXTURE_SPRITE)])
+        .expect("test compatibility pack loads")
+}
+
+#[cfg(test)]
+fn test_fixture_pack_toml(standing: &str) -> String {
+    let names = [
+        "seated",
+        "side_seated",
+        "typing",
+        "standing",
+        "walking",
+        "walking_back",
+        "walking_coffee",
+        "seated_sleeping",
+        "seated_sleeping_alt",
+        "holding_coffee",
+        "back_couch",
+        "desk",
+        "filing_cabinet",
+        "plant",
+        "plant_tall",
+        "plant_flower",
+        "plant_succulent",
+        "floor_lamp",
+        "door",
+        "cat_walk",
+        "cat_sit",
+        "cat_sleep",
+        "dog_walk",
+        "dog_sit",
+        "dog_sleep",
+        "lobster_walk",
+        "lobster_rest",
+        "meeting_sofa",
+        "meeting_screen",
+        "pantry",
+        "pantry_small",
+        "whiteboard",
+        "bookshelf",
+        "snack_shelf",
+        "tv_stand",
+        "phone_booth",
+        "standing_desk",
+        "bulletin_board",
+        "exit_sign",
+    ];
+    let mut out = String::from(
+        "[pack]\nname = \"test-compatibility\"\nversion = \"1\"\n\n[palette]\n\
+         \".\" = \"transparent\"\nH = \"#443322\"\nS = \"#e8c090\"\n\
+         B = \"#4488cc\"\nP = \"#334455\"\ne = \"#202020\"\nn = \"#664422\"\nm = \"#aa6655\"\n",
+    );
+    for name in names {
+        let file = if name == "standing" {
+            standing
+        } else {
+            "fixture.sprite"
+        };
+        out.push_str(&format!(
+            "\n[animations.{name}]\nframes = [\"{file}\"]\nframe_ms = 200\n"
+        ));
     }
-    load_pack_from_strings(include_str!("../sprites/default/pack.toml"), &srcs)
-        .expect("wide test pack loads")
+    out
 }
 
 #[cfg(test)]
@@ -310,42 +340,39 @@ mod tests {
         assert_eq!(xdg_config_base(None, None), None);
     }
 
-    /// Copy this crate's char-only pack fixture (a valid, loadable character
-    /// pack with NO furniture — so the merge-from-embedded-default assertion
-    /// isn't tautological) into `dst`. The fixture lives INSIDE pixtuoid-scene
-    /// (`tests/fixtures/charpack/`) and ships in the published tarball, so the
-    /// test stays self-contained — `cargo test` passes from an extracted .crate
-    /// (it must NOT reach into the sibling `pixtuoid` binary crate's skeleton).
-    fn copy_skeleton_pack(dst: &Path) {
+    fn write_optional_map_pack(dst: &Path) {
         fs::create_dir_all(dst).expect("mkdir pack dir");
-        let src = Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/charpack");
-        for entry in fs::read_dir(&src).expect("read skeleton dir") {
-            let entry = entry.expect("dir entry");
-            let path = entry.path();
-            if path.is_file() {
-                let name = path.file_name().expect("file name");
-                fs::copy(&path, dst.join(name)).expect("copy pack file");
-            }
-        }
+        fs::write(
+            dst.join("pack.toml"),
+            r##"[pack]
+name = "test-map-pack"
+version = "1"
+
+[palette]
+A = "#224466"
+
+[animations.scene_background]
+frames = ["frame.sprite"]
+frame_ms = 100
+"##,
+        )
+        .expect("write pack.toml");
+        fs::write(dst.join("frame.sprite"), "@frame 0\nA\n").expect("write frame");
     }
 
     #[test]
     fn load_sprite_pack_from_custom_dir_merges_with_embedded() {
         let tmp = tempfile::TempDir::new().expect("tempdir");
         let pack_dir = tmp.path().join("custom");
-        copy_skeleton_pack(&pack_dir);
+        write_optional_map_pack(&pack_dir);
 
         let pack = load_sprite_pack(Some(pack_dir)).expect("custom pack loads");
-        // The custom pack supplies character poses; furniture is merged from the
-        // embedded default, so both must be present.
+        // A local optional plate loads over the metadata-only public pack.
         assert!(
-            pack.animation("seated").is_some(),
-            "custom pack must carry the seated character pose"
+            pack.animation("scene_background").is_some(),
+            "custom pack must carry its supplied map plate"
         );
-        assert!(
-            pack.animation("desk").is_some(),
-            "furniture merged from the embedded default"
-        );
+        assert!(pack.animation("desk").is_none());
     }
 
     /// Counts WARN-level tracing events emitted inside `with_default`.
@@ -368,6 +395,25 @@ mod tests {
     }
 
     #[test]
+    fn embedded_pack_is_the_maple_agent_market_original_not_the_old_office() {
+        let pack = load_sprite_pack(None).expect("embedded pack");
+        assert_eq!(pack.name, "Maple Agent Market Original");
+        for legacy in [
+            "desk",
+            "meeting_sofa",
+            "meeting_screen",
+            "pantry",
+            "phone_booth",
+            "standing_desk",
+        ] {
+            assert!(
+                pack.animation(legacy).is_none(),
+                "the public runtime must not embed Pixtuoid office animation {legacy:?}"
+            );
+        }
+    }
+
+    #[test]
     fn embedded_default_pack_animations_are_all_in_the_registry() {
         // The scene-side half of the registry bridge: every animation the
         // EMBEDDED pack ships must be registry-known, or validate-pack
@@ -382,43 +428,35 @@ mod tests {
     }
 
     #[test]
-    fn custom_pack_missing_required_pose_loads_with_a_load_time_warning() {
-        // A --pack-dir pack missing a required character pose must (a) still
-        // LOAD — warn, not fail — and (b) be LOUD about the gap at load time:
-        // the pose renders as nothing (paint_character_at early-returns), so
-        // without the warning the only signal is agents silently vanishing.
+    fn incomplete_supplied_cycle_loads_with_a_warning() {
         let tmp = tempfile::TempDir::new().expect("tempdir");
         let pack_dir = tmp.path().join("gappy");
-        copy_skeleton_pack(&pack_dir);
-        // Strip the back_couch animation (the fixture's last section).
+        write_optional_map_pack(&pack_dir);
         let toml_path = pack_dir.join("pack.toml");
-        let toml = fs::read_to_string(&toml_path).expect("read pack.toml");
-        let stripped = toml
-            .split("[animations.back_couch]")
-            .next()
-            .expect("split never yields zero pieces")
-            .to_string();
-        assert_ne!(stripped, toml, "fixture must carry back_couch to strip");
-        fs::write(&toml_path, stripped).expect("write stripped pack.toml");
+        let mut toml = fs::read_to_string(&toml_path).expect("read pack.toml");
+        toml.push_str(
+            "\n[animations.training_skill_holy_light]\n\
+             frames = [\"frame.sprite\", \"frame.sprite\", \"frame.sprite\"]\n\
+             frame_ms = 100\n",
+        );
+        fs::write(&toml_path, toml).expect("write incomplete pack.toml");
 
         let warns = std::sync::Arc::new(std::sync::atomic::AtomicUsize::new(0));
         let pack = tracing::subscriber::with_default(WarnCounter(warns.clone()), || {
             load_sprite_pack(Some(pack_dir))
         })
-        .expect("a pack missing a required pose must still LOAD (warn, not fail)");
+        .expect("an incomplete optional cycle still loads");
         assert!(
-            pack.animation("back_couch").is_none(),
-            "the stripped pose is really absent (never inherited: character \
-             animations don't merge from the embedded default)"
+            pack.animation("training_skill_holy_light").is_some(),
+            "the supplied incomplete animation remains inspectable"
         );
         assert!(
             warns.load(std::sync::atomic::Ordering::SeqCst) >= 1,
-            "load_sprite_pack must warn about the missing required pose at load time"
+            "load_sprite_pack must warn about the incomplete supplied cycle"
         );
-        // The gap report names exactly the stripped pose.
         assert_eq!(
-            warn_pack_validation_gaps(&pack, "test").missing_required,
-            vec!["back_couch".to_string()]
+            warn_pack_validation_gaps(&pack, "test").insufficient_frames,
+            vec![("training_skill_holy_light".to_string(), 4, 3)]
         );
     }
 
@@ -450,11 +488,11 @@ mod tests {
         // (a) Valid XDG pack at $XDG/pixtuoid/sprites/ → loaded.
         let good = tempfile::TempDir::new().expect("tempdir");
         let good_sprites = good.path().join("pixtuoid").join("sprites");
-        copy_skeleton_pack(&good_sprites);
+        write_optional_map_pack(&good_sprites);
         std::env::set_var("XDG_CONFIG_HOME", good.path());
         let pack = load_sprite_pack(None).expect("xdg pack loads");
         assert!(
-            pack.animation("seated").is_some(),
+            pack.animation("scene_background").is_some(),
             "the valid XDG pack must be loaded (xdg Ok arm)"
         );
 
@@ -466,12 +504,10 @@ mod tests {
             .expect("write malformed pack.toml");
         std::env::set_var("XDG_CONFIG_HOME", bad.path());
         // The malformed pack triggers the Err arm → falls back to embedded (Ok),
-        // which still carries the embedded character poses.
+        // which is the metadata-only Maple Agent Market pack.
         let fallback = load_sprite_pack(None).expect("malformed pack falls back, never errors");
-        assert!(
-            fallback.animation("seated").is_some(),
-            "fallback to the embedded default after a malformed user pack"
-        );
+        assert_eq!(fallback.name, "Maple Agent Market Original");
+        assert!(fallback.animation_names().is_empty());
 
         // Restore env for the rest of the suite.
         match saved {
@@ -565,57 +601,5 @@ mod tests {
             crate::layout::CHARACTER_SPRITE_H_CELLS,
             crate::layout::CHARACTER_SPRITE_H_CELLS * 2
         );
-    }
-
-    // The desk sprite's row width is a THIRD copy of `DESK_W + 4` (baked into the
-    // `.sprite` asset rows), alongside the FurnitureDef `visual.w` the renderer
-    // blits from and the mask/z-key/anchor read. `DESK_W`'s doc invites future
-    // laptop-density edits; such an edit moves `visual.w` but NOT the asset rows,
-    // silently desyncing render vs mask/occlusion/collision. Pin the asset width
-    // to `visual.w` so that drift fails loud (mirrors
-    // `character_sprite_w_matches_the_embedded_pack` above).
-    #[test]
-    fn desk_sprite_width_tracks_the_footprint_overhang() {
-        let pack = test_default_pack();
-        let w = pack
-            .animation("desk")
-            .and_then(|a| a.frames.first())
-            .expect("embedded pack carries a desk sprite")
-            .width();
-        assert_eq!(
-            w,
-            crate::layout::desk_furniture_def().visual.w,
-            "embedded 'desk' sprite is {w}px wide but visual.w (DESK_W+4) is {} — \
-             a DESK_W edit moved visual.w but not the .sprite rows; render/mask/z-sort will drift",
-            crate::layout::desk_furniture_def().visual.w
-        );
-    }
-
-    #[test]
-    fn pet_hitboxes_track_the_embedded_pack() {
-        // PetKind::hitbox returns a hardcoded Size per pose that MUST match the
-        // embedded pet sprite frames — nothing else pins it (unlike the desk
-        // width above). hitbox drives hit_test_pet (click-to-pet); a resized
-        // *_walk/*_sit/*_sleep sprite would drift the click target off the pet.
-        use crate::pet::PetKind;
-        let pack = test_default_pack();
-        for &kind in PetKind::ALL {
-            for anim in [kind.walk_anim(), kind.sit_anim(), kind.sleep_anim()] {
-                let frame = pack
-                    .animation(anim)
-                    .and_then(|a| a.frames.first())
-                    .unwrap_or_else(|| panic!("embedded pack carries a '{anim}' sprite"));
-                let hb = kind.hitbox(anim);
-                assert_eq!(
-                    (hb.w, hb.h),
-                    (frame.width(), frame.height()),
-                    "{anim} hitbox {}x{} != sprite {}x{} — a pet-sprite resize drifted the click target",
-                    hb.w,
-                    hb.h,
-                    frame.width(),
-                    frame.height()
-                );
-            }
-        }
     }
 }

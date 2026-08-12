@@ -191,7 +191,7 @@ use background::{
 };
 use drawable::{paint_drawable, Drawable, DrawableKind};
 use palette::{agent_palette, outfit_seed_for, recolor_frame};
-use seat::{paint_character_at, paint_character_at_scaled};
+use seat::paint_character_at;
 use wall::{
     enqueue_room_walls_h, enqueue_room_walls_v, paint_door_jamb_h, paint_door_jamb_v,
     paint_glass_wall_h, paint_glass_wall_v, DOOR_JAMB_PX,
@@ -625,6 +625,7 @@ fn paint_training_portal(buf: &mut RgbBuffer, pack: &Pack, now: SystemTime) {
         .animation("training_portal")
         .filter(|animation| !animation.frames.is_empty())
     else {
+        paint_portal_shimmer(buf, now, bounds);
         return;
     };
     let frame_ms = u64::from(animation.frame_ms.max(1));
@@ -689,6 +690,981 @@ fn paint_portal_shimmer(buf: &mut RgbBuffer, now: SystemTime, bounds: Bounds) {
                     b: mix(current.b, glow.b),
                 },
             );
+        }
+    }
+}
+
+#[derive(Clone, Copy)]
+enum OriginalActorPose {
+    Stand {
+        frame_index: usize,
+    },
+    Walk {
+        frame_index: usize,
+        facing_right: bool,
+    },
+    Climb {
+        frame_index: usize,
+    },
+    Sit,
+    Alert {
+        frame_index: usize,
+    },
+    Attack {
+        frame_index: usize,
+    },
+}
+
+#[derive(Clone, Copy)]
+struct OriginalAdventurerFrame {
+    anchor: Point,
+    foot: Point,
+    pose: OriginalActorPose,
+    appearance_index: usize,
+    scale: u16,
+}
+
+impl From<crate::market::MarketActorPose> for OriginalActorPose {
+    fn from(value: crate::market::MarketActorPose) -> Self {
+        match value {
+            crate::market::MarketActorPose::Stand { frame_index }
+            | crate::market::MarketActorPose::Stand2 { frame_index } => Self::Stand { frame_index },
+            crate::market::MarketActorPose::Walk(walk) => Self::Walk {
+                frame_index: walk.frame_index,
+                facing_right: walk.facing == crate::market::MarketFacing::Right,
+            },
+            crate::market::MarketActorPose::Climb { frame_index } => Self::Climb { frame_index },
+            crate::market::MarketActorPose::Sit => Self::Sit,
+            crate::market::MarketActorPose::Alert { frame_index } => Self::Alert { frame_index },
+        }
+    }
+}
+
+impl From<crate::training::TrainingActorPose> for OriginalActorPose {
+    fn from(value: crate::training::TrainingActorPose) -> Self {
+        match value {
+            crate::training::TrainingActorPose::Stand { frame_index } => {
+                Self::Stand { frame_index }
+            }
+            crate::training::TrainingActorPose::Walk {
+                frame_index,
+                facing,
+            } => Self::Walk {
+                frame_index,
+                facing_right: facing == crate::training::TrainingFacing::Right,
+            },
+            crate::training::TrainingActorPose::Climb { frame_index } => {
+                Self::Climb { frame_index }
+            }
+            crate::training::TrainingActorPose::Attack { frame_index } => {
+                Self::Attack { frame_index }
+            }
+            crate::training::TrainingActorPose::Sit => Self::Sit,
+        }
+    }
+}
+
+const ORIGINAL_OUTFITS: [Rgb; 8] = [
+    Rgb {
+        r: 52,
+        g: 120,
+        b: 196,
+    },
+    Rgb {
+        r: 194,
+        g: 70,
+        b: 74,
+    },
+    Rgb {
+        r: 80,
+        g: 154,
+        b: 82,
+    },
+    Rgb {
+        r: 137,
+        g: 83,
+        b: 183,
+    },
+    Rgb {
+        r: 222,
+        g: 142,
+        b: 54,
+    },
+    Rgb {
+        r: 47,
+        g: 157,
+        b: 157,
+    },
+    Rgb {
+        r: 202,
+        g: 91,
+        b: 139,
+    },
+    Rgb {
+        r: 104,
+        g: 105,
+        b: 186,
+    },
+];
+const ORIGINAL_HAIR: [Rgb; 8] = [
+    Rgb {
+        r: 54,
+        g: 42,
+        b: 38,
+    },
+    Rgb {
+        r: 116,
+        g: 72,
+        b: 42,
+    },
+    Rgb {
+        r: 43,
+        g: 48,
+        b: 70,
+    },
+    Rgb {
+        r: 188,
+        g: 137,
+        b: 51,
+    },
+    Rgb {
+        r: 107,
+        g: 57,
+        b: 93,
+    },
+    Rgb {
+        r: 52,
+        g: 110,
+        b: 101,
+    },
+    Rgb {
+        r: 161,
+        g: 76,
+        b: 61,
+    },
+    Rgb {
+        r: 218,
+        g: 217,
+        b: 207,
+    },
+];
+const ORIGINAL_ACCENTS: [Rgb; 8] = [
+    Rgb {
+        r: 247,
+        g: 200,
+        b: 66,
+    },
+    Rgb {
+        r: 236,
+        g: 220,
+        b: 184,
+    },
+    Rgb {
+        r: 159,
+        g: 220,
+        b: 86,
+    },
+    Rgb {
+        r: 239,
+        g: 182,
+        b: 244,
+    },
+    Rgb {
+        r: 83,
+        g: 206,
+        b: 233,
+    },
+    Rgb {
+        r: 242,
+        g: 179,
+        b: 69,
+    },
+    Rgb {
+        r: 250,
+        g: 190,
+        b: 214,
+    },
+    Rgb {
+        r: 142,
+        g: 218,
+        b: 250,
+    },
+];
+const ORIGINAL_SKIN: [Rgb; 4] = [
+    Rgb {
+        r: 247,
+        g: 205,
+        b: 164,
+    },
+    Rgb {
+        r: 229,
+        g: 178,
+        b: 137,
+    },
+    Rgb {
+        r: 196,
+        g: 142,
+        b: 105,
+    },
+    Rgb {
+        r: 246,
+        g: 218,
+        b: 190,
+    },
+];
+
+#[derive(Clone, Copy)]
+struct OriginalAdventurerPalette {
+    outfit: Rgb,
+    hair: Rgb,
+    accent: Rgb,
+    skin: Rgb,
+    outline: Rgb,
+    pants: Rgb,
+    shoe: Rgb,
+    white: Rgb,
+    eye: Rgb,
+}
+
+impl OriginalAdventurerPalette {
+    fn for_appearance(appearance_index: usize) -> Self {
+        Self {
+            outfit: ORIGINAL_OUTFITS[appearance_index % ORIGINAL_OUTFITS.len()],
+            hair: ORIGINAL_HAIR[appearance_index % ORIGINAL_HAIR.len()],
+            accent: ORIGINAL_ACCENTS[appearance_index % ORIGINAL_ACCENTS.len()],
+            skin: ORIGINAL_SKIN[(appearance_index / 2) % ORIGINAL_SKIN.len()],
+            outline: Rgb {
+                r: 48,
+                g: 39,
+                b: 45,
+            },
+            pants: Rgb {
+                r: 54,
+                g: 61,
+                b: 83,
+            },
+            shoe: Rgb {
+                r: 76,
+                g: 48,
+                b: 38,
+            },
+            white: Rgb {
+                r: 250,
+                g: 246,
+                b: 231,
+            },
+            eye: Rgb {
+                r: 35,
+                g: 39,
+                b: 51,
+            },
+        }
+    }
+}
+
+fn paint_adventurer_head(
+    sprite: &mut OriginalSpritePainter<'_>,
+    head_y: i16,
+    appearance_index: usize,
+    palette: OriginalAdventurerPalette,
+) {
+    sprite.paint_rect(AuthoredPixelRect::new(9, head_y, 14, 10), palette.outline);
+    sprite.paint_rect(AuthoredPixelRect::new(10, head_y + 1, 12, 8), palette.skin);
+    sprite.paint_rect(AuthoredPixelRect::new(8, head_y + 4, 2, 3), palette.outline);
+    sprite.paint_rect(AuthoredPixelRect::new(9, head_y + 4, 1, 2), palette.skin);
+    sprite.paint_rect(
+        AuthoredPixelRect::new(23, head_y + 4, 2, 3),
+        palette.outline,
+    );
+    sprite.paint_rect(AuthoredPixelRect::new(23, head_y + 4, 1, 2), palette.skin);
+    sprite.paint_rect(AuthoredPixelRect::new(9, head_y - 1, 14, 4), palette.hair);
+    sprite.paint_rect(AuthoredPixelRect::new(8, head_y + 1, 3, 5), palette.hair);
+    sprite.paint_rect(AuthoredPixelRect::new(21, head_y + 1, 3, 4), palette.hair);
+    let ornaments = match appearance_index % 4 {
+        0 => [
+            (AuthoredPixelRect::new(12, head_y - 3, 9, 2), palette.accent),
+            (
+                AuthoredPixelRect::new(10, head_y - 1, 13, 1),
+                palette.accent,
+            ),
+        ],
+        1 => [
+            (AuthoredPixelRect::new(7, head_y + 1, 3, 7), palette.hair),
+            (AuthoredPixelRect::new(23, head_y + 1, 3, 7), palette.hair),
+        ],
+        2 => [
+            (AuthoredPixelRect::new(13, head_y - 3, 2, 3), palette.accent),
+            (AuthoredPixelRect::new(19, head_y - 3, 2, 3), palette.accent),
+        ],
+        _ => [
+            (AuthoredPixelRect::new(7, head_y - 2, 19, 2), palette.hair),
+            (AuthoredPixelRect::new(11, head_y - 4, 11, 2), palette.hair),
+        ],
+    };
+    for (rect, color) in ornaments {
+        sprite.paint_rect(rect, color);
+    }
+    for (rect, color) in [
+        (AuthoredPixelRect::new(12, head_y + 5, 2, 2), palette.white),
+        (AuthoredPixelRect::new(13, head_y + 5, 1, 2), palette.eye),
+        (AuthoredPixelRect::new(19, head_y + 5, 2, 2), palette.white),
+        (AuthoredPixelRect::new(19, head_y + 5, 1, 2), palette.eye),
+        (
+            AuthoredPixelRect::new(15, head_y + 8, 4, 1),
+            Rgb {
+                r: 173,
+                g: 82,
+                b: 79,
+            },
+        ),
+    ] {
+        sprite.paint_rect(rect, color);
+    }
+}
+
+fn paint_adventurer_torso(
+    sprite: &mut OriginalSpritePainter<'_>,
+    body_y: i16,
+    palette: OriginalAdventurerPalette,
+) {
+    for (rect, color) in [
+        (AuthoredPixelRect::new(10, body_y, 12, 8), palette.outline),
+        (AuthoredPixelRect::new(11, body_y, 10, 7), palette.outfit),
+        (AuthoredPixelRect::new(14, body_y, 4, 3), palette.white),
+        (AuthoredPixelRect::new(15, body_y + 2, 2, 2), palette.accent),
+        (
+            AuthoredPixelRect::new(11, body_y + 6, 10, 1),
+            palette.accent,
+        ),
+    ] {
+        sprite.paint_rect(rect, color);
+    }
+}
+
+fn adventurer_leg_positions(pose: OriginalActorPose) -> (i16, i16, i16, i16) {
+    match pose {
+        OriginalActorPose::Walk { frame_index, .. } if frame_index % 2 == 0 => (10, 18, 19, 18),
+        OriginalActorPose::Walk { .. } => (12, 17, 18, 19),
+        OriginalActorPose::Climb { frame_index } if frame_index % 2 == 0 => (10, 18, 18, 20),
+        OriginalActorPose::Climb { .. } => (10, 18, 20, 18),
+        OriginalActorPose::Sit
+        | OriginalActorPose::Stand { .. }
+        | OriginalActorPose::Alert { .. }
+        | OriginalActorPose::Attack { .. } => (11, 18, 19, 19),
+    }
+}
+
+fn paint_adventurer_legs(
+    sprite: &mut OriginalSpritePainter<'_>,
+    pose: OriginalActorPose,
+    palette: OriginalAdventurerPalette,
+) {
+    let (left_x, right_x, left_y, right_y) = adventurer_leg_positions(pose);
+    for rect in [
+        AuthoredPixelRect::new(left_x, left_y, 4, 4),
+        AuthoredPixelRect::new(right_x, right_y, 4, 4),
+    ] {
+        sprite.paint_rect(rect, palette.pants);
+    }
+    for rect in [
+        AuthoredPixelRect::new(left_x - 1, left_y + 3, 5, 2),
+        AuthoredPixelRect::new(right_x, right_y + 3, 5, 2),
+    ] {
+        sprite.paint_rect(rect, palette.shoe);
+    }
+}
+
+fn adventurer_arm_positions(pose: OriginalActorPose, body_y: i16) -> (i16, i16) {
+    match pose {
+        OriginalActorPose::Walk { frame_index, .. } | OriginalActorPose::Climb { frame_index }
+            if frame_index % 2 == 0 =>
+        {
+            (body_y, body_y + 4)
+        }
+        OriginalActorPose::Walk { .. } | OriginalActorPose::Climb { .. } => (body_y + 4, body_y),
+        OriginalActorPose::Attack { frame_index } => {
+            let lift = (frame_index % 3) as i16;
+            (body_y + 3, body_y - 2 - lift)
+        }
+        OriginalActorPose::Alert { .. } => (body_y - 2, body_y - 2),
+        OriginalActorPose::Sit | OriginalActorPose::Stand { .. } => (body_y + 2, body_y + 2),
+    }
+}
+
+fn paint_adventurer_arms(
+    sprite: &mut OriginalSpritePainter<'_>,
+    pose: OriginalActorPose,
+    body_y: i16,
+    palette: OriginalAdventurerPalette,
+) {
+    let (left_y, right_y) = adventurer_arm_positions(pose, body_y);
+    for (rect, color) in [
+        (AuthoredPixelRect::new(7, left_y, 4, 3), palette.outline),
+        (AuthoredPixelRect::new(8, left_y, 3, 2), palette.outfit),
+        (AuthoredPixelRect::new(6, left_y + 2, 2, 2), palette.skin),
+        (AuthoredPixelRect::new(21, right_y, 4, 3), palette.outline),
+        (AuthoredPixelRect::new(21, right_y, 3, 2), palette.outfit),
+        (AuthoredPixelRect::new(24, right_y + 2, 2, 2), palette.skin),
+    ] {
+        sprite.paint_rect(rect, color);
+    }
+    if let OriginalActorPose::Attack { frame_index } = pose {
+        let reach = 4 + ((frame_index % 3) as u16) * 2;
+        sprite.paint_rect(AuthoredPixelRect::new(25, right_y, reach, 1), palette.white);
+        sprite.paint_rect(
+            AuthoredPixelRect::new(25 + reach as i16, right_y - 1, 1, 3),
+            palette.accent,
+        );
+    }
+    if matches!(pose, OriginalActorPose::Alert { .. }) {
+        sprite.paint_rect(AuthoredPixelRect::new(15, 0, 2, 3), palette.accent);
+        sprite.paint_rect(AuthoredPixelRect::new(15, 4, 2, 2), palette.accent);
+    }
+    if let OriginalActorPose::Walk { facing_right, .. } = pose {
+        let scarf_x = if facing_right { 7 } else { 23 };
+        sprite.paint_rect(
+            AuthoredPixelRect::new(scarf_x, body_y, 3, 1),
+            palette.accent,
+        );
+    }
+}
+
+/// First-party 32x24 chibi adventurer used by a clean clone. The silhouette is
+/// authored in code, not sampled from a game client or inherited Pixtuoid art.
+/// Optional local packs can replace it with their own fixed-canvas animation.
+fn paint_original_adventurer(buf: &mut RgbBuffer, frame: OriginalAdventurerFrame) {
+    let OriginalAdventurerFrame {
+        anchor,
+        foot,
+        pose,
+        appearance_index,
+        scale,
+    } = frame;
+    let palette = OriginalAdventurerPalette::for_appearance(appearance_index);
+    let scale = scale.max(1);
+
+    // A small translucent-looking pixel shadow pins every action to one foot
+    // baseline and makes entry walking easier to read on bright platforms.
+    let shadow = Rgb {
+        r: 68,
+        g: 76,
+        b: 70,
+    };
+    let shadow_x = foot.x.saturating_sub(6 * scale);
+    let shadow_y = foot.y.saturating_sub(scale);
+    fill_rect(buf, shadow_x, shadow_y, 12 * scale, scale, shadow);
+
+    let (body_y, head_y) = match pose {
+        OriginalActorPose::Sit => (15, 5),
+        OriginalActorPose::Stand { frame_index }
+        | OriginalActorPose::Alert { frame_index }
+        | OriginalActorPose::Attack { frame_index } => {
+            let breathe = usize::from(frame_index % 3 == 1) as i16;
+            (13 + breathe, 4 + breathe)
+        }
+        _ => (13, 4),
+    };
+    let mut sprite = OriginalSpritePainter::new(buf, anchor, scale);
+
+    paint_adventurer_head(&mut sprite, head_y, appearance_index, palette);
+    paint_adventurer_torso(&mut sprite, body_y, palette);
+    paint_adventurer_legs(&mut sprite, pose, palette);
+    paint_adventurer_arms(&mut sprite, pose, body_y, palette);
+}
+
+struct OriginalSpritePainter<'a> {
+    buf: &'a mut RgbBuffer,
+    anchor: Point,
+    scale: u16,
+}
+
+#[derive(Clone, Copy)]
+struct AuthoredPixelRect {
+    x: i16,
+    y: i16,
+    width: u16,
+    height: u16,
+}
+
+impl AuthoredPixelRect {
+    const fn new(x: i16, y: i16, width: u16, height: u16) -> Self {
+        Self {
+            x,
+            y,
+            width,
+            height,
+        }
+    }
+}
+
+impl<'a> OriginalSpritePainter<'a> {
+    fn new(buf: &'a mut RgbBuffer, anchor: Point, scale: u16) -> Self {
+        Self { buf, anchor, scale }
+    }
+
+    fn paint_rect(&mut self, rect: AuthoredPixelRect, color: Rgb) {
+        let base_x = i32::from(self.anchor.x) + i32::from(rect.x) * i32::from(self.scale);
+        let base_y = i32::from(self.anchor.y) + i32::from(rect.y) * i32::from(self.scale);
+        for py in 0..i32::from(rect.height) * i32::from(self.scale) {
+            for px in 0..i32::from(rect.width) * i32::from(self.scale) {
+                let out_x = base_x + px;
+                let out_y = base_y + py;
+                if out_x >= 0 && out_y >= 0 {
+                    self.buf.put_checked(out_x as u16, out_y as u16, color);
+                }
+            }
+        }
+    }
+}
+
+fn paint_original_market_stall(buf: &mut RgbBuffer, foot: Point, scale: u16) {
+    let scale = scale.max(1);
+    let wood = Rgb {
+        r: 128,
+        g: 76,
+        b: 43,
+    };
+    let wood_dark = Rgb {
+        r: 75,
+        g: 49,
+        b: 39,
+    };
+    let cloth = Rgb {
+        r: 238,
+        g: 181,
+        b: 81,
+    };
+    let cloth_alt = Rgb {
+        r: 205,
+        g: 91,
+        b: 68,
+    };
+    let x = foot.x.saturating_sub(15 * scale);
+    let y = foot.y.saturating_sub(3 * scale);
+    fill_rect(buf, x, y, 30 * scale, 3 * scale, wood_dark);
+    fill_rect(buf, x + scale, y, 28 * scale, 2 * scale, wood);
+    fill_rect(
+        buf,
+        x + 2 * scale,
+        y.saturating_sub(5 * scale),
+        26 * scale,
+        2 * scale,
+        cloth,
+    );
+    for stripe in [3u16, 9, 15, 21] {
+        fill_rect(
+            buf,
+            x + stripe * scale,
+            y.saturating_sub(5 * scale),
+            3 * scale,
+            2 * scale,
+            cloth_alt,
+        );
+    }
+    fill_rect(
+        buf,
+        x + 3 * scale,
+        y.saturating_sub(3 * scale),
+        scale,
+        3 * scale,
+        wood_dark,
+    );
+    fill_rect(
+        buf,
+        x + 26 * scale,
+        y.saturating_sub(3 * scale),
+        scale,
+        3 * scale,
+        wood_dark,
+    );
+}
+
+#[derive(Clone, Copy)]
+struct MarketBackdropLayout {
+    width: u16,
+    height: u16,
+    upper: u16,
+    middle: u16,
+    lower: u16,
+}
+
+impl MarketBackdropLayout {
+    fn from_buffer(buf: &RgbBuffer) -> Self {
+        let width = buf.width().max(1);
+        let height = buf.height().max(1);
+        Self {
+            width,
+            height,
+            upper: height * 28 / 100,
+            middle: height * 57 / 100,
+            lower: height * 87 / 100,
+        }
+    }
+}
+
+fn paint_market_sky(buf: &mut RgbBuffer, layout: MarketBackdropLayout) {
+    let sky_top = Rgb {
+        r: 83,
+        g: 161,
+        b: 223,
+    };
+    let sky_bottom = Rgb {
+        r: 205,
+        g: 231,
+        b: 238,
+    };
+    for y in 0..layout.height {
+        let t = f32::from(y) / f32::from(layout.height);
+        let lerp = |a: u8, b: u8| (f32::from(a) + (f32::from(b) - f32::from(a)) * t) as u8;
+        let color = Rgb {
+            r: lerp(sky_top.r, sky_bottom.r),
+            g: lerp(sky_top.g, sky_bottom.g),
+            b: lerp(sky_top.b, sky_bottom.b),
+        };
+        for x in 0..layout.width {
+            buf.put(x, y, color);
+        }
+    }
+
+    let cloud = Rgb {
+        r: 244,
+        g: 248,
+        b: 241,
+    };
+    for &(cx, cy, radius) in &[
+        (
+            layout.width as i32 / 8,
+            layout.height as i32 / 5,
+            (layout.height / 18).max(2) as i32,
+        ),
+        (
+            layout.width as i32 * 4 / 9,
+            layout.height as i32 / 7,
+            (layout.height / 22).max(2) as i32,
+        ),
+        (
+            layout.width as i32 * 5 / 6,
+            layout.height as i32 / 4,
+            (layout.height / 20).max(2) as i32,
+        ),
+    ] {
+        market_circle(buf, (cx, cy), radius, cloud);
+        market_circle(buf, (cx + radius, cy + radius / 3), radius, cloud);
+        market_circle(buf, (cx - radius, cy + radius / 2), radius * 3 / 4, cloud);
+    }
+}
+
+fn paint_market_hills(buf: &mut RgbBuffer, layout: MarketBackdropLayout) {
+    let far = Rgb {
+        r: 95,
+        g: 151,
+        b: 111,
+    };
+    let near = Rgb {
+        r: 53,
+        g: 121,
+        b: 76,
+    };
+    for x in 0..layout.width {
+        let ridge = layout.height * 54 / 100 - ((x.wrapping_mul(7) % 29) / 5);
+        for y in ridge..layout.height {
+            buf.put(x, y, far);
+        }
+    }
+    for x in (0..layout.width).step_by((layout.width / 18).max(5) as usize) {
+        market_circle(
+            buf,
+            (i32::from(x), i32::from(layout.height * 70 / 100)),
+            i32::from((layout.height / 14).max(3)),
+            near,
+        );
+    }
+}
+
+fn paint_market_tree_canopy(
+    buf: &mut RgbBuffer,
+    layout: MarketBackdropLayout,
+    origin: (u16, u16),
+    colors: (Rgb, Rgb),
+) {
+    let (tree_x, tree_top) = origin;
+    let (leaf, leaf_highlight) = colors;
+    for &(dx, dy, radius, color) in &[
+        (-8, 0, 10, leaf),
+        (2, -4, 12, leaf_highlight),
+        (12, 2, 10, leaf),
+        (-16, 7, 8, leaf_highlight),
+    ] {
+        market_circle(
+            buf,
+            (
+                i32::from(tree_x) + i32::from(layout.width / 90) * dx,
+                i32::from(tree_top) + i32::from(layout.height / 80) * dy,
+            ),
+            i32::from((layout.height / 10).max(4)) * radius / 10,
+            color,
+        );
+    }
+}
+
+fn paint_market_tree(buf: &mut RgbBuffer, layout: MarketBackdropLayout) {
+    let tree_x = layout.width * 67 / 100;
+    let tree_top = layout.height * 18 / 100;
+    let trunk = Rgb {
+        r: 116,
+        g: 73,
+        b: 43,
+    };
+    let trunk_dark = Rgb {
+        r: 73,
+        g: 48,
+        b: 37,
+    };
+    let leaf = Rgb {
+        r: 49,
+        g: 119,
+        b: 59,
+    };
+    let leaf_highlight = Rgb {
+        r: 91,
+        g: 157,
+        b: 66,
+    };
+    fill_rect(
+        buf,
+        tree_x.saturating_sub(layout.width / 18),
+        tree_top,
+        layout.width / 9,
+        layout.lower - tree_top,
+        trunk,
+    );
+    fill_rect(
+        buf,
+        tree_x,
+        tree_top,
+        (layout.width / 45).max(2),
+        layout.lower - tree_top,
+        trunk_dark,
+    );
+    paint_market_tree_canopy(buf, layout, (tree_x, tree_top), (leaf, leaf_highlight));
+    market_circle(
+        buf,
+        (i32::from(tree_x), i32::from(layout.lower)),
+        i32::from((layout.height / 14).max(4)),
+        Rgb {
+            r: 25,
+            g: 31,
+            b: 36,
+        },
+    );
+}
+
+fn paint_market_booth(buf: &mut RgbBuffer, layout: MarketBackdropLayout) {
+    let booth_x = layout.width * 18 / 100;
+    let booth_y = layout.upper.saturating_sub(layout.height * 14 / 100);
+    let wood = Rgb {
+        r: 137,
+        g: 84,
+        b: 43,
+    };
+    let canvas = Rgb {
+        r: 246,
+        g: 224,
+        b: 160,
+    };
+    let stripe = Rgb {
+        r: 94,
+        g: 172,
+        b: 168,
+    };
+    fill_rect(
+        buf,
+        booth_x,
+        booth_y,
+        layout.width * 20 / 100,
+        (layout.height / 32).max(2),
+        canvas,
+    );
+    for x in
+        (booth_x..booth_x + layout.width * 20 / 100).step_by((layout.width / 35).max(2) as usize)
+    {
+        fill_rect(
+            buf,
+            x,
+            booth_y,
+            (layout.width / 75).max(1),
+            (layout.height / 32).max(2),
+            stripe,
+        );
+    }
+    for x in [booth_x, booth_x + layout.width * 20 / 100] {
+        fill_rect(
+            buf,
+            x,
+            booth_y,
+            (layout.width / 180).max(1),
+            layout.upper - booth_y,
+            wood,
+        );
+    }
+    fill_rect(
+        buf,
+        booth_x + layout.width * 4 / 100,
+        layout.upper.saturating_sub(layout.height / 18),
+        layout.width * 12 / 100,
+        layout.height / 18,
+        wood,
+    );
+}
+
+fn paint_market_platforms(buf: &mut RgbBuffer, layout: MarketBackdropLayout) {
+    paint_original_platform(
+        buf,
+        layout.width * 5 / 100,
+        layout.width * 96 / 100,
+        layout.upper,
+    );
+    paint_original_platform(
+        buf,
+        layout.width * 2 / 100,
+        layout.width * 91 / 100,
+        layout.middle,
+    );
+    paint_original_platform(buf, 0, layout.width, layout.lower);
+}
+
+fn paint_market_ladders(buf: &mut RgbBuffer, layout: MarketBackdropLayout) {
+    paint_original_ladder(buf, layout.width * 39 / 100, layout.upper, layout.middle);
+    paint_original_ladder(buf, layout.width * 58 / 100, layout.middle, layout.lower);
+}
+
+fn paint_market_portal_arch(buf: &mut RgbBuffer, layout: MarketBackdropLayout) {
+    let portal = market_portal_bounds(layout.width, layout.height);
+    let stone = Rgb {
+        r: 157,
+        g: 161,
+        b: 157,
+    };
+    let stone_dark = Rgb {
+        r: 89,
+        g: 91,
+        b: 94,
+    };
+    let px = portal.x.saturating_sub(portal.width / 3);
+    let py = portal.y.saturating_sub(portal.height / 8);
+    for x in [px, portal.x + portal.width] {
+        fill_rect(
+            buf,
+            x,
+            py,
+            portal.width / 3,
+            portal.height + portal.height / 8,
+            stone_dark,
+        );
+    }
+    fill_rect(
+        buf,
+        px,
+        py,
+        portal.width + portal.width * 2 / 3,
+        (portal.height / 7).max(2),
+        stone,
+    );
+}
+
+/// Original forest-bazaar plate aligned to the existing three route layers.
+/// It intentionally suggests a side-scrolling fantasy market without tracing
+/// any MapleStory screenshot, WZ frame, or Pixtuoid office asset.
+fn paint_market_fallback_backdrop(buf: &mut RgbBuffer) {
+    let layout = MarketBackdropLayout::from_buffer(buf);
+    paint_market_sky(buf, layout);
+    paint_market_hills(buf, layout);
+    paint_market_platforms(buf, layout);
+    paint_market_tree(buf, layout);
+    paint_market_booth(buf, layout);
+    paint_market_ladders(buf, layout);
+    paint_market_portal_arch(buf, layout);
+}
+
+fn paint_original_platform(buf: &mut RgbBuffer, left: u16, right: u16, top: u16) {
+    let right = right.min(buf.width());
+    if left >= right || top >= buf.height() {
+        return;
+    }
+    let grass_hi = Rgb {
+        r: 157,
+        g: 210,
+        b: 75,
+    };
+    let grass = Rgb {
+        r: 76,
+        g: 155,
+        b: 59,
+    };
+    let stone = Rgb {
+        r: 171,
+        g: 177,
+        b: 169,
+    };
+    let stone_dark = Rgb {
+        r: 104,
+        g: 113,
+        b: 112,
+    };
+    for x in left..right {
+        buf.put(x, top, if x % 5 == 0 { grass_hi } else { grass });
+        if top + 1 < buf.height() {
+            buf.put(x, top + 1, grass);
+        }
+        let depth = (buf.height() / 22).max(4);
+        for y in top.saturating_add(2)..top.saturating_add(depth).min(buf.height()) {
+            let color = if (x / 5 + y / 3) % 4 == 0 {
+                stone_dark
+            } else {
+                stone
+            };
+            buf.put(x, y, color);
+        }
+        if x % 11 == 4 && top > 0 {
+            buf.put(x, top - 1, grass_hi);
+        }
+    }
+}
+
+fn paint_original_ladder(buf: &mut RgbBuffer, x: u16, top: u16, bottom: u16) {
+    let rope = Rgb {
+        r: 123,
+        g: 77,
+        b: 43,
+    };
+    let rung = Rgb {
+        r: 181,
+        g: 124,
+        b: 61,
+    };
+    let width = (buf.width() / 100).max(4);
+    for y in top..bottom.min(buf.height()) {
+        buf.put_checked(x, y, rope);
+        buf.put_checked(x.saturating_add(width), y, rope);
+        if (y - top).is_multiple_of(4) {
+            for px in x..=x.saturating_add(width) {
+                buf.put_checked(px, y, rung);
+            }
+        }
+    }
+}
+
+fn market_circle(buf: &mut RgbBuffer, center: (i32, i32), radius: i32, color: Rgb) {
+    let (cx, cy) = center;
+    for dy in -radius..=radius {
+        for dx in -radius..=radius {
+            if dx * dx + dy * dy <= radius * radius {
+                let x = cx + dx;
+                let y = cy + dy;
+                if x >= 0 && y >= 0 {
+                    buf.put_checked(x as u16, y as u16, color);
+                }
+            }
         }
     }
 }
@@ -962,7 +1938,16 @@ fn paint_training_frame(
                 );
             }
         } else {
-            paint_training_fallback_adventurer(ctx.buf, actor, scale);
+            paint_original_adventurer(
+                ctx.buf,
+                OriginalAdventurerFrame {
+                    anchor: actor.sprite_anchor_px,
+                    foot: actor.foot_px,
+                    pose: actor.pose.into(),
+                    appearance_index: placement.appearance_index,
+                    scale,
+                },
+            );
         }
         if actor.question_bubble {
             paint_training_question_bubble(ctx.buf, actor.sprite_anchor_px, scale);
@@ -1113,41 +2098,6 @@ fn paint_training_monster(
     }
 }
 
-fn paint_training_fallback_adventurer(
-    buf: &mut RgbBuffer,
-    actor: crate::training::TrainingActorFrame,
-    scale: u16,
-) {
-    let body = Rgb {
-        r: 52,
-        g: 111,
-        b: 176,
-    };
-    let skin = Rgb {
-        r: 244,
-        g: 199,
-        b: 154,
-    };
-    let x = actor.foot_px.x.saturating_sub(3u16.saturating_mul(scale));
-    let y = actor.foot_px.y.saturating_sub(10u16.saturating_mul(scale));
-    fill_rect(
-        buf,
-        x,
-        y,
-        6u16.saturating_mul(scale),
-        7u16.saturating_mul(scale),
-        body,
-    );
-    fill_rect(
-        buf,
-        x.saturating_add(scale),
-        y.saturating_sub(4u16.saturating_mul(scale)),
-        4u16.saturating_mul(scale),
-        4u16.saturating_mul(scale),
-        skin,
-    );
-}
-
 fn paint_training_fallback_monster(
     buf: &mut RgbBuffer,
     monster: crate::training::TrainingMonsterFrame,
@@ -1259,14 +2209,15 @@ fn paint_market_frame(
     ctx: &mut PaintCtx<'_>,
     frame: &SimFrame,
 ) -> (Option<PetFrame>, Vec<MascotFrame>) {
-    let Some(backdrop) = ctx
+    if let Some(backdrop) = ctx
         .pack
         .animation("scene_background")
         .and_then(|animation| animation.frames.first())
-    else {
-        return (None, Vec::new());
-    };
-    paint_market_backdrop(ctx.buf, backdrop, ctx.theme.surface.bg_fallback);
+    {
+        paint_market_backdrop(ctx.buf, backdrop, ctx.theme.surface.bg_fallback);
+    } else {
+        paint_market_fallback_backdrop(ctx.buf);
+    }
     paint_market_portal(ctx.buf, ctx.now);
 
     let viewport = Bounds {
@@ -1296,11 +2247,10 @@ fn paint_market_frame(
                 .agents
                 .iter()
                 .find(|agent| agent.agent_id == placement.agent_id)?;
-            let actor = if paperdolls.is_some() {
-                crate::market::resolve_market_paperdoll(agent, *placement, market_frame)
-            } else {
-                crate::market::resolve_market_merchant(agent, *placement, market_frame)
-            }?;
+            // The first-party procedural adventurer uses the same 32x24 canvas
+            // as an optional paperdoll pack. This keeps motion, head cards and
+            // fake player IDs stable when a collaborator has no local assets.
+            let actor = crate::market::resolve_market_paperdoll(agent, *placement, market_frame)?;
             Some((*placement, agent, actor))
         })
         .collect::<Vec<_>>();
@@ -1324,6 +2274,10 @@ fn paint_market_frame(
                 blit_frame_scaled(stall, stall_x, stall_y, sprite_scale, ctx.buf);
             }
         }
+    } else {
+        for (_, _, actor) in actors.iter().filter(|(_, _, actor)| actor.stall_open) {
+            paint_original_market_stall(ctx.buf, actor.foot_px(), sprite_scale);
+        }
     }
 
     for (placement, agent, actor) in actors {
@@ -1340,7 +2294,10 @@ fn paint_market_frame(
         if let Some(elapsed_ms) = crate::market::market_command_success_elapsed(agent, ctx.now) {
             effects::paint_market_scroll_success(
                 ctx.buf,
-                actor.command_effect_anchor(paperdolls.is_some(), sprite_scale),
+                // Both the built-in procedural actor and an optional local
+                // paperdoll use the full 32x24 canvas. The old 8px merchant
+                // no longer exists in this Maple render path.
+                actor.command_effect_anchor(true, sprite_scale),
                 elapsed_ms,
                 sprite_scale,
             );
@@ -1407,21 +2364,15 @@ fn paint_market_frame(
             );
             actor.sprite_anchor_px
         } else {
-            let glow_tint = matches!(&agent.state, ActivityState::Active { .. })
-                .then(|| palette::tool_glow_tint(agent, &ctx.theme.tool_glow))
-                .flatten();
-            paint_character_at_scaled(
+            paint_original_adventurer(
                 ctx.buf,
-                "standing",
-                0,
-                actor.sprite_anchor_px,
-                agent,
-                ctx.pack,
-                false,
-                glow_tint,
-                ctx.cache,
-                ctx.now,
-                sprite_scale,
+                OriginalAdventurerFrame {
+                    anchor: actor.sprite_anchor_px,
+                    foot: actor.foot_px(),
+                    pose: actor.pose.into(),
+                    appearance_index: placement.appearance_index,
+                    scale: sprite_scale,
+                },
             );
             actor.sprite_anchor_px
         };

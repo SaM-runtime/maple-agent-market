@@ -1053,11 +1053,11 @@ impl WallDecor {
         }
     }
 
-    /// Pack-animation key for this decor's sprite. The blit lives in
-    /// `pixel_painter::drawable`; the NAME lives on the enum so a new variant is a
-    /// compile error HERE, not a forgotten call-site match arm (same data-in-`pixtuoid-scene` pattern
-    /// as `footprint`/`visual`). Every value is in `OPTIONAL_FURNITURE_ANIMATIONS`,
-    /// pinned by `role_enum_sprite_names_resolve_in_the_animation_registry`.
+    /// Internal sprite key retained by the shared layout painter.
+    ///
+    /// These legacy layout names are not public asset-pack override keys in Maple
+    /// Agent Market. Keeping the exhaustive match here still makes a new variant
+    /// a compile-time decision at the rendering seam.
     pub const fn sprite_name(self) -> &'static str {
         match self {
             WallDecor::Bookshelf => "bookshelf",
@@ -1459,35 +1459,6 @@ mod tests {
                     d.visual.h
                 );
             }
-        }
-    }
-
-    #[test]
-    fn role_enum_sprite_names_resolve_in_the_animation_registry() {
-        // The role enums own their pack-animation key via `sprite_name()` (the
-        // blit lives in tui `drawable.rs`). Adding a variant without a name is a
-        // compile error (exhaustive match); a TYPO'd name would draw nothing —
-        // this catches it by checking every value is a real registered animation.
-        use pixtuoid_core::sprite::format::OPTIONAL_FURNITURE_ANIMATIONS;
-        let names: Vec<&str> = [
-            WallDecor::Bookshelf.sprite_name(),
-            WallDecor::Whiteboard.sprite_name(),
-            WallDecor::BulletinBoard.sprite_name(),
-            WallDecor::ExitSign.sprite_name(),
-            WallDecor::MeetingScreen.sprite_name(),
-            PlantKind::Ficus.sprite_name(),
-            PlantKind::Tall.sprite_name(),
-            PlantKind::Flower.sprite_name(),
-            PlantKind::Succulent.sprite_name(),
-        ]
-        .into_iter()
-        .chain(PodDecor::ALL.iter().map(|p| p.sprite_name()))
-        .collect();
-        for n in names {
-            assert!(
-                OPTIONAL_FURNITURE_ANIMATIONS.contains(&n),
-                "sprite_name {n:?} is not a registered OPTIONAL_FURNITURE_ANIMATIONS key"
-            );
         }
     }
 }

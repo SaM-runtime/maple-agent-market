@@ -41,7 +41,7 @@ mod tests {
     // The WRITE side (`shell_single_quote`, here — cfg(unix)) and the READ side
     // (`verify::posix_unquote`, a different, all-platform module) must round-trip
     // byte-for-byte, or the on-disk shim path can't be recovered → a false "shim
-    // binary missing" in `doctor` / the Sources panel. They legitimately can't be
+    // binary missing" in `doctor` / `sources`. They legitimately can't be
     // merged (the read side is not cfg-forked — see verify.rs's module doc), so
     // pin the write/read PAIR directly instead of trusting they stay in sync.
     #[test]

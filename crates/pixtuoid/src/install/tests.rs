@@ -564,7 +564,7 @@ fn uninstall_target_reports_removed_then_nothing() {
 // uninstall_target (each target's merge + the shared ConfigLock write),
 // replacing the per-target coverage the deleted CLI integration suite
 // (tests/install.rs) gave — now driven straight against the cores the
-// Sources panel calls, no CLI needed. Covers all 5 targets' formats:
+// source-management core calls, no CLI needed. Covers all 5 targets' formats:
 // Claude JSON, Codex/CodeWhale TOML, Reasonix flat-JSON, opencode TS plugin.
 #[test]
 fn install_target_round_trips_every_registered_target() {

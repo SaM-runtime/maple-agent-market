@@ -416,7 +416,7 @@ pub fn sweep_presence_ttl(scene: &mut SceneState, source: &str, ttl: PresenceTtl
 /// Drive EVERY instance of a source to `Down` (arming the renderer's walk-out),
 /// skipping any already Down — idempotent, so the `down_remove_ms` removal timer
 /// in [`sweep_presence_ttl`] isn't reset on every tick. The runtime calls this to
-/// walk a source's mascots out when it is DISCONNECTED in the Sources panel: the
+/// walk a source's mascots out when it is disconnected through the sources CLI: the
 /// presence side-channel is separate from the `AgentEvent` connection gate, so a
 /// disconnect must reconcile presence too (mirrors the reducer's
 /// `reconcile_connected` for agents). Source-WIDE by design — disconnecting

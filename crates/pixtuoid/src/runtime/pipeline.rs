@@ -1,23 +1,14 @@
-//! The ONE source→reducer pipeline spine both painters boot through (#714).
+//! The source → reducer pipeline used by the floating window.
 //!
-//! `run_async` (TUI) and `floating::run` used to hand-mirror this glue line
-//! for line — a new channel or spawn had to be added to both files (the
-//! presence channel + exit watch historically were). The MECHANISM was
-//! already shared (`build_source_set`, `reducer_task`); this module owns the
-//! wiring between them. What deliberately STAYS caller-side, because the two
-//! painters genuinely diverge there:
-//! - **`boot_caps`**: the TUI measures the terminal (footer-subtracting,
-//!   cap-clamped, headless arms); floating measures its window pixels — a
-//!   documented sharp edge (reusing the TUI math over-seeds and strands
-//!   agents on non-existent desks), so the pipeline takes the seed as a
-//!   PARAMETER and must never compute it.
+//! This module owns the shared source-set, reducer and presence-channel wiring.
+//! Window-specific values remain caller-side:
+//! - **`boot_caps`**: floating measures its window pixels, so the pipeline takes
+//!   the seed as a parameter and never computes presentation geometry.
 //! - **socket resolution + `ConnectedSources`**: both values outlive the
-//!   boot (the Sources panel displays the path and mutates the live set), so
-//!   the callers own them and hand in a clone.
+//!   boot, so the caller owns them and hands in a clone.
 //!
-//! Requires an ambient tokio runtime context — `run_async` executes inside
-//! `block_on`, floating holds an `rt.enter()` guard — so the `tokio::spawn`s
-//! here land on the caller's runtime either way.
+//! Requires an ambient tokio runtime context; floating holds an `rt.enter()`
+//! guard so the `tokio::spawn`s land on its runtime.
 //!
 //! Like its two callers this is codecov-excluded async glue (#103): the win
 //! is ONE authority for the wiring, not new test surface — behavior stays

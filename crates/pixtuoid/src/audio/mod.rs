@@ -41,14 +41,10 @@ use sink::AudioSink;
 #[cfg(feature = "audio")]
 use pixtuoid_scene::audio::bank::{AssetBank, TrackBeds, TRACK_STEMS};
 
-/// The +/- keys' volume increment — ONE definition for BOTH painters' key
-/// handlers (`tui/mod.rs` dispatch + `floating::input`), so the two surfaces
-/// can't drift on feel. Lives here (the shared gateway) because `tui` and
-/// `floating` are siblings that must not import from each other.
+/// The floating window's volume increment.
 pub(crate) const VOLUME_STEP: f32 = 0.05;
-/// How long the transient volume readout stays up after a nudge (the lowfi
-/// volume-timer pattern) — the TUI footer flash, the floating overlay, and
-/// the volume-persist debounce window on both painters all read this one.
+/// How long the transient volume readout stays up after a nudge; the same
+/// window also debounces persisted volume writes.
 pub(crate) const VOLUME_FLASH_MS: u128 = 1000;
 
 /// Which single soundtrack owns the output device. A configured local file
@@ -84,10 +80,7 @@ impl AudioProgram {
     }
 }
 
-/// The two audio gestures both painters drive — the `m` toggle and the
-/// `+`/`-` nudge. The KEY→action map is painter-specific (crossterm vs winit,
-/// in each painter), but the STATE TRANSITION is shared: see
-/// [`apply_audio_action`].
+/// The floating window's two audio gestures: `m` and the `+`/`-` nudge.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum AudioAction {
     ToggleMute,
@@ -95,8 +88,7 @@ pub(crate) enum AudioAction {
     Volume(bool),
 }
 
-/// The audio UI state both painters keep — the TUI as loop locals it marshals
-/// in/out per keypress, floating as an owned field.
+/// The floating window's audio UI state.
 pub(crate) struct AudioUi {
     pub(crate) handle: AudioHandle,
     pub(crate) muted: bool,
@@ -116,20 +108,15 @@ pub(crate) struct Persist {
     pub(crate) volume_nudged: bool,
 }
 
-/// THE audio mute/volume transition — the single authority BOTH painters run
-/// (the TUI's `ToggleAudioMute`/`AdjustVolume` arms and floating's key
-/// handler), so the two surfaces can't drift on feel (the duplicated-logic
-/// review MEDIUM; VOLUME_STEP lives here for the same reason). Semantics:
+/// The audio mute/volume transition. Semantics:
 /// mute toggles; volume-up from muted IS the un-mute gesture; the lazy spawn
 /// (re)fires whenever sound is wanted but the system is down (`+`/`m` are
 /// never dead keys — boot-muted and failed-spawn both recover); volume clamps
-/// to [0, 1] by [`VOLUME_STEP`]. `paused` folds an external hold (the TUI's
-/// `[p]ause`) into the effective mute; floating passes `false`. `respawn` is
-/// injected so the transition is testable without a device.
+/// to [0, 1] by [`VOLUME_STEP`]. `respawn` is injected so the transition is
+/// testable without a device.
 pub(crate) fn apply_audio_action(
     st: &mut AudioUi,
     action: AudioAction,
-    paused: bool,
     respawn: impl FnOnce(&AudioHandle, f32),
 ) -> Persist {
     let mut persist = Persist {
@@ -158,18 +145,16 @@ pub(crate) fn apply_audio_action(
         // into the SAME handle keeps every cached clone live (no re-sync).
         respawn(&st.handle, st.volume);
     }
-    st.handle.set_muted(paused || st.muted);
+    st.handle.set_muted(st.muted);
     st.handle.set_volume(st.volume);
     persist
 }
 
-/// Owns the whole mute/volume PERSIST protocol both painters used to duplicate:
-/// the pure [`apply_audio_action`] transition PLUS its side effects — mute saves
+/// Owns the floating window's mute/volume persistence protocol: the pure
+/// [`apply_audio_action`] transition plus its side effects — mute saves
 /// NOW, a volume nudge marks dirty + arms the `♩ N%` readout, the debounced
 /// volume save fires once that window elapses (a held `+`/`-` writes once, not
-/// per repeat), and a flush on shutdown. The TUI keeps ONE of these instead of
-/// five loop locals + `run_audio_action`; floating keeps one instead of its own
-/// duplicated `volume_flash`/`volume_dirty`/`flush_volume`. `now` is injected so
+/// per repeat), and a flush on shutdown. `now` is injected so
 /// the debounce is unit-testable without a clock.
 pub(crate) struct AudioController {
     ui: AudioUi,
@@ -184,8 +169,8 @@ pub(crate) struct AudioController {
 impl AudioController {
     /// Construct the controller AND own the device thread's whole lifecycle:
     /// boot-spawn here (iff a persisted unmute wants sound), tear down in `Drop`.
-    /// Because the controller is built AFTER each painter's fallible boot steps
-    /// (TUI after the pack load; floating after pack/runtime/event-loop build),
+    /// Because the controller is built after the floating window's fallible
+    /// pack, runtime and event-loop setup,
     /// no device thread ever exists before its Drop-owner — so `Drop` alone
     /// covers EVERY exit path (q / Ctrl-C / terminate / error / a boot `?`),
     /// with no manual shutdown wiring. `muted`/`volume` come pre-resolved from
@@ -260,11 +245,10 @@ impl AudioController {
     pub(crate) fn apply(
         &mut self,
         action: AudioAction,
-        paused: bool,
         now: std::time::Instant,
         respawn: impl FnOnce(&AudioHandle, f32),
     ) {
-        let persist = apply_audio_action(&mut self.ui, action, paused, respawn);
+        let persist = apply_audio_action(&mut self.ui, action, respawn);
         if persist.muted {
             // persist like a theme commit: next launch boots as the user left it
             if let Err(e) = crate::config::save_audio_muted(&self.config_path, self.ui.muted) {
@@ -313,12 +297,6 @@ impl AudioController {
         }
     }
 
-    /// Re-apply the effective mute when the external pause toggles (a frozen
-    /// office must not keep clacking; unpause restores the user's own m-state).
-    pub(crate) fn set_paused(&mut self, paused: bool) {
-        self.ui.handle.set_muted(paused || self.ui.muted);
-    }
-
     /// The live audio handle — the renderer/window feeds frames to it. Stable
     /// across a lazy respawn (the sender is swapped in place), so a consumer's
     /// cached clone never goes stale — hand it out ONCE, no re-sync.
@@ -327,16 +305,15 @@ impl AudioController {
     }
 }
 
-/// RAII teardown — the ONE exit verb for BOTH halves of the audio protocol:
-/// PERSIST a pending debounced volume, THEN stop the device thread. Each painter
-/// holds exactly ONE controller (TUI a `run_tui` local; floating a `FloatingApp`
-/// field), so this fires once on EVERY exit — the compiler guarantees it runs
+/// RAII teardown: persist a pending debounced volume, then stop the device
+/// thread. The floating app owns exactly one controller, so this fires once on
+/// every exit — the compiler guarantees it runs
 /// where a hand-wired call could be forgotten on some `?`/early-return path.
 /// (Release is `panic="abort"`, so a panic — a crash — is the one exit that
 /// skips Drop; losing a sub-second unsaved volume nudge there is acceptable.)
 ///
 /// Ordering is persist-before-stop, and both run unconditionally: before #752
-/// the volume flush sat on the TUI `q` branch only, so Ctrl-C / terminate / error
+/// the volume flush sat on one explicit quit branch, so terminate / error
 /// lost a nudge that landed inside the debounce window — moving it here fixes that
 /// (Drop already ran on every exit for the device stop). `flush_on_exit` is a
 /// no-op unless a nudge is pending; both halves are panic-free (save + join log,
@@ -426,7 +403,7 @@ mod controller_tests {
     fn mute_persists_immediately_and_does_not_arm_the_volume_flash() {
         let (mut c, _d) = ctl(false, 0.4);
         let t0 = Instant::now();
-        c.apply(AudioAction::ToggleMute, false, t0, |_, _| {});
+        c.apply(AudioAction::ToggleMute, t0, |_, _| {});
         assert!(
             std::fs::read_to_string(&c.config_path)
                 .unwrap()
@@ -441,7 +418,7 @@ mod controller_tests {
         let (mut c, _d) = ctl(false, 0.50);
         let t0 = Instant::now();
         let saved = |c: &AudioController| std::fs::read_to_string(&c.config_path).unwrap();
-        c.apply(AudioAction::Volume(true), false, t0, |_, _| {});
+        c.apply(AudioAction::Volume(true), t0, |_, _| {});
         assert_eq!(c.volume_flash(t0), Some(55), "readout armed immediately");
         assert!(
             !saved(&c).contains("volume"),
@@ -464,7 +441,7 @@ mod controller_tests {
     #[test]
     fn flush_on_exit_writes_a_pending_nudge() {
         let (mut c, _d) = ctl(false, 0.50);
-        c.apply(AudioAction::Volume(false), false, Instant::now(), |_, _| {});
+        c.apply(AudioAction::Volume(false), Instant::now(), |_, _| {});
         c.flush_on_exit();
         assert!(
             std::fs::read_to_string(&c.config_path)
@@ -476,13 +453,13 @@ mod controller_tests {
 
     #[test]
     fn drop_persists_a_pending_nudge_even_without_the_q_path() {
-        // #752 Ctrl-C bug: the flush used to run only on the TUI `q` branch, so
-        // an external terminate (Ctrl-C / signal / error) lost a debounced volume
+        // #752: the flush used to run only on one explicit quit branch, so an
+        // external terminate or error lost a debounced volume
         // nudge. Now `AudioController::drop` flushes on EVERY exit — modelled by
         // dropping a dirtied controller WITHOUT the q path or an explicit flush.
         let (mut c, _dir) = ctl(false, 0.50);
         let path = c.config_path.clone();
-        c.apply(AudioAction::Volume(false), false, Instant::now(), |_, _| {});
+        c.apply(AudioAction::Volume(false), Instant::now(), |_, _| {});
         assert!(
             !std::fs::read_to_string(&path).unwrap().contains("volume"),
             "not yet persisted — still inside the debounce window"
@@ -579,7 +556,7 @@ mod controls_tests {
             volume: 0.4,
         };
         let mut spawned_at = None;
-        let p = apply_audio_action(&mut st, AudioAction::ToggleMute, false, |h, v| {
+        let p = apply_audio_action(&mut st, AudioAction::ToggleMute, |h, v| {
             spawned_at = Some(v);
             h.install_test_channel();
         });
@@ -598,7 +575,7 @@ mod controls_tests {
             }
         );
         // muting back must NOT spawn again
-        let p = apply_audio_action(&mut st, AudioAction::ToggleMute, false, |_, _| {
+        let p = apply_audio_action(&mut st, AudioAction::ToggleMute, |_, _| {
             panic!("mute must never spawn")
         });
         assert!(st.muted && st.handle.is_muted());
@@ -620,7 +597,7 @@ mod controls_tests {
             volume: 0.5,
         };
         let mut spawns = 0;
-        let p = apply_audio_action(&mut st, AudioAction::Volume(true), false, |h, _| {
+        let p = apply_audio_action(&mut st, AudioAction::Volume(true), |h, _| {
             spawns += 1;
             h.install_test_channel();
         });
@@ -636,7 +613,7 @@ mod controls_tests {
         assert!((st.volume - (0.5 + VOLUME_STEP)).abs() < 1e-6);
         assert!((st.handle.volume() - st.volume).abs() < 1e-6);
         // volume-down while unmuted: no mute persist, no respawn
-        let p = apply_audio_action(&mut st, AudioAction::Volume(false), false, |_, _| {
+        let p = apply_audio_action(&mut st, AudioAction::Volume(false), |_, _| {
             panic!("live system must not respawn")
         });
         assert_eq!(
@@ -657,41 +634,11 @@ mod controls_tests {
             muted: false,
             volume: 1.0,
         };
-        apply_audio_action(
-            &mut st,
-            AudioAction::Volume(true),
-            false,
-            |_, _| unreachable!(),
-        );
+        apply_audio_action(&mut st, AudioAction::Volume(true), |_, _| unreachable!());
         assert_eq!(st.volume, 1.0, "top rail");
         st.volume = 0.0;
-        apply_audio_action(
-            &mut st,
-            AudioAction::Volume(false),
-            false,
-            |_, _| unreachable!(),
-        );
+        apply_audio_action(&mut st, AudioAction::Volume(false), |_, _| unreachable!());
         assert_eq!(st.volume, 0.0, "bottom rail");
-    }
-
-    #[test]
-    fn paused_forces_effective_mute_without_touching_the_flag() {
-        // the TUI's [p]ause term: the handle is silenced but the user's own
-        // mute flag is preserved (unpause restores it)
-        let (live, _rx) = AudioHandle::test_pair();
-        let mut st = AudioUi {
-            handle: live,
-            muted: false,
-            volume: 0.5,
-        };
-        apply_audio_action(
-            &mut st,
-            AudioAction::Volume(true),
-            true,
-            |_, _| unreachable!(),
-        );
-        assert!(!st.muted, "the user's flag stays unmuted");
-        assert!(st.handle.is_muted(), "but paused silences the handle");
     }
 
     #[test]
@@ -799,15 +746,14 @@ impl AudioHandle {
         f32::from_bits(self.volume.load(std::sync::atomic::Ordering::Relaxed))
     }
 
-    /// The EFFECTIVE silence state (the m-toggle OR'd with pause — run_tui
-    /// stores the combined value), read by the footer's ♩ indicator.
+    /// The mute state read by the footer's ♩ indicator.
     pub(crate) fn is_muted(&self) -> bool {
         self.muted.load(std::sync::atomic::Ordering::Relaxed)
     }
 
     /// Whether audio would actually be heard — enabled, not effective-muted
-    /// (m OR pause), and above zero volume (a 0% ♩ would advertise sound that
-    /// isn't playing). The ONE audibility predicate both painters' footer ♩
+    /// and above zero volume (a 0% ♩ would advertise sound that
+    /// isn't playing). The audibility predicate the footer's ♩
     /// indicators read; a method on the handle (which owns all three reads)
     /// keeps the caller's disjoint borrow of the rest of the renderer.
     pub(crate) fn is_audible(&self) -> bool {

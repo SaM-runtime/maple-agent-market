@@ -1,43 +1,79 @@
 <h1 align="center">Maple Agent Market</h1>
 
 <p align="center">
-  把 Codex 與其他 AI coding agents 的工作狀態，變成一座會開店、等待、移動與練功的 2D 像素市場。
+  把 Codex 與其他 coding agents 的工作狀態，呈現在會擺攤、移動、等待與練功的 2D 浮動視窗。
 </p>
 
 <p align="center">
   <strong>非官方社群 side project</strong> · Windows 優先 · Rust · 本機運作 · 無遙測
 </p>
 
-<p align="center">
-  <a href="#快速開始">快速開始</a> ·
-  <a href="#目前功能">目前功能</a> ·
-  <a href="#讓朋友取得完全相同的公開素材">素材同步</a> ·
-  <a href="#自訂本機素材">自訂素材</a> ·
-  <a href="#專案來源與完整署名">來源與署名</a> ·
-  <a href="docs/OPEN_SOURCE_RELEASE.md">公開發布邊界</a>
-</p>
+![Maple Agent Market 內建雙地圖畫面](assets/readme/maple-agent-market-overview.png)
 
-![Maple Agent Market 公開安全版雙地圖實機畫面](assets/readme/maple-agent-market-overview.png)
-
-> 上圖由目前原始碼的 `floating_snapshot` 實際渲染，未載入本機私有素材包。朋友乾淨 clone 後即可取得相同的公開安全版介面。
+> 這張圖由目前原始碼的 `floating_snapshot` 直接渲染。沒有載入私人素材包，也沒有使用遊戲截圖、拆包圖像或遊戲音樂。朋友乾淨 clone 後即可編譯出同一套內建畫面。
 
 ## 這是什麼
 
-Maple Agent Market 是一套桌面上的 agents orchestration visualizer。它把每個 AI agent session 映射成一名 2D 像素角色，讓你不用反覆切換多個終端機，也能快速看出誰正在執行、誰在等待回覆、誰已閒置，以及哪些角色屬於同一個主任務。
+Maple Agent Market 是桌面上的 agents orchestration visualizer。每個本機 agent session 會被映射成一名 2D 角色，讓你看出誰正在執行、等待回覆、閒置或離場；來源若提供可靠的 `parent_id`，畫面也會呈現主 task 與子代理關係。
 
-目前產品介面以「市場擺攤」與「訓練場」作為狀態隱喻：工作中的 agent 保持開店或戰鬥，等待中的 agent 收店待命，閒置角色會在場景中活動，結束後再走向出口。這不是遊戲，也不會控制你的 agents；它只讀取本機 agent 事件與 transcript，轉成一眼可讀的動畫狀態。
+目前有兩張可共存的地圖：
 
-## 目前功能
+- 市場：工作中的 agent 開店，等待或閒置時切換為相應狀態。
+- 訓練場：以走路、爬梯、怪物巡邏和泛用程式化技能呈現活動。
 
-- 自由市場與訓練場可同時顯示，也可只展開其中一張地圖。
-- Active、Waiting、Idle、Entering、Exiting 等狀態使用不同動作呈現。
-- 工作中的市場角色持續開店；訓練場角色會使用程式繪製的泛用技能效果。
-- 顯示主 task 與子代理的親子關係、層級與家族色，未提供 `parent_id` 的來源不會被猜測分組。
-- 執行命令成功與 task 完成分別有一次性特效；完成特效為原創程式繪製，不含遊戲影格。
-- 浮動視窗支援拖曳、右下角縮放、三種尺寸預設、地圖切換與隱性關閉快捷鍵。
-- 可使用內建公開素材直接執行，也可在本機載入使用者有權使用的自訂 sprite pack。
-- 支援 Codex、Claude Code，以及 Pixtuoid 架構既有的多種 agent sources；實際可偵測項目可用 `sources` 指令查看。
-- 完全本機運作，沒有 analytics、telemetry 或自動上傳 session 內容。
+本程式只讀取本機 agent 事件與 transcript，不會控制 agent，也不會上傳 session 內容。
+
+## 乾淨 clone 會得到什麼
+
+- 原創的程序化雙地圖、角色、商店框、怪物、傳送點與泛用特效。
+- 浮動視窗、狀態映射、進退場、角色移動、主從 task 標示與訊息列。
+- Codex 與其他已支援 agent source 的 hook、事件解碼和診斷工具。
+- 可選的本機 sprite pack 匯入與 SHA-256 驗證介面。
+
+內建畫面不依賴外部圖片包，因此不需要 `assets install`、下載器或私有素材才能開啟。不同電腦上的視窗尺寸、DPI、時間與實際 session 狀態可能讓即時畫面不同；相同 commit 的固定 snapshot 則可重現。
+
+## 快速開始
+
+需求：Git、[Rust](https://www.rust-lang.org/tools/install) 1.89 或更新版本。Maple 浮動視窗目前主要在 Windows 驗證。
+
+```powershell
+git clone https://github.com/SaM-runtime/maple-agent-market.git C:\dev\maple-agent-market
+Set-Location C:\dev\maple-agent-market
+cargo build --locked -p pixtuoid
+.\target\debug\maple-agent-market.exe
+```
+
+`pixtuoid` 是為了保留上游相容契約而維持的內部 crate 名；使用者執行檔是 `maple-agent-market.exe`。不帶子命令時會直接開啟浮動視窗，等同：
+
+```powershell
+.\target\debug\maple-agent-market.exe floating
+```
+
+### 連接 Codex
+
+先查看可用來源與目前狀態：
+
+```powershell
+.\target\debug\maple-agent-market.exe sources
+```
+
+連接 Codex 會在 Codex 的本機設定中安裝此專案的 hook；這是明確的本機設定變更：
+
+```powershell
+.\target\debug\maple-agent-market.exe connect codex
+```
+
+要移除時執行：
+
+```powershell
+.\target\debug\maple-agent-market.exe disconnect codex
+```
+
+若角色沒有出現，可執行唯讀診斷：
+
+```powershell
+.\target\debug\maple-agent-market.exe doctor
+```
 
 ### 浮動視窗操作
 
@@ -45,153 +81,33 @@ Maple Agent Market 是一套桌面上的 agents orchestration visualizer。它�
 |---|---|
 | `Esc` | 關閉目前聚焦的浮動視窗 |
 | `1` / `2` / `3` | 雙地圖 / 市場 / 訓練場 |
-| `Tab` | 循環切換地圖顯示模式 |
-| `z` | 循環切換小 / 中 / 大視窗預設 |
+| `Tab` | 循環切換地圖 |
+| `z` | 循環切換小 / 中 / 大尺寸 |
 | `m` | 靜音 / 取消靜音 |
 | `+` / `-` | 調整音量 |
-| 滑鼠左鍵拖曳 | 移動無邊框視窗 |
-| 右下角拖曳 | 自由縮放視窗 |
-
-## 快速開始
-
-### 需求
-
-- [Git](https://git-scm.com/)
-- [Rust](https://www.rust-lang.org/tools/install) 1.89 或更新版本
-- Windows、macOS 或 Linux；目前 Maple 浮動視窗主要在 Windows 驗證
-
-> Windows 建議 clone 到較短的路徑，例如 `C:\dev\maple-agent-market`。部分繼承的測試 fixture 檔名較長，過深路徑可能碰到舊式 Win32 路徑長度限制。
-
-### 1. Clone 與編譯
-
-```powershell
-git clone https://github.com/SaM-runtime/maple-agent-market.git C:\dev\maple-agent-market
-Set-Location C:\dev\maple-agent-market
-cargo build --locked -p pixtuoid
-```
-
-目前為了保留既有設定、hook 與 wire contract，相容層的 crate 與執行檔名稱仍是 `pixtuoid`；顯示名稱則是 Maple Agent Market。
-
-### 2. 連接 Codex
-
-先預覽本機能偵測到哪些來源：
-
-```powershell
-.\target\debug\pixtuoid.exe sources
-```
-
-連接 Codex 會寫入對應的本機 hook 設定：
-
-```powershell
-.\target\debug\pixtuoid.exe connect codex
-```
-
-這是一個明確的本機設定變更。若只想先看介面，可以跳過連接步驟；要移除時執行：
-
-```powershell
-.\target\debug\pixtuoid.exe disconnect codex
-```
-
-### 3. 啟動浮動視窗
-
-```powershell
-.\target\debug\pixtuoid.exe --theme maple floating
-```
-
-保持視窗開啟後，再從 Codex 開始或繼續 task。session 被偵測到時，角色會依狀態進入對應場景。若沒有出現，先檢查：
-
-```powershell
-.\target\debug\pixtuoid.exe doctor
-```
-
-也可以啟動終端機版：
-
-```powershell
-.\target\debug\pixtuoid.exe --theme maple run
-```
-
-## 公開版與素材邊界
-
-這個 repository 的目標是讓朋友能直接 clone、編譯、執行並一起修改。因此，GitHub 版只包含有明確再散布依據的內容：
-
-| 隨 repo 提供 | 來源 / 授權 | 用途 |
-|---|---|---|
-| Maple Agent Market 原創修改與程式化特效 | 本專案貢獻者，MIT | 雙地圖狀態、擺攤 / 練功邏輯、UI 與泛用特效 |
-| Pixtuoid 基礎程式與預設像素素材 | Ivan Wang / Pixtuoid，MIT | agent 事件架構、renderer、相容層與公開 fallback 素材 |
-| Monaspace Neon | GitHub Next，SIL OFL 1.1 | 浮動視窗文字 |
-
-下列內容**不會**隨 repo、release、binary 或 README 圖片提供：
-
-- NEXON / MapleStory 的背景、角色、怪物、傳送點、商店框、技能影格或音樂；
-- 遊戲截圖、WZ / client 拆包內容、Open API 紙娃娃與其轉檔或裁切衍生物；
-- 使用者自己的皮膚、BGM、本機 active pack、cache 與測試截圖。
-
-原因不是「是否營利」或「只有朋友會看到」，而是 GitHub 上傳與朋友 clone 都屬於複製及再散布。NEXON 的官方 Game IP 指引將角色、怪物、圖片、背景音樂與影片列為其 Game IP，且沒有把這些檔案授權為可併入 MIT repository 的開源素材。完整工程邊界請看 [`FORK_NOTICE.md`](FORK_NOTICE.md) 與 [`docs/OPEN_SOURCE_RELEASE.md`](docs/OPEN_SOURCE_RELEASE.md)。這是保守的公開發布設計，不是法律意見。
-
-每次公開候選版都可執行素材與隱私稽核：
-
-```powershell
-python scripts\public-release-audit.py --selftest
-python scripts\public-release-audit.py
-```
-
-稽核會檢查未核准媒體、私有素材路徑、音訊、封裝檔、憑證特徵與本機絕對路徑。已核准媒體的 SHA-256 與來源群組位於 [`policy/public-release`](policy/public-release)。
-
-## 讓朋友取得完全相同的公開素材
-
-朋友是否與你相同，由兩個值決定：Git commit SHA 與素材 fingerprint。`public-classic` 已編進 binary，不需連到外部素材站；安裝後會逐檔建立 `ASSET-MANIFEST.json` 與 SHA-256 inventory。
-
-```powershell
-git rev-parse HEAD
-cargo build --locked -p pixtuoid
-
-$installed = .\target\debug\pixtuoid.exe assets install public-classic --json | ConvertFrom-Json
-.\target\debug\pixtuoid.exe assets verify public-classic `
-  --expect $installed.fingerprint_sha256
-
-.\target\debug\pixtuoid.exe --theme maple floating `
-  --pack-dir $installed.path
-```
-
-列出目前公開 catalog 與本機 pack：
-
-```powershell
-.\target\debug\pixtuoid.exe assets list
-.\target\debug\pixtuoid.exe assets list --json
-```
-
-有權使用的團隊自訂 pack 可以只在本機匯入，再交換 fingerprint 做一致性驗證：
-
-```powershell
-.\target\debug\pixtuoid.exe assets import C:\team\authorized-pack --id team-pack
-.\target\debug\pixtuoid.exe assets verify team-pack --expect <64位SHA-256>
-```
-
-匯入不會上傳檔案，也不會把素材自動改成 MIT；manifest 會保守標示 `local-only`。完整共同修改、重裝與驗證流程請看 [`docs/ASSET_COLLABORATION.md`](docs/ASSET_COLLABORATION.md)。
+| 左鍵拖曳 | 移動無邊框視窗 |
+| 右下角拖曳 | 自由縮放 |
 
 ## 自訂本機素材
 
-公開版可直接執行；如果你擁有可使用、修改與載入的素材，也可以建立自己的本機 sprite pack。請勿把沒有再散布權的素材提交到 pull request。
-
-建立範本：
+公開版不需要素材包。若你擁有可合法使用的 sprite pack，可先驗證，再以 `--pack-dir` 載入：
 
 ```powershell
-.\target\debug\pixtuoid.exe init-pack .\my-local-pack
+.\target\debug\maple-agent-market.exe validate-pack C:\team\authorized-pack
+.\target\debug\maple-agent-market.exe floating --pack-dir C:\team\authorized-pack
 ```
 
-修改完成後驗證：
+也可以匯入到本機管理目錄並比對 fingerprint：
 
 ```powershell
-.\target\debug\pixtuoid.exe validate-pack .\my-local-pack
+.\target\debug\maple-agent-market.exe assets import C:\team\authorized-pack --id team-pack
+.\target\debug\maple-agent-market.exe assets verify team-pack --expect <64位SHA-256>
+.\target\debug\maple-agent-market.exe assets list
 ```
 
-只在本機載入：
+匯入只會複製使用者指定的本機 pack，不會下載、上傳或改變素材授權。協作方式見 [`docs/ASSET_COLLABORATION.md`](docs/ASSET_COLLABORATION.md)。
 
-```powershell
-.\target\debug\pixtuoid.exe --theme maple floating --pack-dir .\my-local-pack
-```
-
-本機 BGM 可在 `~/.config/pixtuoid/config.toml` 指向使用者有權播放的 MP3、WAV、OGG 或 FLAC：
+本機 BGM 可在相容設定檔 `~/.config/pixtuoid/config.toml` 指向你有權播放的 MP3、WAV、OGG 或 FLAC：
 
 ```toml
 [audio]
@@ -200,59 +116,56 @@ volume = 0.35
 bgm-path = "C:/Music/your-licensed-track.mp3"
 ```
 
-專案不含 YouTube downloader、不會串流 YouTube，也不會把本機 BGM 自動加入 Git。
+專案不含 YouTube downloader、內嵌 web player 或音樂檔。
 
-## 給共同開發者
+## 公開素材邊界
 
-建立自己的 branch：
+GitHub 版只包含可再散布的內容：
+
+| 內容 | 來源 / 授權 |
+|---|---|
+| Maple Agent Market 修改、程序化 UI 與特效 | 本專案貢獻者，MIT |
+| 保留的 Pixtuoid 核心程式與小型 parser 測試 fixture | Ivan Wang / Pixtuoid，MIT |
+| Monaspace Neon 字型 | GitHub Next，SIL OFL 1.1 |
+
+下列內容不會隨 repo、release、binary、README 截圖或 CI artifact 發布：
+
+- NEXON / MapleStory 的背景、角色、怪物、傳送點、商店框、技能影格或音樂；
+- 遊戲截圖、WZ / client 拆包、Open API 紙娃娃及其裁切或轉檔衍生物；
+- 使用者的皮膚、BGM、private pack、cache 或本機測試截圖。
+
+GitHub 設為 public 或 private、只有朋友能 clone、以及是否營利，都不會自動產生再散布授權。詳細邊界見 [`FORK_NOTICE.md`](FORK_NOTICE.md) 與 [`docs/OPEN_SOURCE_RELEASE.md`](docs/OPEN_SOURCE_RELEASE.md)。這是保守的工程發布政策，不是法律意見。
+
+可在提交前執行：
 
 ```powershell
-git switch -c feature/my-change
-```
-
-最小驗證：
-
-```powershell
-cargo fmt --all -- --check
-cargo test --workspace
+python scripts\public-release-audit.py --selftest
 python scripts\public-release-audit.py
 ```
 
-如果已安裝 [`just`](https://github.com/casey/just)，提交前執行完整 gate：
+## 與 Pixtuoid 的關係
+
+本專案是 [IvanWng97/pixtuoid](https://github.com/IvanWng97/pixtuoid) 的 source-code fork，基準為 Pixtuoid `v0.16.0` commit [`ac06cc00c3cf18f3f67eab730a37f0c7e5787fc8`](https://github.com/IvanWng97/pixtuoid/commit/ac06cc00c3cf18f3f67eab730a37f0c7e5787fc8)。本 repo 保留 Ivan Wang 的 MIT 版權與授權聲明。
+
+目前仍依賴的上游部分包括 agent event / source / hook 架構、reducer、場景模擬與路徑資料、RGB buffer / sprite pack 基礎，以及既有相容識別碼。這些不是只改名就能刪除的舊檔；浮動視窗會直接呼叫它們。
+
+已從本 fork 移除的上游產品面包括終端 TUI、舊辦公室 sprite、robot / skeleton 範例 pack、`run`、`init-pack`、`public-classic` 安裝器，以及上游 Homebrew completion / man-page 產生器。乾淨 clone 不再顯示 Pixtuoid 辦公室素材。
+
+更多範圍與逐項來源見 [`THIRD_PARTY_NOTICES.md`](THIRD_PARTY_NOTICES.md) 與 [`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md)。
+
+## 共同開發
 
 ```powershell
-just preflight
+git switch -c feature/my-change
+cargo fmt --all -- --check
+cargo test --locked --workspace
+python scripts\public-release-audit.py
 ```
 
-架構與相容契約在 [`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md)，素材協作在 [`docs/ASSET_COLLABORATION.md`](docs/ASSET_COLLABORATION.md)，貢獻流程在 [`docs/CONTRIBUTING.md`](docs/CONTRIBUTING.md)，安全問題請看 [`SECURITY.md`](SECURITY.md)。
+完整 gate 為 `just preflight`。架構、設定與貢獻規則分別在 [`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md)、[`docs/CONFIGURATION.md`](docs/CONFIGURATION.md) 與 [`docs/CONTRIBUTING.md`](docs/CONTRIBUTING.md)。
 
-## 專案來源與完整署名
+## 非官方聲明與授權
 
-Maple Agent Market 是從 [Pixtuoid](https://github.com/IvanWng97/pixtuoid) 延伸的 source-code fork，fork 基準為 Pixtuoid `v0.16.0` 的 commit [`ac06cc00c3cf18f3f67eab730a37f0c7e5787fc8`](https://github.com/IvanWng97/pixtuoid/commit/ac06cc00c3cf18f3f67eab730a37f0c7e5787fc8)。Pixtuoid 由 Ivan Wang 建立，原始程式與預設素材依 [MIT License](https://github.com/IvanWng97/pixtuoid/blob/main/LICENSE) 提供；本 repo 保留其版權與授權聲明。
+本專案未受 NEXON、遊戲橘子、OpenAI、Pixtuoid 維護者或其他第三方贊助、認可或背書。MapleStory、NEXON 與相關名稱、角色及標誌屬各自權利人；專案名稱中的「Maple」只描述非官方懷舊 2D 主題。
 
-本 fork 在該基礎上新增或大幅改寫：
-
-- Maple Agent Market 品牌與繁體中文介面；
-- 市場擺攤與訓練場雙地圖呈現；
-- agent 狀態、進退場、繩索路徑、怪物巡邏與角色動作映射；
-- task / subagent 關係、商店字卡、角色 ID、訊息列與浮動視窗控制；
-- 泛用技能、命令成功與 task 完成特效；
-- 本機 skin workshop、sprite pack 匯入與公開發布稽核。
-
-授權與 provenance 的單一查閱入口：
-
-- [`LICENSE`](LICENSE)：Pixtuoid 原作者與本專案修改部分的 MIT 聲明；
-- [`THIRD_PARTY_NOTICES.md`](THIRD_PARTY_NOTICES.md)：Pixtuoid、Monaspace 與媒體來源；
-- [`FORK_NOTICE.md`](FORK_NOTICE.md)：fork 關係、非官方聲明與私有素材邊界；
-- [`policy/public-release/media-licences.toml`](policy/public-release/media-licences.toml)：公開媒體的機器可讀來源 / 授權對照；
-- [`policy/public-release/media-allowlist.sha256`](policy/public-release/media-allowlist.sha256)：已審核媒體的精確 hash inventory。
-
-Pixtuoid 上游另外提及 [`pixel-agents`](https://github.com/pablodelucca/pixel-agents)、[`clawd-on-desk`](https://github.com/rullerzhou-afk/clawd-on-desk) 與 Claude Code Buddy 作為其靈感來源；這些專案不是 Maple Agent Market 的素材來源，也沒有把它們的圖像併入本 fork。
-
-## 非官方聲明
-
-本專案未受 NEXON、遊戲橘子、OpenAI、Pixtuoid 作者或上述第三方專案贊助、認可或背書。MapleStory、NEXON 與相關名稱、角色及標誌屬其各自權利人；本專案名稱中的「Maple」只用於描述這個非官方、懷舊 2D 像素市場主題，不代表官方產品。
-
-## License
-
-程式碼依 [`LICENSE`](LICENSE) 中的 MIT License 發布。第三方素材仍依各自授權；本機使用者素材不會因載入本程式而改為 MIT。
+程式碼依 [`LICENSE`](LICENSE) 中的 MIT License 發布。第三方內容仍依各自授權；本機素材不會因載入本程式而改為 MIT。

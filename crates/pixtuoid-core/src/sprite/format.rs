@@ -312,7 +312,7 @@ pub fn load_pack_from_strings(pack_toml: &str, frames: &[(&str, &str)]) -> Resul
 }
 
 /// The base palette keys per-agent recoloring substitutes by RGB equality
-/// (shirt/hair/skin/pants). The SINGLE source of truth: the tui's `recolor_frame`
+/// (shirt/hair/skin/pants). The single source of truth: `recolor_frame`
 /// consumes this exact set, and `validate_recolor_palette` guards it — so the
 /// substitution and the guard can't drift (add a 5th key here, once). They MUST
 /// map to distinct RGBs: if two share a color, recolor swaps only the first and
@@ -379,27 +379,9 @@ fn build_palette(map: &HashMap<String, String>) -> Result<Palette> {
 // Animation registry — canonical list of animation names the renderer uses.
 // ---------------------------------------------------------------------------
 
-/// Character animation names every pack MUST provide; `validate_pack_animations`
-/// reports any that are missing as an error.
-pub const REQUIRED_CHARACTER_ANIMATIONS: &[&str] = &[
-    "seated",
-    "typing",
-    "standing",
-    "walking",
-    "walking_back",
-    "seated_sleeping",
-    "seated_sleeping_alt",
-    "holding_coffee",
-    "back_couch",
-];
-
-// side_seated is optional-by-design: the chair render degrades to the front
-// `seated` pose when a pack lacks it (seat_sprite_in_pack), never invisible.
-/// Character animation names a pack MAY omit; the renderer degrades gracefully
-/// when absent (e.g. `side_seated` falls back to the front `seated` pose).
+/// Optional Maple actor animation sets. A clean clone needs none of them:
+/// the renderer falls back to the first-party procedural actor.
 pub const OPTIONAL_CHARACTER_ANIMATIONS: &[&str] = &[
-    "walking_coffee",
-    "side_seated",
     "market_avatar",
     "market_avatar_hires",
     "market_avatar_stand_hires",
@@ -411,54 +393,24 @@ pub const OPTIONAL_CHARACTER_ANIMATIONS: &[&str] = &[
     "training_avatar_attack_hires",
 ];
 
-/// Environment/furniture animation names a pack MAY provide; `Pack::merge_from`
-/// inherits any of these that are missing from the base pack (character
-/// animations are never inherited).
+/// Optional map, effect, monster and stall animation sets. Every missing entry
+/// has an original programmatic fallback in the public runtime.
 pub const OPTIONAL_FURNITURE_ANIMATIONS: &[&str] = &[
     "scene_background",
     "training_background",
     "training_skill_magic_claw",
+    "training_skill_holy_light",
+    "training_skill_dragon_pulse",
     "training_monster_slime",
     "training_monster_slime_die",
     "training_monster_green_mushroom",
     "training_monster_green_mushroom_die",
     "training_portal",
     "market_stall",
-    "desk",
-    "filing_cabinet",
-    "plant",
-    "plant_tall",
-    "plant_flower",
-    "plant_succulent",
-    "floor_lamp",
-    "door",
-    "cat_walk",
-    "cat_sit",
-    "cat_sleep",
-    "dog_walk",
-    "dog_sit",
-    "dog_sleep",
-    "lobster_walk",
-    "lobster_rest",
-    "meeting_sofa",
-    "meeting_screen",
-    "pantry",
-    "pantry_small",
-    "whiteboard",
-    "bookshelf",
-    "snack_shelf",
-    "tv_stand",
-    "phone_booth",
-    "standing_desk",
-    "bulletin_board",
-    "exit_sign",
 ];
 
 /// Multi-frame requirements: animations that must have at least N frames.
 const MULTI_FRAME_REQUIREMENTS: &[(&str, usize)] = &[
-    ("typing", 2),
-    ("walking", 2),
-    ("walking_back", 2),
     ("market_avatar", 8),
     ("market_avatar_hires", 8),
     ("market_avatar_stand_hires", 24),
@@ -469,59 +421,45 @@ const MULTI_FRAME_REQUIREMENTS: &[(&str, usize)] = &[
     ("market_avatar_alert_hires", 24),
     ("training_avatar_attack_hires", 24),
     ("training_skill_magic_claw", 4),
+    ("training_skill_holy_light", 4),
+    ("training_skill_dragon_pulse", 4),
     ("training_monster_slime", 7),
     ("training_monster_slime_die", 4),
     ("training_monster_green_mushroom", 4),
     ("training_monster_green_mushroom_die", 4),
     ("training_portal", 8),
-    ("door", 3),
-    ("cat_walk", 2),
-    ("dog_walk", 2),
-    ("lobster_walk", 2),
 ];
 
 /// Per-category tally of a pack's animation discrepancies, produced by
 /// `validate_pack_animations`.
 #[derive(Debug, Default)]
 pub struct ValidationReport {
-    /// Required character-animation names absent from the pack — an error.
-    pub missing_required: Vec<String>,
     /// Optional animation names absent from the pack — reported, not an error.
     pub missing_optional: Vec<String>,
-    /// `(name, need, have)` for each animation with fewer frames than its
-    /// multi-frame minimum (e.g. `typing` needs 2) — the REQUIRED count first,
-    /// matching what the producer pushes and both `validate-pack` consumers
-    /// destructure.
+    /// `(name, need, have)` for each supplied animation with fewer frames
+    /// than its renderer contract requires.
     pub insufficient_frames: Vec<(String, usize, usize)>,
     /// Animation names present in the pack but in none of the known registries.
     pub unknown: Vec<String>,
 }
 
 impl ValidationReport {
-    /// True when the pack is unusable — a required animation is missing or one
-    /// has too few frames. Missing OPTIONAL animations do not count.
+    /// True when a supplied known animation is incomplete. Missing animations
+    /// do not count because the public renderer has zero-asset fallbacks.
     pub fn has_errors(&self) -> bool {
-        !self.missing_required.is_empty() || !self.insufficient_frames.is_empty()
+        !self.insufficient_frames.is_empty()
     }
 }
 
-/// Check a pack's animations against the required/optional/multi-frame
-/// registries, collecting every discrepancy into a [`ValidationReport`].
+/// Check a pack's animations against the current optional Maple registry.
 pub fn validate_pack_animations(pack: &Pack) -> ValidationReport {
     let mut report = ValidationReport::default();
     let known_names = || {
-        REQUIRED_CHARACTER_ANIMATIONS
+        OPTIONAL_CHARACTER_ANIMATIONS
             .iter()
-            .chain(OPTIONAL_CHARACTER_ANIMATIONS.iter())
             .chain(OPTIONAL_FURNITURE_ANIMATIONS.iter())
             .copied()
     };
-
-    for &name in REQUIRED_CHARACTER_ANIMATIONS {
-        if pack.animation(name).is_none() {
-            report.missing_required.push(name.to_string());
-        }
-    }
 
     for &name in OPTIONAL_CHARACTER_ANIMATIONS
         .iter()
@@ -534,10 +472,8 @@ pub fn validate_pack_animations(pack: &Pack) -> ValidationReport {
 
     // Frame-count floor: every KNOWN animation PRESENT in the pack needs at
     // least one frame — a `frames = []` entry deserializes and makes
-    // `animation()` return Some (dodging the missing-required check above)
-    // while every render consumer guards with `.frames.first()` and silently
-    // draws nothing; an empty OPTIONAL entry additionally SHADOWS the embedded
-    // default in `Pack::merge_from` (`contains_key` is true). Names in
+    // `animation()` returns Some while every render consumer guards with
+    // `.frames.first()` and silently draws nothing. Names in
     // MULTI_FRAME_REQUIREMENTS carry their own higher minimum.
     for name in known_names() {
         let min_frames = MULTI_FRAME_REQUIREMENTS
@@ -576,44 +512,33 @@ mod validation_floor_tests {
     }
 
     #[test]
-    fn empty_frames_on_a_required_animation_fails_validation() {
-        // `frames = []` deserializes, build_pack inserts `Sprite { frames:
-        // vec![] }`, and `animation()` returns Some — dodging the
-        // missing-required check — while every render consumer guards with
-        // `.frames.first()` and silently draws nothing. An empty frame list
-        // on a known animation must be a hard validation error (implicit
-        // min-1), so `pixtuoid validate-pack` catches the exact authoring
-        // mistake it exists for.
-        let pack = pack_with_animation("seated", "[]");
+    fn empty_frames_on_a_known_animation_fails_validation() {
+        let pack = pack_with_animation("scene_background", "[]");
         let report = validate_pack_animations(&pack);
         assert!(
             report
                 .insufficient_frames
-                .contains(&("seated".to_string(), 1, 0)),
-            "empty seated must report (seated, 1, 0); got {:?}",
+                .contains(&("scene_background".to_string(), 1, 0)),
+            "an empty background must report its one-frame minimum; got {:?}",
             report.insufficient_frames
         );
-        // Name the positions: an anonymous `(_, 1, 0)` reads the same either way
-        // round, so it cannot pin the field's documented element ORDER.
         let (name, need, have) = &report.insufficient_frames[0];
-        assert_eq!((name.as_str(), *need, *have), ("seated", 1, 0));
+        assert_eq!((name.as_str(), *need, *have), ("scene_background", 1, 0));
         assert!(report.has_errors());
-        // Not double-counted as missing — the entry exists.
-        assert!(!report.missing_required.contains(&"seated".to_string()));
     }
 
     #[test]
-    fn empty_frames_on_an_optional_furniture_animation_fails_validation() {
-        // An empty OPTIONAL entry is worse than an absent one: `merge_from`
-        // skips the embedded-default fallback because `contains_key` is true,
-        // so the empty animation SHADOWS the default furniture sprite.
-        let pack = pack_with_animation("desk", "[]");
+    fn incomplete_optional_skill_cycle_fails_validation() {
+        let pack = pack_with_animation(
+            "training_skill_holy_light",
+            "[\"f.sprite\",\"f.sprite\",\"f.sprite\"]",
+        );
         let report = validate_pack_animations(&pack);
         assert!(
             report
                 .insufficient_frames
-                .contains(&("desk".to_string(), 1, 0)),
-            "empty desk must report (desk, 1, 0); got {:?}",
+                .contains(&("training_skill_holy_light".to_string(), 4, 3)),
+            "a supplied skill cycle must include all four frames; got {:?}",
             report.insufficient_frames
         );
         assert!(report.has_errors());
@@ -623,13 +548,11 @@ mod validation_floor_tests {
     fn one_frame_on_a_plain_known_animation_passes_validation() {
         // The implicit floor is min-1 — a single-frame animation outside
         // MULTI_FRAME_REQUIREMENTS must not be flagged as insufficient.
-        // (The pack still misses OTHER required animations; only the
-        // frame-count floor is under test here.)
-        let pack = pack_with_animation("seated", "[\"f.sprite\"]");
+        let pack = pack_with_animation("scene_background", "[\"f.sprite\"]");
         let report = validate_pack_animations(&pack);
         assert!(
             report.insufficient_frames.is_empty(),
-            "a 1-frame seated must not be flagged; got {:?}",
+            "a one-frame background must not be flagged; got {:?}",
             report.insufficient_frames
         );
     }
@@ -754,6 +677,8 @@ mod validation_floor_tests {
     fn training_map_assets_are_known_and_require_complete_classic_cycles() {
         for (name, need) in [
             ("training_skill_magic_claw", 4),
+            ("training_skill_holy_light", 4),
+            ("training_skill_dragon_pulse", 4),
             ("training_monster_slime", 7),
             ("training_monster_slime_die", 4),
             ("training_monster_green_mushroom", 4),
@@ -781,9 +706,8 @@ mod validation_floor_tests {
         // The frame-count floor iterates the KNOWN animation lists and reads
         // each name's stricter minimum from MULTI_FRAME_REQUIREMENTS — a row
         // naming an unknown animation would silently never be checked.
-        let known: std::collections::HashSet<&str> = REQUIRED_CHARACTER_ANIMATIONS
+        let known: std::collections::HashSet<&str> = OPTIONAL_CHARACTER_ANIMATIONS
             .iter()
-            .chain(OPTIONAL_CHARACTER_ANIMATIONS.iter())
             .chain(OPTIONAL_FURNITURE_ANIMATIONS.iter())
             .copied()
             .collect();

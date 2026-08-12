@@ -239,7 +239,7 @@ pub(crate) fn verify_target(
 
 /// The HARD issue(s) for missing code artifacts, collapsed when they share a
 /// directory — the whole plugin dir being gone is ONE fact, and OpenClaw ships
-/// three artifacts, so listing each absolute path made the Sources panel's detail
+/// three artifacts, so listing each absolute path made source diagnostics
 /// line ~266 chars against a ~62-char budget: half a minute of marquee scrolling
 /// to learn the files are all in the same place. Named the same way either way, so
 /// the "reconnect" remedy reads identically.
@@ -317,7 +317,7 @@ fn is_drive_relative(p: &std::path::Path) -> bool {
 /// the path (`BinaryStrategy::EmbedAbsolute`, e.g. Codex). Targets that write the
 /// bare name and rely on PATH (Claude) fall back to the bare name so a
 /// fresh-machine install still succeeds — the `path_warning` flag in the
-/// Sources panel covers the not-yet-on-PATH case. The env override is injected by the
+/// diagnostics cover the not-yet-on-PATH case. The env override is injected by the
 /// caller so the whole decision is testable without mutating process env.
 fn resolve_hook_binary_from(
     t: &Target,
@@ -359,9 +359,8 @@ fn resolve_hook_binary_from(
             p
         };
         if !p.exists() {
-            // tracing, not println!: install runs under the TUI alt-screen, where a
-            // stdout write corrupts the frame. Stripped: `connect`/`setup` route
-            // tracing to RAW stderr and `p` is a PIXTUOID_HOOK value.
+            // tracing, not println!: machine-readable source commands reserve
+            // stdout for their result. `p` is an untrusted PIXTUOID_HOOK value.
             tracing::warn!(
                 "{origin} {} does not exist yet; the hook will fail until it does",
                 crate::strip_control_chars(&p.display().to_string())
@@ -385,9 +384,9 @@ pub enum InstallOutcome {
     AlreadyUpToDate,
 }
 
-/// Structured result of `install_target` — the data the in-TUI Sources panel
-/// renders. NO I/O: the core does the ConfigLock round and returns this; the
-/// panel decides how to surface it.
+/// Structured result of `install_target` for the source-management CLI.
+/// NO I/O: the core does the ConfigLock round and returns this; the caller
+/// decides how to surface it.
 #[derive(Debug)]
 pub struct InstallReport {
     pub outcome: InstallOutcome,
@@ -508,7 +507,7 @@ pub struct UninstallReport {
 }
 
 /// Remove pixtuoid hooks from `t`'s config, returning a structured report. The
-/// pure core behind the TUI Sources panel's disconnect action. Same lock
+/// pure core behind the `disconnect` command. Same lock
 /// scope + the load-bearing "never rewrite/delete-backup on a semantic no-op"
 /// rule as before.
 /// Remove pixtuoid hooks from `t`'s config. **`pub(crate)`: the ONLY caller is

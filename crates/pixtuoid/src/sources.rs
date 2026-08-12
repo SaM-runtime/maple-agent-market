@@ -1,15 +1,11 @@
-//! The source-control CORE: detect / connect / disconnect / reconcile, TUI-free.
+//! Source-control core: detect, connect, disconnect and reconcile agent CLIs.
 //!
 //! ONE home for "which agent CLIs exist, their connection state, and how to
-//! change it." Three thin presenters sit on top: the in-TUI Sources panel
-//! (`tui::connection` + `tui::mod::{connect_source,disconnect_source}`), the
-//! scriptable CLI (`pixtuoid sources|connect|disconnect`), and
-//! first-run onboarding (`crate::setup`). The mutating ops here are the
+//! change it." The scriptable CLI (`sources|connect|disconnect|setup`) sits on
+//! top. The mutating ops here are the
 //! PERSISTED half — they write the `[sources]` flag + install/uninstall hooks,
-//! exactly as the panel does, but DON'T touch a running instance's live
-//! `ConnectedSources` (a separate CLI process has none; a running `run`/`floating`
-//! reflects the change on its next launch). The panel adds the one live line on
-//! top.
+//! but do not touch a running window's live `ConnectedSources`; changes appear
+//! on the next launch.
 
 use std::collections::HashSet;
 use std::path::{Path, PathBuf};
@@ -191,13 +187,11 @@ pub fn post_install_hint(id: &str) -> Option<&'static str> {
 /// Connect a source: PERSIST the `[sources]` flag FIRST (so it survives restart),
 /// then — only for a target-bearing source — install its hooks, rolling the flag
 /// back if the install fails (a persisted "connected" with no integration behind
-/// it would show connected yet never produce an agent). The panel's
-/// `connect_source` adds `connected.set(..)` on top for the live gate; the CLI
-/// and onboarding don't (a separate process has no live set).
+/// it would show connected yet never produce an agent). A separate CLI process
+/// has no live set, so a running window observes the change on its next launch.
 ///
-/// **Honors the explicit id — it does NOT gate on CLI presence.** Unlike the
-/// in-TUI panel (which renders an absent CLI as `NoCli` and refuses the toggle),
-/// `connect`/`reconcile_to` install for any registered id even if that CLI isn't
+/// **Honors the explicit id — it does NOT gate on CLI presence.**
+/// `connect` / `reconcile_to` install for any registered id even if that CLI isn't
 /// installed yet — pre-provisioning for automation/onboarding where the caller
 /// stated intent. (`detect()` returns only PRESENT CLIs, so onboarding offers
 /// only installed ones; a `connect <absent-cli>` is a deliberate user/script
@@ -231,7 +225,7 @@ fn connect_target(
                 // Roll the flag back to the prior state so the next launch
                 // doesn't honor a "connected" with no hooks behind it — and an
                 // absent flag rolls back to ABSENT (preserving the
-                // `is_first_run` empty-table signal), not an explicit `false`.
+                // unconfigured empty-table state), not an explicit `false`.
                 let restore = match prior {
                     Some(v) => config::save_source_connected(cfg, sid, v),
                     None => config::remove_source_connected(cfg, sid),
@@ -349,18 +343,11 @@ fn apply_one(cfg: &Path, sid: &'static str, action: Action) -> ChangeOutcome {
 /// The marker a folded hook-removal failure carries into [`ChangeOutcome::Failed`]
 /// — the `sources set` wire token AND the tag a presenter reads back to tell the
 /// fold apart from a real failure (the disconnect itself SUCCEEDED; only the hook
-/// removal didn't). One definition so the writer here and the onboarding reader
-/// (`tui::reflect_onboarding_outcomes`) cannot drift.
+/// removal didn't). One definition keeps all CLI presenters aligned.
 pub(crate) const HOOK_REMOVAL_FAILED_PREFIX: &str = "hooks not removed: ";
 
-/// How BOTH presenters word that same fold for a human: the disconnect landed,
-/// the hooks did not. `pub` (not `pub(crate)`) for the reason [`crate::tui::widgets::REPO_URL`]
-/// is — `disconnect`'s CLI arm lives in `main.rs`, a separate crate the lib's
-/// `pub(crate)` can't reach, and the pixtuoid lib target is not a semver surface
-/// so the widening is free. It is the PHRASE only: the panel frames it
-/// `{name}: {phrase} — {reason}` ([`crate::tui::connection::format_failure`]) and
-/// the CLI `{phrase}: {reason}` under its own `{id}: failed:` row prefix, so each
-/// surface keeps its own punctuation while neither can reword the fold alone.
+/// Human wording for the disconnect-landed / hook-removal-failed fold. This is
+/// `pub` because the binary's `main.rs` is a separate crate and consumes it.
 pub const HOOK_REMOVAL_FAILED_PHRASE: &str = "disconnected, but hook removal failed";
 
 /// Map a SUCCESSFUL `disconnect`'s [`DisconnectOutcome`] to the CLI
@@ -385,9 +372,8 @@ fn map_disconnect_outcome(o: DisconnectOutcome) -> ChangeOutcome {
 /// this touches ONLY the ids passed — a source absent from the list (e.g.
 /// `antigravity`, which never appears in `detect()`) keeps its existing flag —
 /// or, absent one, the plain disconnected default — never a surprise write.
-/// Each write makes `[sources]` non-empty, so the first-run gate
-/// (`setup::is_first_run`) closes. Idempotent: connect/disconnect no-op at the
-/// install layer when already in state.
+/// Each write makes `[sources]` explicit. Idempotent: connect / disconnect are
+/// no-ops at the install layer when already in state.
 pub fn apply_choices(cfg: &Path, choices: &[(&'static str, bool)]) -> Vec<(String, ChangeOutcome)> {
     choices
         .iter()
@@ -400,42 +386,6 @@ pub fn apply_choices(cfg: &Path, choices: &[(&'static str, bool)]) -> Vec<(Strin
             (sid.to_string(), apply_one(cfg, sid, action))
         })
         .collect()
-}
-
-/// The onboarding SKIP freeze (pure core): map each detected source to its REAL
-/// current connection state — connected in the live gate OR already carrying
-/// installed hooks (`is_hooked`). Feeding THIS to [`apply_choices`] (rather than
-/// the live gate alone, which is EMPTY on a first run) is what makes a skip
-/// preserve an existing install: a pre-0.12 upgrader — hooks present but no
-/// `[sources]` flag, exactly the population onboarding replays to re-connect —
-/// freezes to `true`, so apply re-installs idempotently (a semantic no-op) instead
-/// of disconnecting + UNINSTALLING its working hooks. `is_hooked` is injected so
-/// this stays pure and unit-testable; production callers go through [`skip_freeze`].
-pub(crate) fn freeze_for_skip(
-    detected: impl IntoIterator<Item = &'static str>,
-    connected: &HashSet<String>,
-    is_hooked: impl Fn(&'static str) -> bool,
-) -> Vec<(&'static str, bool)> {
-    detected
-        .into_iter()
-        .map(|id| (id, connected.contains(id) || is_hooked(id)))
-        .collect()
-}
-
-/// The production onboarding-SKIP freeze: [`freeze_for_skip`] with the real
-/// install-state probe assembled HERE, so the install-layer access
-/// (`has_hooks`/`by_source`) stays funneled through this `sources` facade — the
-/// same layer that owns connect/disconnect's install calls — rather than reaching
-/// out of the TUI event loop. Does per-target config reads (`has_hooks`), which
-/// the caller runs inline — a brief one-shot stall, like the rest of the skip I/O
-/// (`block_in_place` was removed in #603 because it is inert on this thread).
-pub(crate) fn skip_freeze(
-    detected: impl IntoIterator<Item = &'static str>,
-    connected: &HashSet<String>,
-) -> Vec<(&'static str, bool)> {
-    freeze_for_skip(detected, connected, |id| {
-        by_source(id).is_some_and(|t| install::has_hooks(t, None))
-    })
 }
 
 // ---- Source status MODEL (moved here from `tui::connection`, which re-exports
@@ -707,32 +657,6 @@ mod tests {
         let err = registered_id("not-a-source").unwrap_err().to_string();
         assert!(err.contains("unknown source 'not-a-source'"), "{err}");
         assert!(err.contains("antigravity"), "lists known sources: {err}");
-    }
-
-    #[test]
-    fn freeze_for_skip_keeps_a_hooked_but_unflagged_source_connected() {
-        // A pre-0.12 upgrader: config has NO [sources] table (empty connected set),
-        // but claude-code's hooks ARE installed. Skip must freeze it to `true` so
-        // apply re-installs idempotently (hooks survive), NOT `false` — which would
-        // disconnect → uninstall its working hooks (the bug). A fresh, un-hooked
-        // source (codex) freezes to `false`. Teeth: reading only the connected gate
-        // (the old behavior) would freeze claude-code false here.
-        let connected = HashSet::new();
-        let freeze = freeze_for_skip(
-            ["claude-code", "codex"],
-            &connected,
-            |id| id == "claude-code", // only claude-code has installed hooks
-        );
-        assert_eq!(freeze, vec![("claude-code", true), ("codex", false)]);
-    }
-
-    #[test]
-    fn freeze_for_skip_honors_the_live_connected_gate() {
-        // A source already connected in the live gate freezes to `true` even with
-        // no installed hooks (e.g. antigravity, a no-target source).
-        let connected = set(&["antigravity"]);
-        let freeze = freeze_for_skip(["antigravity", "codex"], &connected, |_| false);
-        assert_eq!(freeze, vec![("antigravity", true), ("codex", false)]);
     }
 
     #[test]

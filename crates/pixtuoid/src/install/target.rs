@@ -46,7 +46,7 @@ pub struct Target {
     /// "claude-code". Pins the install↔source bridge: a target naming no
     /// registered source, or a hook-only source with no target (= its hooks
     /// never install, so its sprite never appears), is caught by the tests below.
-    /// The Sources panel joins its rows to targets on this via `by_source`.
+    /// The sources CLI joins its rows to targets on this via `by_source`.
     pub core_source: &'static str,
     /// Human-readable name for CLI output.
     pub display_name: &'static str,
@@ -317,7 +317,7 @@ pub(crate) fn by_name(name: &str) -> Option<&'static Target> {
 
 /// Resolve the install target for a core source id (`SourceDescriptor.name`,
 /// e.g. "claude-code"). This is the correct join for anything keyed on the
-/// source registry (the Sources panel) — `by_name` keys on the CLI-facing
+/// source registry (the sources CLI) — `by_name` keys on the CLI-facing
 /// `--target` name, which differs from the source id for Claude.
 pub(crate) fn by_source(source_id: &str) -> Option<&'static Target> {
     TARGETS.iter().copied().find(|t| t.core_source == source_id)
@@ -364,7 +364,7 @@ mod tests {
     #[test]
     fn by_source_resolves_claude_via_core_source_not_name() {
         // The flagship divergence: the Claude install target is named "claude"
-        // but its core source id is "claude-code". The Sources panel joins on
+        // but its core source id is "claude-code". The sources CLI joins on
         // core_source — `by_name` on the source id must NOT match.
         assert_eq!(by_source("claude-code").unwrap().name, "claude");
         assert!(by_name("claude-code").is_none());

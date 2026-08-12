@@ -571,7 +571,7 @@ mod tests {
     #[test]
     fn a_rejected_gateway_port_is_display_safe_in_the_error() {
         // The hook loop logs this Err at the `warn` floor = RAW stderr in every
-        // non-TUI mode. `serde_json`'s Display escapes Cc but NOT DEL or the Cf
+        // foreground CLI mode. `serde_json`'s Display escapes Cc but NOT DEL or the Cf
         // bidi overrides (CVE-2021-42574), so the value needs the same
         // `display_safe` the unsupported-event `bail!`s already take.
         let bad = json!("18\u{202e}78\u{7f}9");

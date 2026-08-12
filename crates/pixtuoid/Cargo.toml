@@ -16,18 +16,15 @@ categories.workspace   = true
 workspace = true
 
 [[bin]]
-name = "pixtuoid"
+name = "maple-agent-market"
 path = "src/main.rs"
 
 [dependencies]
 pixtuoid-core  = { path = "../pixtuoid-core", version = "0.16.0" }
 pixtuoid-scene = { path = "../pixtuoid-scene", version = "0.16.0" }
-# Monaspace Neon 的 AA 文字 rasterizer，只存在於 floating／TUI binary。
+# Monaspace Neon 的 AA 文字 rasterizer，只存在於 floating window binary。
 ab_glyph = "0.2"
-tokio              = { workspace = true, features = ["rt-multi-thread", "macros", "signal", "sync", "time", "net", "fs", "io-util"] }
-ratatui            = { workspace = true }
-crossterm          = { workspace = true }
-unicode-width      = { workspace = true }
+tokio              = { workspace = true, features = ["rt-multi-thread", "macros", "sync", "time", "net", "fs", "io-util"] }
 clap               = { workspace = true }
 serde              = { workspace = true }
 # connect／disconnect 會合併使用者既有 JSON 設定；保留原本 key 順序以減少噪音 diff。
@@ -47,15 +44,12 @@ tracing-subscriber = { workspace = true }
 which              = "8"
 # clock feature gives us Local::now() w/ system timezone for the wall clock.
 chrono             = { version = "0.4", default-features = false, features = ["clock"] }
-open               = "5"
-# The `pixtuoid floating` desktop window (binary-only — pixtuoid-core stays window-free,
+# The Maple Agent Market desktop window (binary-only — pixtuoid-core stays window-free,
 # invariant #1). winit = the frameless always-on-top window + main-thread event loop;
-# softbuffer = CPU blit of the office RgbBuffer into it (no GPU). Both rust-windowing,
+# softbuffer = CPU blit of the scene RgbBuffer into it (no GPU). Both rust-windowing,
 # share raw-window-handle 0.6, MSRV ≤ 1.89.
 winit              = "0.30"
 softbuffer         = "0.4"
-clap_complete = "4.6.5"
-clap_mangen = "0.3.0"
 
 # Audio gateway: rodio/cpal playback plus optional local-file decoding.
 # Local BGM adds MP3/WAV/OGG/FLAC decoders but commits no media; an absent
@@ -63,9 +57,8 @@ clap_mangen = "0.3.0"
 # `audio` feature: `--no-default-features` builds a silent binary (and skips cpal's
 # Linux ALSA system-header requirement). `tracing` routes rodio's OWN diagnostics
 # (mid-session stream errors, the device-list-enumeration failure, the drop log)
-# to `tracing::error!/debug!` instead of its default `eprintln!` — a raw stderr
-# write mid-altscreen corrupts the TUI (lowfi's first-ever bug). See
-# `sink::rodio_sink::RodioSink::open`.
+# to `tracing::error!/debug!` instead of its default `eprintln!`, so window-mode
+# diagnostics stay in the log file. See `sink::rodio_sink::RodioSink::open`.
 rodio = { version = "0.22.2", default-features = false, features = ["playback", "tracing", "mp3", "wav", "vorbis", "flac"], optional = true }
 
 [features]
@@ -73,36 +66,10 @@ default = ["audio"]
 # Ambient sound (config-OFF at runtime regardless; this gates the DEPENDENCY).
 audio = ["dep:rodio"]
 
-# termios/poll for the truecolor preflight's DECRQSS terminal query (term.rs):
-# raw-mode the controlling tty + timed read of the reply. Unix-only — Windows
-# hard-gates VT separately. Same 0.2 as pixtuoid-core/hook — no second build.
+# Unix-only secure file creation and temporary stderr redirection for local
+# hook installation and audio device probing. Same 0.2 as pixtuoid-core/hook.
 [target.'cfg(unix)'.dependencies]
 libc = "0.2"
-
-# Focus-jump activation (focus/macos.rs): NSRunningApplication activate — plain
-# Cocoa, zero TCC. Pinned to the SAME objc2 stack winit already pulls (0.2.x on
-# objc2 0.5.2 per Cargo.lock) so the bindings don't double-compile — the same
-# discipline pixtuoid-hook's windows-sys comment enshrines. This MUST track
-# winit's objc2-app-kit major, not float ahead: a lone bump to 0.3.x drags in a
-# whole SECOND objc2 stack (0.6 core + 0.3 app-kit/foundation/quartz) beside
-# winit's, regressing exactly that no-double-compile invariant AND breaking the
-# activate API — so dependabot is told to ignore it (.github/dependabot.yml)
-# until winit itself moves.
-[target.'cfg(target_os = "macos")'.dependencies]
-objc2-app-kit = { version = "0.2.2", features = ["NSRunningApplication", "libc"] }
-
-# Focus-jump on Linux (focus/linux.rs): the EWMH _NET_ACTIVE_WINDOW protocol
-# needs an X11 client; x11rb is already in-tree transitively via winit — so this
-# MUST track the version winit AND softbuffer resolve to, exactly like the
-# objc2-app-kit stanza above. Both require `^0.13.0` (verified on crates.io:
-# winit 0.30.13, softbuffer 0.4.8 — and winit-x11 0.31.0-beta.2 too, so the
-# winit 0.31 upgrade does NOT collapse this), and a grouped dependabot bump to
-# "0.14" silently built a SECOND x11rb + x11rb-protocol (the large generated
-# protocol crate) on every Linux build. `cargo deny`'s [bans] is only "warn", so
-# nothing caught it; dependabot is told to hold this at 0.13.x
-# (.github/dependabot.yml) until winit itself moves.
-[target.'cfg(target_os = "linux")'.dependencies]
-x11rb = "0.13"
 
 # GetShortPathNameW for the Codex/Reasonix Windows hook path: resolve a
 # space/metacharacter-bearing install path to its DOS 8.3 short form so cmd.exe /C
@@ -110,19 +77,14 @@ x11rb = "0.13"
 [target.'cfg(windows)'.dependencies]
 windows-sys = { version = "0.61", features = [
     "Win32_Storage_FileSystem",
-    # focus/windows.rs: Toolhelp32 ancestor walk + EnumWindows/SetForegroundWindow
-    "Win32_System_Diagnostics_ToolHelp",
-    "Win32_UI_WindowsAndMessaging",
 ] }
 
 [dev-dependencies]
 tempfile = "3"
 # `sources --json` 的 end-to-end CLI golden。
 snapbox  = { version = "1", features = ["json"] }
-# test-util: paused-clock signal-arm tests in runtime/driver.rs (headless_loop).
-tokio    = { workspace = true, features = ["test-util"] }
+tokio    = { workspace = true }
 image    = { version = "0.25", default-features = false, features = ["png", "gif"] }
-insta    = "1"
 # Integration tests parse the `--json` CLI output back (the delivery-contract
 # e2e in cli_json.rs). Already a normal dep, so no new lockfile entry.
 serde_json = { workspace = true }

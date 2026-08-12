@@ -1,5 +1,0 @@
----
-source: crates/pixtuoid/src/tui/widgets/mod.rs
-expression: line
----
- 2/5 · ○2 I                                                                    F2/3 [↑↓] [?]help [p]ause [t]heme [q]uit

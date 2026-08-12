@@ -31,7 +31,7 @@
 //! (`name`/`field`/`tool`/`detail`) are untrusted wire content, so they are made
 //! display-safe HERE, at emission — control-stripped and capped by
 //! `decoder::display_safe`. Per-consumer sanitizing was not
-//! enough: the non-TUI `tracing` stream writes to RAW stderr, which no cell
+//! enough: a foreground CLI `tracing` stream writes to RAW stderr, which no pixel
 //! buffer clips and no presenter sanitizes, and it is on by default at `warn`.
 
 /// The `tracing` target every drift breadcrumb shares. Consumers (the log scan
@@ -80,7 +80,7 @@ mod tests {
     // style of the fmt formatter can't make the test brittle.
     #[test]
     fn breadcrumb_values_are_display_safe_and_capped() {
-        // `pixtuoid run --headless` routes tracing to RAW stderr, so this IS a
+        // Foreground CLI commands route tracing to raw stderr, so this IS a
         // terminal sink and these values are pure untrusted wire content (a
         // transcript's own top-level `type`, a tool name). Strip Cc AND the Cf
         // bidi overrides — `char::is_control` is Cc-only, and Trojan Source

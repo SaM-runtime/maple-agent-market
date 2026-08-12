@@ -74,7 +74,7 @@ pub(crate) const OPENCLAW_EVENTS: &[&str] = &[
 const MANIFEST: &str = r#"{
   "id": "pixtuoid",
   "name": "Pixtuoid",
-  "description": "Forwards OpenClaw gateway daemon-presence signals to pixtuoid (the terminal office visualizer).",
+  "description": "Forwards OpenClaw gateway presence signals to Maple Agent Market.",
   "configSchema": { "type": "object", "additionalProperties": false, "properties": {} },
   "activation": { "onStartup": true }
 }
@@ -228,7 +228,7 @@ fn plugin_dir() -> Result<PathBuf> {
 }
 
 /// Auto-detect probe: is OpenClaw present (its state dir exists), so the
-/// Sources panel OFFERS it? Probe OpenClaw's OWN dir, NOT our plugin/config —
+/// `setup` offers it? Probe OpenClaw's OWN dir, NOT our plugin/config —
 /// keying on our artifact would chicken-and-egg (opencode/Reasonix rationale).
 /// With `OPENCLAW_STATE_DIR` set that dir IS the state dir; else probe both the
 /// modern `.openclaw` and the legacy `.clawdbot` under the effective home.
@@ -236,7 +236,7 @@ pub(crate) fn detect_installed() -> bool {
     // Normalize the SAME env vars the SAME way `openclaw_state_dir()` does (#342/#344):
     // `~`-expand `OPENCLAW_STATE_DIR`/`OPENCLAW_HOME` against the same home base. Without
     // this, a `~`-prefixed override would install into the EXPANDED dir but probe the
-    // literal `~/…` → `false` → the Sources panel never offers the OpenClaw it just
+    // literal `~/…` → `false` → `setup` never offers the OpenClaw it just
     // installed into (the install/detect asymmetry).
     let home = pixtuoid_core::platform::home_first_dir();
     resolve_openclaw_detect(

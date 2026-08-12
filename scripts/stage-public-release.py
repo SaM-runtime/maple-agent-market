@@ -105,7 +105,11 @@ def copy_executable(
 ) -> tuple[str, dict[str, str]]:
     """Copy the release executable and return its name and manifest entry."""
 
-    executable_name = "pixtuoid.exe" if artifact.suffix.casefold() == ".exe" else "pixtuoid"
+    executable_name = (
+        "maple-agent-market.exe"
+        if artifact.suffix.casefold() == ".exe"
+        else "maple-agent-market"
+    )
     executable = staging / executable_name
     shutil.copy2(artifact, executable)
     return executable_name, {
@@ -274,7 +278,7 @@ def built_release_artifact(root: pathlib.Path) -> pathlib.Path:
     configured = pathlib.Path(os.environ.get("CARGO_TARGET_DIR", root / "target"))
     target_dir = configured if configured.is_absolute() else root / configured
     suffix = ".exe" if os.name == "nt" else ""
-    return target_dir.resolve() / host / "release" / f"pixtuoid{suffix}"
+    return target_dir.resolve() / host / "release" / f"maple-agent-market{suffix}"
 
 
 def run_release_build(root: pathlib.Path) -> pathlib.Path:
@@ -302,7 +306,7 @@ def selftest() -> int:
     failures: list[str] = []
     with tempfile.TemporaryDirectory() as tmp:
         root = pathlib.Path(tmp) / "繁體中文-source"
-        artifact = pathlib.Path(tmp) / "build" / "pixtuoid.exe"
+        artifact = pathlib.Path(tmp) / "build" / "maple-agent-market.exe"
         output = pathlib.Path(tmp) / "public-bundle"
         source_files = {
             "Cargo.toml": """
@@ -360,7 +364,7 @@ homepage = "https://example.github.io/maple-agent-market"
             "RustCrypto-SHA2-MIT.txt",
             "SHA256SUMS.txt",
             "THIRD_PARTY_NOTICES.md",
-            "pixtuoid.exe",
+            "maple-agent-market.exe",
         }
         observed = {path.name for path in output.iterdir()}
         if observed != expected:

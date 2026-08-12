@@ -1,6 +1,6 @@
 //! Logging bootstrap (#157): the tracing-subscriber install + the log-file path
 //! resolution/rotation. Binary-crate module (lifted out of `main.rs`); `main()`
-//! computes `tui_active` from the parsed command and calls [`init`] once.
+//! computes `window_active` from the parsed command and calls [`init`] once.
 
 use std::fs::OpenOptions;
 use std::path::{Path, PathBuf};
@@ -8,17 +8,10 @@ use std::sync::{Arc, Mutex};
 
 use tracing_subscriber::EnvFilter;
 
-/// Install the global tracing subscriber. Log routing:
-///   TUI mode: ALWAYS log to the file (#157) — the alternate screen owns
-///     the terminal, so the log file is the only place a runtime error
-///     ("source died", decode failures) can surface. The default floor is
-///     `warn`; $RUST_LOG, $PIXTUOID_LOG, or --log-level raise/shape it.
-///     Crash reporting is handled separately by the panic hook.
-///   Non-TUI (--headless, validate-pack, init-pack): stderr.
-///   `floating`: file-log like the TUI — it's a long-running GUI; tracing spam
-///     into the launching terminal would be noise (config warnings still
-///     eprintln to that terminal via build_run_config before the window opens).
-pub(crate) fn init(tui_active: bool, log_level: &'static str) {
+/// Install the global tracing subscriber. The long-running floating window logs
+/// to a file; short CLI commands log to stderr. Crash reporting is handled
+/// separately by the panic hook.
+pub(crate) fn init(window_active: bool, log_level: &'static str) {
     // RUST_LOG wins only when set to a NON-EMPTY value; an empty RUST_LOG
     // parses as Ok(zero directives) = everything OFF, which would silently
     // defeat logging on the verbose / $PIXTUOID_LOG / --headless paths that
@@ -37,7 +30,7 @@ pub(crate) fn init(tui_active: bool, log_level: &'static str) {
     // semantics XDG_STATE_HOME / XDG_CONFIG_HOME / PIXTUOID_HOOK already use.
     let explicit_log_file = pixtuoid::install::nonempty_env("PIXTUOID_LOG").is_some();
 
-    if tui_active {
+    if window_active {
         // Explicit verbosity keeps today's semantics (the full --log-level /
         // RUST_LOG filter); the always-on default floors at warn so the file
         // captures errors without accumulating info-level noise. RUST_LOG
@@ -74,11 +67,10 @@ pub(crate) fn init(tui_active: bool, log_level: &'static str) {
                     .init();
             }
             Err(e) => {
-                // The footer's "see log" advice would point at nothing —
-                // say so on the pre-altscreen stderr channel rather than
-                // degrading silently (the #157 failure class).
+                // The window has no diagnostic panel, so make a failed file
+                // sink visible to the launching terminal.
                 eprintln!(
-                    "⚠ pixtuoid: cannot open log file {} ({e}) — runtime warnings will not be recorded",
+                    "⚠ maple-agent-market: cannot open log file {} ({e}) — runtime warnings will not be recorded",
                     path.display()
                 );
             }
@@ -174,8 +166,7 @@ fn create_owner_only_append(path: &Path) -> std::io::Result<std::fs::File> {
     opts.open(path)
 }
 
-/// The append-only log was opt-in before #157; now that it is always on in
-/// TUI mode it needs a growth bound. One-deep rotation at startup (log →
+/// The floating window's append-only log needs a growth bound. One-deep rotation at startup (log →
 /// log.old) keeps the last two generations without a rotation dependency.
 /// Known accepted edge: with several pixtuoid instances sharing the default
 /// path, one instance's startup rotation renames the file out from under a

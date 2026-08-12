@@ -66,7 +66,7 @@ impl SourceManager {
     /// its agents silently freeze and stale-sweep out over 10–60 min — the
     /// worst class of partial failure — so the death must reach a surface the
     /// user actually watches, not only `tracing` (which has no subscriber in
-    /// default TUI mode beyond the warn-level file log).
+    /// default floating-window mode beyond the warn-level file log).
     pub fn spawn_with_health(
         self,
         tx: TaggedSender,

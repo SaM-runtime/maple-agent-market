@@ -49,11 +49,11 @@ use crate::install::verify::{SchemaParse, ShimRef};
 /// is a human note for anyone opening the file.
 const SENTINEL_KEY: &str = "_pixtuoid";
 const SENTINEL_NOTE: &str =
-    "managed by pixtuoid — disconnect grok in the Sources panel (s) to remove";
+    "managed by Maple Agent Market — run `maple-agent-market disconnect grok` to remove";
 
 /// Written on uninstall: a valid hooks file registering nothing, WITHOUT the
 /// sentinel, so a re-uninstall is a clean no-op. grok parses it to zero hooks.
-const REMOVED_STUB: &str = "{\n  \"_note\": \"pixtuoid hooks removed by disconnecting grok in pixtuoid's Sources panel (press s).\",\n  \"hooks\": {}\n}\n";
+const REMOVED_STUB: &str = "{\n  \"_note\": \"Maple Agent Market hooks removed by `maple-agent-market disconnect grok`.\",\n  \"hooks\": {}\n}\n";
 
 /// Per-entry timeout (SECONDS — grok's settings-file unit, converted to ms
 /// upstream). grok awaits hooks inline; the shim exits within its 200ms bound,

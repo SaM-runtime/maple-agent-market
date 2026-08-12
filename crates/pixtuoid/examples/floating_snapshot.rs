@@ -1,11 +1,9 @@
-//! Render ONE frame of the `pixtuoid floating` office to a PNG — visual verification for
-//! the floating window (the desktop-window twin of the `snapshot` example, which captures
-//! the half-block TUI). It drives the SAME `floating::offscreen::OfficeRenderer` the live
-//! window uses AND the same `paint_labels_into_surface`, so the PNG is byte-faithful to what
-//! the window blits (full-resolution `RgbBuffer` + name badges, NOT a ▀-compressed grab).
+//! Render one frame of Maple Agent Market to PNG. It drives the same
+//! `floating::offscreen::MapleRenderer` and label overlay as the live window,
+//! so the result is byte-faithful to the public procedural renderer.
 //!
 //! Usage:
-//!   cargo run --release --example floating_snapshot -- <out.png> [WxH] [--theme <name>] [--agents N] [--all-active] [--pack-dir <path>] [--map market|training|both] [--native] [--label-px N] [--advance-ms N] [--entry-ms N] [--exit-ms N] [--command-ms N] [--complete-ms N]
+//!   cargo run --release --example floating_snapshot -- <out.png> [WxH] [--agents N] [--all-active] [--pack-dir <path>] [--map market|training|both] [--native] [--label-px N] [--advance-ms N] [--entry-ms N] [--exit-ms N] [--command-ms N] [--complete-ms N]
 //! e.g. `... -- /tmp/floating.png 720x480 --agents 6` (Retina default), `... -- /tmp/f.png 360x240`.
 
 use std::path::PathBuf;
@@ -19,7 +17,7 @@ use pixtuoid::floating::offscreen::{
     paint_map_labels_into_surface_with_font_px_in_panel, paint_map_selector_into_surface,
     paint_market_player_ids_into_surface,
     paint_market_player_ids_into_surface_with_font_px_in_panel, paint_size_selector_into_surface,
-    OfficeRenderer,
+    MapleRenderer,
 };
 use pixtuoid_core::source::{AgentEvent, Transport};
 use pixtuoid_core::state::{ActivityState, SceneState, ToolKind};
@@ -47,31 +45,31 @@ fn populate_demo_agents(
 ) {
     let archetypes: [(&str, ActivityState); 6] = [
         (
-            "cx·巡查訓練場怪物",
+            "巡查訓練場怪物",
             ActivityState::Active {
                 tool_use_id: Some("tu_a".into()),
                 detail: Some("Write: src/foo.rs".into()),
                 kind: ToolKind::Edit,
             },
         ),
-        ("cx·整理隊伍站位", ActivityState::Idle),
+        ("整理隊伍站位", ActivityState::Idle),
         (
-            "cx·等待需求確認",
+            "等待需求確認",
             ActivityState::Waiting {
                 reason: "permission?".into(),
             },
         ),
         (
-            "cx·同步角色戰鬥狀態",
+            "同步角色戰鬥狀態",
             ActivityState::Active {
                 tool_use_id: Some("tu_d".into()),
                 detail: Some("Bash: cargo test".into()),
                 kind: ToolKind::Bash,
             },
         ),
-        ("cx·檢查繁中字體", ActivityState::Idle),
+        ("檢查繁中字體", ActivityState::Idle),
         (
-            "cx·驗證浮動視窗",
+            "驗證浮動視窗",
             ActivityState::Active {
                 tool_use_id: Some("tu_e".into()),
                 detail: Some("Grep: TODO".into()),
@@ -99,8 +97,8 @@ fn populate_demo_agents(
         let key = format!("{label}-{i}");
         let id = AgentId::from_transcript_path(&format!("/demo/{key}.jsonl"));
         let parent_id = match i {
-            1 | 2 => ids.first().copied(),
-            4 => ids.get(3).copied(),
+            1 => ids.first().copied(),
+            3 | 4 => ids.get(2).copied(),
             _ => None,
         };
         let state_started_at = if matches!(
@@ -160,11 +158,10 @@ fn populate_demo_agents(
 fn main() -> Result<()> {
     let mut args = std::env::args().skip(1);
     let out = args.next().ok_or_else(|| {
-        anyhow!("usage: floating_snapshot <out.png> [WxH] [--theme <name>] [--agents N] [--all-active] [--pack-dir <path>] [--map market|training|both] [--native] [--label-px N] [--advance-ms N] [--entry-ms N] [--exit-ms N] [--command-ms N] [--complete-ms N]")
+        anyhow!("usage: floating_snapshot <out.png> [WxH] [--agents N] [--all-active] [--pack-dir <path>] [--map market|training|both] [--native] [--label-px N] [--advance-ms N] [--entry-ms N] [--exit-ms N] [--command-ms N] [--complete-ms N]")
     })?;
 
     let mut size = (720u16, 480u16); // Retina default (360x240 logical @2x)
-    let mut theme_name = "normal".to_string();
     let mut n_agents = 0usize;
     let mut all_active = false;
     let mut pack_dir: Option<PathBuf> = None;
@@ -182,13 +179,6 @@ fn main() -> Result<()> {
     let mut i = 0;
     while i < rest.len() {
         match rest[i].as_str() {
-            "--theme" => {
-                theme_name = rest
-                    .get(i + 1)
-                    .cloned()
-                    .ok_or_else(|| anyhow!("--theme needs a value"))?;
-                i += 2;
-            }
             "--agents" => {
                 n_agents = rest
                     .get(i + 1)
@@ -296,16 +286,15 @@ fn main() -> Result<()> {
         }
     }
 
-    let theme =
-        theme_by_name(&theme_name).ok_or_else(|| anyhow!("unknown --theme {theme_name:?}"))?;
+    let theme = theme_by_name("maple").expect("the built-in Maple theme must stay registered");
     if both_maps && !size_explicit {
         size = (1_440, 480);
     }
     let pack = pixtuoid_scene::embedded_pack::load_sprite_pack(pack_dir)?;
     let now = std::time::UNIX_EPOCH + Duration::from_secs(1_700_000_000) + advance;
 
-    // Empty office (default) shows the layout / walls / windows / desks; `--agents N` seats
-    // demo agents so the name-badge overlay is exercised too.
+    // `--agents N` adds demo agents so cards and lifecycle animations can be
+    // captured without a live Codex session.
     let mut scene = SceneState::uniform(64);
     populate_demo_agents(
         &mut scene,
@@ -319,7 +308,7 @@ fn main() -> Result<()> {
             all_active,
         },
     );
-    let mut renderer = OfficeRenderer::new();
+    let mut renderer = MapleRenderer::new();
     if both_maps {
         renderer.set_maple_dual_view();
         renderer.assign_snapshot_scene_across_maps(&scene);
@@ -327,17 +316,17 @@ fn main() -> Result<()> {
         renderer.set_maple_map(maple_map);
         renderer.assign_snapshot_scene_to_map(&scene, maple_map);
     }
-    // Mirror floating::window EXACTLY: render the office at window/SCALE, nearest-neighbor
+    // Mirror floating::window EXACTLY: render the Maple scene at window/SCALE, nearest-neighbor
     // upscale into a `u32` surface, then blit the name badges — so the PNG is byte-faithful.
     let (win_w, win_h) = (size.0 as u32, size.1 as u32);
     let scale = if native_scale {
         1
     } else {
-        pixtuoid::floating::offscreen::office_scale(win_h)
+        pixtuoid::floating::offscreen::maple_scale(win_h)
     };
     let ow = (win_w / scale).max(1).min(u16::MAX as u32) as u16;
     let oh = (win_h / scale).max(1).min(u16::MAX as u32) as u16;
-    let buf = renderer.render(&scene, &pack, theme, now, ow, oh, FloorMeta::ground(), None);
+    let buf = renderer.render(&scene, &pack, theme, now, ow, oh, FloorMeta::ground());
     let (bw, bh) = (buf.width() as u32, buf.height() as u32);
 
     let (ww, wh) = (win_w as usize, win_h as usize);
@@ -432,8 +421,6 @@ fn main() -> Result<()> {
         }
     }
     img.save(&out).with_context(|| format!("writing {out}"))?;
-    eprintln!(
-        "wrote {out} ({win_w}x{win_h}, office buffer {bw}x{bh} @{scale}x, {n_agents} agents)"
-    );
+    eprintln!("wrote {out} ({win_w}x{win_h}, Maple buffer {bw}x{bh} @{scale}x, {n_agents} agents)");
     Ok(())
 }

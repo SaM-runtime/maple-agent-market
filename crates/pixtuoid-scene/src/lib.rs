@@ -1,24 +1,23 @@
-//! Backend-agnostic render + simulation engine shared by every front-end.
+//! Window-free render and simulation engine used by Maple Agent Market.
 //!
-//! `scene` owns the office world: layout, pose/motion/pathfinding, the pixel
-//! painter (`render_to_rgb_buffer` — the shared world render), themes, pets,
-//! chitchat, and the embedded sprite pack. It has **no** terminal or window
-//! dependency — `tui` (ratatui half-block) and `floating` (winit/softbuffer)
-//! are thin painters layered on top, and neither depends on the other.
+//! The crate owns layout, pose / motion / pathfinding, Maple map routing,
+//! procedural pixel painters and optional sprite-pack overrides. It has no
+//! terminal or window dependency; winit / softbuffer live in the binary crate.
 //!
 //! ```
-//! use pixtuoid_scene::layout::SceneLayout;
+//! use pixtuoid_scene::layout::Bounds;
+//! use pixtuoid_scene::market::{market_slots, MARKET_MAX_AGENTS};
 //! use pixtuoid_scene::theme::theme_by_name;
 //!
-//! // Themes are bundled and resolved by name (normal, cyberpunk, dracula, …).
-//! let theme = theme_by_name("dracula").expect("bundled theme");
-//! assert_eq!(theme.name, "dracula");
+//! let theme = theme_by_name("maple").expect("built-in Maple theme");
+//! assert_eq!(theme.name, "maple");
 //!
-//! // Lay out an office for a 192×64 pixel viewport — pure geometry, no window.
-//! // `None` fills the buffer with as many desk pods as physically fit.
-//! let office = SceneLayout::compute_with_seed(192, 64, None, 0)
-//!     .expect("viewport is large enough for an office");
-//! assert!(!office.home_desks.is_empty());
+//! // Market placement is pure geometry and remains window-independent.
+//! let slots = market_slots(
+//!     Bounds { x: 0, y: 0, width: 240, height: 160 },
+//!     MARKET_MAX_AGENTS,
+//! );
+//! assert_eq!(slots.len(), MARKET_MAX_AGENTS);
 //! ```
 
 // Terminal- and window-free (invariant #1, crate-boundary enforced). The dep

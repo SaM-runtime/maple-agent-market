@@ -1,10 +1,10 @@
-//! The `winit` + `softbuffer` window for `pixtuoid floating`.
+//! The `winit` + `softbuffer` window for Maple Agent Market.
 //!
 //! `FloatingApp` is the `ApplicationHandler`: on `Resumed` it creates ONE frameless,
 //! always-on-top window + a `softbuffer` surface; it renders the latest `watch`ed scene
-//! to a DOWNSCALED office `RgbBuffer` via [`OfficeRenderer`] (~window/SCALE) then
+//! to a DOWNSCALED Maple `RgbBuffer` via [`MapleRenderer`] (~window/SCALE) then
 //! nearest-neighbor upscales it into the surface (CPU, `0x00RRGGBB`) so the pixel-art
-//! office stays chunky/legible instead of 1:1-tiny. Redraw is event-driven (a
+//! scene stays chunky/legible instead of 1:1-tiny. Redraw is event-driven (a
 //! `FloatingEvent::SceneChanged` from the pipeline
 //! bridge) plus a ~30fps animation tick WHILE agents OR a live gateway daemon (the OpenClaw
 //! lobster mascot in `scene.daemons`) are present (motion is time-driven); with no agents and
@@ -31,7 +31,7 @@ use winit::event::{ElementState, MouseButton, WindowEvent};
 use winit::event_loop::{ActiveEventLoop, ControlFlow};
 use winit::window::{ResizeDirection, Window, WindowId, WindowLevel};
 
-use super::offscreen::OfficeRenderer;
+use super::offscreen::MapleRenderer;
 use crate::config::{self, FloatingConfig};
 use pixtuoid_scene::floor::FloorMeta;
 use pixtuoid_scene::theme::Theme;
@@ -43,25 +43,21 @@ pub(crate) enum FloatingEvent {
     SceneChanged,
 }
 
-/// The floating window app: window + surface (created lazily on `Resumed`), the office
+/// The floating window app: window + surface (created lazily on `Resumed`), the Maple
 /// renderer (owns cross-frame caches), the live scene receiver, and the per-floor desk
-/// capacity atomics it keeps in sync with the rendered office.
+/// capacity atomics it keeps in sync with the rendered scene.
 pub(crate) struct FloatingApp {
     cfg: FloatingConfig,
     theme: &'static Theme,
     pack: Pack,
     config_path: PathBuf,
-    /// The configured office pets — one is selected per floor (v1 shows floor 0's).
-    pets: Vec<pixtuoid_scene::pet::Pet>,
-    renderer: OfficeRenderer,
-    /// The whole mute/volume persist protocol (#633 close-out) — the SAME
-    /// `AudioController` the TUI owns (was `audio`/`volume_flash`/`volume_dirty`
-    /// duplicated here). The renderer holds its own handle clone, handed over
+    renderer: MapleRenderer,
+    /// The mute/volume persistence protocol. The renderer holds its own handle clone, handed over
     /// once in `new` (`renderer.set_audio(audio_ctl.handle().clone())`); the
     /// shared-Arc handle stays live across a lazy respawn, so there is no
     /// per-spawn re-sync. Flash is VOLUME-only now (was
-    /// every-gesture): a mute toggle shows no transient overlay until a footer
-    /// lands to display it — the accepted TUI-parity tradeoff.
+    /// every gesture): a mute toggle shows no transient overlay until a footer
+    /// lands to display it.
     audio_ctl: crate::audio::AudioController,
     scene_rx: watch::Receiver<Arc<SceneState>>,
     floor_caps: Arc<[AtomicUsize; MAX_FLOORS]>,
@@ -97,7 +93,6 @@ impl FloatingApp {
         theme: &'static Theme,
         pack: Pack,
         config_path: PathBuf,
-        pets: Vec<pixtuoid_scene::pet::Pet>,
         scene_rx: watch::Receiver<Arc<SceneState>>,
         floor_caps: Arc<[AtomicUsize; MAX_FLOORS]>,
         audio: crate::config::AudioConfig,
@@ -111,14 +106,13 @@ impl FloatingApp {
         let label_scale = super::offscreen::parse_label_scale(label_scale_value.as_deref());
         let size_preset =
             super::geometry::FloatingSizePreset::from_logical_size(cfg.width, cfg.height);
-        let mut renderer = OfficeRenderer::new();
+        let mut renderer = MapleRenderer::new();
         renderer.set_audio(audio_ctl.handle().clone());
         Self {
             cfg,
             theme,
             pack,
             config_path,
-            pets,
             renderer,
             audio_ctl,
             scene_rx,
@@ -150,7 +144,7 @@ impl FloatingApp {
             pos.map(|p| p.x),
             pos.map(|p| p.y),
         ) {
-            tracing::warn!("pixtuoid floating: could not persist window geometry: {e}");
+            tracing::warn!("maple-agent-market: could not persist window geometry: {e}");
         }
     }
 
@@ -220,10 +214,9 @@ impl FloatingApp {
         }
     }
 
-    /// Render the latest scene to a DOWNSCALED office buffer, then nearest-neighbor
-    /// upscale it into the window. The pixel-art office is tiny at 1:1 (8×12 sprites),
-    /// so a native blit looks sparse + miniature; rendering at ~1/SCALE and blowing it
-    /// back up keeps the sprites chunky + legible, like the TUI's half-block view.
+    /// Render the latest scene to a downscaled Maple buffer, then nearest-neighbor
+    /// upscale it into the window. Rendering at roughly `1 / scale` keeps the
+    /// procedural pixel art chunky and legible on high-resolution displays.
     fn redraw(&mut self) {
         // Clone the Rc to release the `self.window` borrow before touching `self.surface`.
         let Some(window) = self.window.clone() else {
@@ -236,20 +229,17 @@ impl FloatingApp {
         };
         // Audio state for the footer's ♩ suffix + the expiry-driven debounced
         // volume persist, both owned by the controller — resolved BEFORE the
-        // surface borrow below. `audio_audible` mirrors the TUI's gate EXACTLY
-        // (`audio_audible` in tui_renderer): a LIVE handle AND not muted AND a
-        // live level — so an opted-in-but-dead-device handle (no sink / audio
-        // feature off → `AudioHandle::disabled`) shows no phantom ♩, matching the
-        // TUI. `volume_flash` drives the transient `♩ N%` beat.
+        // surface borrow below. `audio_audible` requires a live handle, an
+        // unmuted controller and a nonzero level, so a dead device shows no
+        // phantom ♩. `volume_flash` drives the transient `♩ N%` beat.
         let audio_now = Instant::now();
         self.audio_ctl.tick(audio_now);
         let audio_audible = self.audio_ctl.handle().is_audible();
         let volume_flash = self.audio_ctl.volume_flash(audio_now);
-        // Office buffer = window / SCALE (kept ~OFFICE_TARGET_H tall → chunky sprites).
+        // Scene buffer = window / scale, kept near the target height for chunky sprites.
         // The ONE projection helper, shared with the boot seed so the two can't drift.
         let (scale, buf_w, buf_h) = super::offscreen::window_buffer_geometry(win_w, win_h);
-        // Keep the reducer's desk capacity in lockstep with the office actually rendered at
-        // this BUFFER size (authority = the layout's home-desk count, same as the TUI).
+        // Keep reducer capacity in lockstep with the scene rendered at this buffer size.
         if self.last_caps_size != Some((buf_w, buf_h)) {
             sync_floor_caps(&self.floor_caps, buf_w, buf_h);
             self.last_caps_size = Some((buf_w, buf_h));
@@ -257,9 +247,7 @@ impl FloatingApp {
         // Arc clone releases the watch borrow before the (mutable) renderer borrow.
         let scene = self.scene_rx.borrow().clone();
         let floor_meta = FloorMeta::ground();
-        let floor_pet =
-            pixtuoid_scene::pet::select_pet_for_floor(floor_meta.floor_seed, &self.pets);
-        let office = self.renderer.render(
+        let maple_frame = self.renderer.render(
             &scene,
             &self.pack,
             self.theme,
@@ -267,11 +255,10 @@ impl FloatingApp {
             buf_w,
             buf_h,
             floor_meta,
-            floor_pet,
         );
-        // Collect office pixels (release the `self.renderer` borrow) as `0x00RRGGBB`.
-        let (ow, oh) = (office.width() as usize, office.height() as usize);
-        let opx: Vec<u32> = office
+        // Collect scene pixels (release the `self.renderer` borrow) as `0x00RRGGBB`.
+        let (ow, oh) = (maple_frame.width() as usize, maple_frame.height() as usize);
+        let opx: Vec<u32> = maple_frame
             .as_slice()
             .iter()
             .map(|p| super::offscreen::pack_xrgb(*p))
@@ -291,7 +278,7 @@ impl FloatingApp {
             return;
         };
         // Nearest-neighbor upscale opx (ow×oh) → the window (win_w×win_h). Source indices
-        // are clamped so the integer-division remainder edge repeats the last office pixel.
+        // are clamped so the integer-division remainder edge repeats the last scene pixel.
         let (win_w, win_h, scale) = (win_w as usize, win_h as usize, scale as usize);
         if ow == 0 || oh == 0 || sb.len() < win_w * win_h {
             return; // nothing rendered / a transient resize race — skip this frame
@@ -304,7 +291,7 @@ impl FloatingApp {
             }
         }
         // Name badges + the neon wall board, drawn POST-upscale at native surface res
-        // (crisp anti-aliased Monaspace Neon) using the same layout/route state the office
+        // (crisp anti-aliased Monaspace Neon) using the same map state the scene
         // pass just used. Badges are a fixed caption height; the board scales with the panel.
         let overlay_now = SystemTime::now();
         let label_font_px =
@@ -386,9 +373,9 @@ impl FloatingApp {
                 );
             }
         }
-        // The status footer (full TUI parity) as a bottom-overlay band — carries
+        // The status footer is a bottom-overlay band that carries
         // the ♩/♩N% audio suffix the standalone volume flash used to, plus the
-        // office stats/rungs/tools/gateway. `win_w`/`win_h` are usize surface dims.
+        // scene stats/rungs/tools/gateway. `win_w`/`win_h` are usize surface dims.
         let budget = super::offscreen::footer_budget(win_w);
         let footer = self
             .renderer
@@ -399,10 +386,8 @@ impl FloatingApp {
     }
 }
 
-/// Sync the per-floor desk-capacity atomics to the office layout at `buf_w`×`buf_h` —
-/// the authority is the layout's `home_desks` count (mirrors the TUI's per-frame sync,
-/// `tui/mod.rs`). `store` (not `fetch_max`): floating tracks its window exactly, so a shrink
-/// lowers capacity (excess agents become invisible-but-alive, like the TUI on shrink).
+/// Sync the per-floor capacity atomics to the scene layout at `buf_w`×`buf_h`.
+/// `store` (not `fetch_max`) lets a window shrink lower its capacity immediately.
 fn sync_floor_caps(floor_caps: &[AtomicUsize; MAX_FLOORS], buf_w: u16, buf_h: u16) {
     for (floor_idx, cap) in floor_caps.iter().enumerate() {
         let seed = pixtuoid_scene::floor::floor_seed(floor_idx);
@@ -465,7 +450,7 @@ impl ApplicationHandler<FloatingEvent> for FloatingApp {
         let window = match event_loop.create_window(attrs) {
             Ok(w) => Rc::new(w),
             Err(e) => {
-                tracing::error!("pixtuoid floating: failed to create window: {e}");
+                tracing::error!("maple-agent-market: failed to create window: {e}");
                 event_loop.exit();
                 return;
             }
@@ -473,7 +458,7 @@ impl ApplicationHandler<FloatingEvent> for FloatingApp {
         let context = match softbuffer::Context::new(window.clone()) {
             Ok(c) => c,
             Err(e) => {
-                tracing::error!("pixtuoid floating: failed to create softbuffer context: {e}");
+                tracing::error!("maple-agent-market: failed to create softbuffer context: {e}");
                 event_loop.exit();
                 return;
             }
@@ -481,7 +466,7 @@ impl ApplicationHandler<FloatingEvent> for FloatingApp {
         let surface = match softbuffer::Surface::new(&context, window.clone()) {
             Ok(s) => s,
             Err(e) => {
-                tracing::error!("pixtuoid floating: failed to create softbuffer surface: {e}");
+                tracing::error!("maple-agent-market: failed to create softbuffer surface: {e}");
                 event_loop.exit();
                 return;
             }
@@ -522,8 +507,7 @@ impl ApplicationHandler<FloatingEvent> for FloatingApp {
             // physically held when the window GAINS FOCUS (X11 + Windows). A
             // muted user holding `+`/`m` who clicks in would otherwise be
             // spuriously unmuted AND have it persisted (volume-up is the
-            // un-mute gesture) — the focus-gain-replay twin of the TUI's
-            // Windows Press/Release guard (should_dispatch_key).
+            // un-mute gesture). Ignore the release replay after focus gain.
             WindowEvent::KeyboardInput {
                 event,
                 is_synthetic: false,
@@ -552,7 +536,7 @@ impl ApplicationHandler<FloatingEvent> for FloatingApp {
                     // controller persists mute NOW + debounces the volume + arms
                     // the (volume-only) readout.
                     self.audio_ctl
-                        .apply(action, false, Instant::now(), crate::audio::respawn);
+                        .apply(action, Instant::now(), crate::audio::respawn);
                     if let Some(window) = &self.window {
                         window.request_redraw();
                     }
@@ -649,18 +633,18 @@ impl ApplicationHandler<FloatingEvent> for FloatingApp {
 
     fn about_to_wait(&mut self, event_loop: &ActiveEventLoop) {
         // Agents animate continuously (walk/breathe — time-driven), so tick ~30fps WHILE
-        // any agent is present. When the office is EMPTY we don't go fully idle: the
+        // any agent is present. When the scene is EMPTY we don't go fully idle: the
         // time-driven AMBIENT layer (clock hands, weather cycle, lightning, day/night
         // lighting, the wandering pet) still advances, so a 0fps idle would freeze it and
-        // an empty-office window would look dead/broken. Drop to a slow ~1fps ambient tick
-        // instead — enough to keep the office alive while preserving the CPU-saving intent
+        // an empty window would look dead/broken. Drop to a slow ~1fps ambient tick
+        // instead — enough to keep the scene alive while preserving the CPU-saving intent
         // (nowhere near the 30fps agents-present path). A LIVE gateway daemon (the OpenClaw
         // lobster) lives in `daemons`, not `agents`, and is a time-driven WANDERING mascot
         // — not slow ambient decor — so it keeps the 30fps path unless every daemon is Down
         // (a Down daemon is gone/leaving within MASCOT_LEAVE_MS, not a sustained wanderer, so
         // it stays on the ambient tick — same brief terminal transition as before this change).
         let scene = self.scene_rx.borrow();
-        let office_idle = scene.agents.is_empty()
+        let scene_idle = scene.agents.is_empty()
             && scene
                 .daemons()
                 .all(|(_, _, d)| d.liveness == DaemonLiveness::Down);
@@ -668,7 +652,7 @@ impl ApplicationHandler<FloatingEvent> for FloatingApp {
         // The redraw REQUEST rides the same deadline as the wait: requesting one
         // unconditionally here leaves winit a pending redraw, so `WaitUntil` never
         // sleeps and both cadences collapse to max-rate (see `super::cadence`).
-        let (paint, deadline) = self.clock.poll(Instant::now(), office_idle);
+        let (paint, deadline) = self.clock.poll(Instant::now(), scene_idle);
         event_loop.set_control_flow(ControlFlow::WaitUntil(deadline));
         if paint {
             if let Some(window) = &self.window {

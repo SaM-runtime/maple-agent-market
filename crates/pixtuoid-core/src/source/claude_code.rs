@@ -186,9 +186,9 @@ pub fn claude_config_dir() -> Option<PathBuf> {
 /// this is an EMPIRICAL assumption about CC's wire, not a schema-bounded one and
 /// with no CI drift-watch — a genuinely-new HIGH-frequency top-level type would
 /// breadcrumb until named here. The per-line VOLUME is log-confined (a sustained
-/// regime warns per line to the warn-floor), but the drift IS surfaced in the TUI
-/// as a SINGLE throttled `⚠ decode drift` footer nudge (+ the Sources-panel health
-/// verdict + `pixtuoid doctor`), so it is visible and self-healing — strictly
+/// regime warns per line to the warn floor), and the drift is surfaced through
+/// startup diagnostics plus `maple-agent-market sources` and `doctor`, so it is
+/// visible and self-healing — strictly
 /// better than the prior zero-signal silent drop.
 const KNOWN_TYPES: &[&str] = &[
     "agent-name",

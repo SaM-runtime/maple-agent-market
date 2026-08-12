@@ -1,8 +1,7 @@
 //! Content-addressed local sprite-pack management.
 //!
-//! The manager installs only project-embedded redistributable assets or copies
-//! a pack the user explicitly supplies. It does not fetch game/CDN/API/streaming
-//! content and never uploads an imported pack.
+//! The manager copies only a pack the user explicitly supplies. It does not fetch
+//! game/CDN/API/streaming content and never uploads an imported pack.
 
 use std::collections::BTreeSet;
 use std::fs;
@@ -13,9 +12,6 @@ use anyhow::{bail, Context, Result};
 use pixtuoid_core::sprite::format::{load_pack, validate_pack_animations};
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
-
-/// Stable id of the redistributable pack embedded in every build.
-pub const PUBLIC_CLASSIC_ID: &str = "public-classic";
 
 /// Manifest stored beside every managed pack.
 pub const ASSET_MANIFEST_FILE: &str = "ASSET-MANIFEST.json";
@@ -44,7 +40,7 @@ pub struct AssetManifest {
     pub display_name: String,
     /// Pack or application version.
     pub version: String,
-    /// `redistributable` for the bundled pack, `local-only` for imports.
+    /// Distribution classification from the import manifest.
     pub distribution: String,
     /// SPDX licence id when the pack has a verified public grant.
     pub license: Option<String>,
@@ -155,46 +151,9 @@ pub fn default_assets_root() -> PathBuf {
         .join("packs")
 }
 
-/// List the embedded public catalog plus every managed local installation.
+/// List every managed local installation.
 pub fn list_assets(root: &Path) -> Result<Vec<AssetListEntry>> {
-    let mut entries = vec![public_catalog_entry(root)];
-    entries.extend(local_catalog_entries(root)?);
-    Ok(entries)
-}
-
-fn public_catalog_entry(root: &Path) -> AssetListEntry {
-    let public_files: Vec<_> = pixtuoid_scene::embedded_pack::embedded_default_pack_sources()
-        .into_iter()
-        .map(|(path, source)| AssetFileRecord {
-            path: path.to_string(),
-            bytes: source.len() as u64,
-            sha256: sha256_hex(source.as_bytes()),
-        })
-        .collect();
-    let public_fingerprint = inventory_fingerprint(&public_files);
-    let public_path = root.join(PUBLIC_CLASSIC_ID);
-    let public_installed = public_path.exists();
-    let public_verification = if public_installed {
-        Some(verify_installed(root, PUBLIC_CLASSIC_ID, None))
-    } else {
-        None
-    };
-    let (public_verified, public_error) = match &public_verification {
-        Some(Ok(_)) => (Some(true), None),
-        Some(Err(error)) => (Some(false), Some(format!("{error:#}"))),
-        None => (None, None),
-    };
-    AssetListEntry {
-        id: PUBLIC_CLASSIC_ID.to_string(),
-        display_name: "Public Classic".to_string(),
-        version: env!("CARGO_PKG_VERSION").to_string(),
-        distribution: "redistributable".to_string(),
-        installed: public_installed,
-        verified: public_verified,
-        fingerprint_sha256: Some(public_fingerprint),
-        path: public_installed.then_some(public_path),
-        error: public_error,
-    }
+    local_catalog_entries(root)
 }
 
 fn local_catalog_entries(root: &Path) -> Result<Vec<AssetListEntry>> {
@@ -207,7 +166,7 @@ fn local_catalog_entries(root: &Path) -> Result<Vec<AssetListEntry>> {
         let entry = entry?;
         let path = entry.path();
         let name = entry.file_name().to_string_lossy().to_string();
-        if name == PUBLIC_CLASSIC_ID || name.starts_with('.') {
+        if name.starts_with('.') {
             continue;
         }
         let metadata = fs::symlink_metadata(&path)?;
@@ -326,31 +285,10 @@ pub fn print_asset_result(verb: &str, result: &AssetResult, json: bool) -> Resul
     println!("files: {}", result.file_count);
     println!("fingerprint: {}", result.fingerprint_sha256);
     println!(
-        "run: pixtuoid --theme maple floating --pack-dir \"{}\"",
+        "run: maple-agent-market floating --pack-dir \"{}\"",
         crate::strip_control_chars(&result.path.display().to_string())
     );
     Ok(())
-}
-
-/// Install the embedded, redistributable public pack below `root`.
-pub fn install_public_classic(root: &Path, mode: InstallMode) -> Result<AssetResult> {
-    let files = pixtuoid_scene::embedded_pack::embedded_default_pack_sources()
-        .into_iter()
-        .map(|(path, source)| (path.to_string(), source.as_bytes().to_vec()))
-        .collect();
-    install_files(InstallRequest {
-        root,
-        metadata: PackMetadata {
-            id: PUBLIC_CLASSIC_ID,
-            display_name: "Public Classic",
-            version: env!("CARGO_PKG_VERSION"),
-            distribution: "redistributable",
-            license: Some("MIT"),
-            source: "https://github.com/IvanWng97/pixtuoid",
-        },
-        files,
-        mode,
-    })
 }
 
 /// Copy a user-selected sprite pack into managed local storage.
@@ -431,8 +369,7 @@ fn validated_source_pack(source_dir: &Path) -> Result<pixtuoid_core::sprite::for
     let report = validate_pack_animations(&pack);
     if report.has_errors() {
         bail!(
-            "source pack is incomplete: missing={:?}, insufficient_frames={:?}",
-            report.missing_required,
+            "source pack has incomplete supplied animations: insufficient_frames={:?}",
             report.insufficient_frames
         );
     }

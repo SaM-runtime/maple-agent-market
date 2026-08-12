@@ -334,7 +334,7 @@ pub fn frame_epilogue(
 /// transition path).
 ///
 /// Consumers include the TUI floor-slide (`TuiRenderer::render_transition`) and
-/// the floating window (`OfficeRenderer::render`). The TUI's normal draw path
+/// the floating window (`MapleRenderer::render`). The TUI's normal draw path
 /// (`draw_scene`) is the
 /// deliberate exception — it needs the full `PixelPassResult` (pet/mascot
 /// positions, chitchat bubbles) and holds only immutable coffee borrows
@@ -642,7 +642,7 @@ impl PerOffice {
 /// one type, so a painter can't hand-roll (and silently skip) the eviction — a
 /// skipped eviction leaks per-agent state or teleports a recurring agent. One
 /// floor + one office: a single-floor painter such as
-/// `floating::offscreen::OfficeRenderer` owns a `FloorSession`; a multi-floor
+/// `floating::offscreen::MapleRenderer` owns a `FloorSession`; a multi-floor
 /// painter (the TUI) composes `Vec<`[`PerFloor`]`>` + one [`PerOffice`] and drives
 /// [`render_floor`] / `draw_scene` itself.
 pub struct FloorSession {

@@ -1,25 +1,10 @@
-//! The async runtime glue: builds the tokio runtime, spawns the reducer
-//! task + sources, binds the hook socket, and drives either the TUI or the
-//! headless summary loop until Ctrl-C.
-//!
-//! Split out of `runtime/mod.rs` so this file — structurally unreachable by
-//! any headless test (real tokio runtime + `block_on` + `ctrl_c` + socket
-//! bind; see issue #103) — can be excluded from coverage on its own, while
-//! the tested helpers (`RunConfig`, capacity math, `summarize`) keep full
-//! coverage accounting in the parent module. One exception: `headless_loop`'s
-//! signal handling takes the ctrl_c future as an injected seam, so its
-//! registration-failure arm IS unit-tested here (the file stays
-//! coverage-excluded regardless). The connection-gate DECISION (gate + apply +
-//! reconcile-sweep) lives in the sibling [`super::gate`] module — covered AND
-//! mutation-tested — so a drift in it reds a test; this shell only wires the
-//! tokio channels to those functions.
+//! Source construction and reducer task used by the floating Maple runtime.
 
 use std::path::PathBuf;
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::Arc;
 use std::time::{Duration, SystemTime};
 
-use anyhow::Result;
 use pixtuoid_core::source::antigravity::AntigravitySource;
 use pixtuoid_core::source::claude_code::ClaudeCodeSource;
 use pixtuoid_core::source::codex::CodexSource;
@@ -35,92 +20,7 @@ use pixtuoid_core::{Reducer, SceneState, TaggedReceiver};
 use tokio::sync::watch;
 
 use super::gate;
-use super::{
-    boot_capacities_for, resolve_boot_caps, summarize, ConnectedSources, RunConfig, SceneRx,
-    FALLBACK_DESKS,
-};
-
-pub fn run(cfg: RunConfig) -> Result<()> {
-    let rt = tokio::runtime::Builder::new_multi_thread()
-        .enable_all()
-        .build()?;
-    rt.block_on(async move { run_async(cfg).await })
-}
-
-async fn run_async(cfg: RunConfig) -> Result<()> {
-    let RunConfig {
-        socket,
-        projects_root,
-        codex_sessions_root,
-        pack_dir,
-        desk_cap,
-        headless,
-        config_path,
-        theme,
-        pets,
-        connected,
-        log_path,
-        first_run,
-        audio,
-    } = cfg;
-    // Ambient audio (#633): `run_tui` builds the AudioController, which OWNS the
-    // device thread — boot-spawn iff `!audio.muted`, then Drop-teardown when the
-    // controller (a run_tui local) drops on ANY exit. Nothing to spawn or tear
-    // down here; the muted default costs nothing until the first `m`. (Headless
-    // has no painter/controller, so it never plays.)
-    // Focus-jump pid point-query roots (cloned: build_source_set consumes the
-    // originals). CC = projects root (sessions registry derived in-core);
-    // Codex = the rollout tree the fd probe walks.
-    let focus_roots = (projects_root.clone(), codex_sessions_root.clone());
-    // The live, shared connected-source set: the reducer-task gate reads it, the
-    // Sources panel mutates it. Seeded from the resolved boot flags.
-    let connected = ConnectedSources::new(connected);
-    // Resolve the bound socket (Unix) / pipe (Windows) the HookRouter binds; the
-    // Sources panel shows the same path (explicit --socket override, else default).
-    let socket_path = socket.unwrap_or_else(ClaudeCodeSource::default_socket_path);
-    // Headless-vs-interactive boot capacity policy — the covered + mutation-tested
-    // `resolve_boot_caps` in mod.rs; the terminal-size query stays here in the shell
-    // (passed as the injected `measure`, called only on the interactive arm).
-    let boot_caps = resolve_boot_caps(desk_cap, headless, compute_boot_capacities);
-    // The shared spine (#714): presence channel + exit watch, the source set,
-    // event/scene/health channels, floor-caps atomics, reducer + source task
-    // spawns — ONE authority with `floating::run`. The tasks live on this
-    // fn's runtime; `_source_handles` is an inert anchor (see Pipeline's doc).
-    let super::pipeline::Pipeline {
-        scene_rx,
-        health_rx,
-        floor_caps,
-        _source_handles,
-    } = super::pipeline::spawn_pipeline(
-        socket_path.clone(),
-        projects_root,
-        codex_sessions_root,
-        connected.clone(),
-        boot_caps,
-    );
-
-    if headless {
-        headless_loop(scene_rx, health_rx).await
-    } else {
-        crate::tui::run_tui(crate::tui::TuiSession {
-            scene_rx,
-            pack_dir,
-            floor_caps,
-            theme,
-            config_path,
-            desk_cap,
-            pets,
-            source_health: health_rx,
-            socket_path,
-            connected,
-            log_path,
-            first_run,
-            focus_roots,
-            audio_cfg: audio,
-        })
-        .await
-    }
-}
+use super::ConnectedSources;
 
 /// Build the runtime source set `run_async` spawns — the ONE place that set is
 /// constructed: the `HookRouter` (shared-socket owner) + the transcript-bearing
@@ -294,100 +194,9 @@ pub(crate) async fn reducer_task(
     }
 }
 
-async fn headless_loop(
-    scene_rx: SceneRx,
-    health_rx: tokio::sync::watch::Receiver<Vec<pixtuoid_core::source::manager::SourceDeath>>,
-) -> Result<()> {
-    // ONE SIGINT listener for the loop's lifetime. A fresh `ctrl_c()` per
-    // select! iteration drops the old listener while the sleep arm runs, and
-    // tokio's process-global handler (installed once) suppresses default
-    // termination — so a SIGINT landing in that gap notifies zero listeners
-    // and is silently lost (the user must Ctrl-C twice). Created once here,
-    // the subscription is continuous; the future is boxed so the loop can
-    // disarm a registration FAILURE (a resolved future must never be polled
-    // again). The signal future is INJECTED into the loop body so the
-    // registration-failure arm is testable in-process (the real ctrl_c()
-    // registers an unfakeable process-global handler).
-    headless_loop_with_signal(scene_rx, health_rx, Box::pin(tokio::signal::ctrl_c())).await
-}
-
-async fn headless_loop_with_signal(
-    mut scene_rx: SceneRx,
-    mut health_rx: tokio::sync::watch::Receiver<Vec<pixtuoid_core::source::manager::SourceDeath>>,
-    mut ctrl_c: std::pin::Pin<Box<dyn std::future::Future<Output = std::io::Result<()>> + Send>>,
-) -> Result<()> {
-    tracing::info!("pixtuoid headless mode — Ctrl-C to quit");
-    let mut prev_summary = String::new();
-    // Headless has no TUI footer (#157's sink for source deaths) and no
-    // stderr subscriber guarantee — surface them in the summary stream, or a
-    // dead transport reads as a silently empty office. Tracked by count: the
-    // watch Vec only grows.
-    let mut deaths_seen = 0usize;
-    // How often the headless driver re-samples the scene watch and prints a diff.
-    const HEADLESS_SUMMARY_POLL_INTERVAL_MS: u64 = 200;
-    loop {
-        tokio::select! {
-            _ = tokio::time::sleep(Duration::from_millis(HEADLESS_SUMMARY_POLL_INTERVAL_MS)) => {
-                let snapshot = scene_rx.borrow_and_update().clone();
-                let summary = summarize(&snapshot);
-                if summary != prev_summary {
-                    println!("{summary}");
-                    prev_summary = summary;
-                }
-            }
-            Ok(()) = health_rx.changed() => {
-                let deaths = health_rx.borrow_and_update().clone();
-                for d in super::unseen_deaths(&deaths, &mut deaths_seen) {
-                    println!("{}", super::format_source_death(d));
-                }
-            }
-            res = &mut ctrl_c => match res {
-                Ok(()) => {
-                    tracing::info!("shutting down");
-                    return Ok(());
-                }
-                Err(e) => {
-                    // A failed handler registration resolves Err on the FIRST
-                    // poll. A wildcard match here exited headless mode
-                    // instantly — silently, status 0 (the #157 class), on the
-                    // exact CI/container surface where registration can be
-                    // denied. Disarm the arm and keep serving: the default
-                    // SIGINT disposition was never replaced, so Ctrl-C still
-                    // terminates the process.
-                    tracing::error!(
-                        %e,
-                        "Ctrl-C handler registration failed — headless loop \
-                         continues; SIGINT falls back to the default disposition"
-                    );
-                    ctrl_c = Box::pin(std::future::pending());
-                }
-            }
-        }
-    }
-}
-
-fn compute_boot_capacities() -> [usize; MAX_FLOORS] {
-    match crossterm::terminal::size().ok() {
-        Some((cols, rows)) => boot_capacities_for(cols, rows),
-        None => [FALLBACK_DESKS; MAX_FLOORS],
-    }
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
-    use pixtuoid_core::source::manager::SourceDeath;
-
-    type HealthPair = (
-        watch::Sender<Vec<SourceDeath>>,
-        watch::Receiver<Vec<SourceDeath>>,
-    );
-
-    fn channels() -> (watch::Sender<Arc<SceneState>>, SceneRx, HealthPair) {
-        let (scene_tx, scene_rx) =
-            watch::channel(Arc::new(SceneState::new([FALLBACK_DESKS; MAX_FLOORS])));
-        (scene_tx, scene_rx, watch::channel(Vec::new()))
-    }
 
     // The documented "a source registered in the core registry but NOT wired
     // into run_async passes every conformance/manifest test yet never spawns"
@@ -426,37 +235,6 @@ mod tests {
             "run_async's transcript-source wiring diverged from the registry: a \
              transcript-bearing source is registered but not built (it would never \
              spawn), or a built source isn't registered"
-        );
-    }
-
-    #[tokio::test(start_paused = true)]
-    async fn headless_loop_shuts_down_on_a_delivered_signal() {
-        let (_scene_tx, scene_rx, (_health_tx, health_rx)) = channels();
-        headless_loop_with_signal(scene_rx, health_rx, Box::pin(async { Ok(()) }))
-            .await
-            .expect("a delivered Ctrl-C is a clean shutdown");
-    }
-
-    #[tokio::test(start_paused = true)]
-    async fn headless_loop_keeps_serving_after_a_failed_signal_registration() {
-        // A failed ctrl_c registration resolves Err on the first poll. The old
-        // wildcard arm (`_ = &mut ctrl_c`) matched it and returned Ok(()) —
-        // headless mode exited instantly, silently, status 0. The Err arm must
-        // disarm itself instead: the loop keeps serving the scene/health arms,
-        // so the timeout elapses (paused-clock time, so this is instant).
-        let (_scene_tx, scene_rx, (_health_tx, health_rx)) = channels();
-        let res = tokio::time::timeout(
-            Duration::from_secs(5),
-            headless_loop_with_signal(
-                scene_rx,
-                health_rx,
-                Box::pin(async { Err(std::io::Error::other("sigaction denied")) }),
-            ),
-        )
-        .await;
-        assert!(
-            res.is_err(),
-            "the loop must still be running after a failed signal registration, got {res:?}"
         );
     }
 }

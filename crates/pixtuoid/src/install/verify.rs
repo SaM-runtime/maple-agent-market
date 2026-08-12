@@ -116,8 +116,7 @@ impl SchemaVerifyResult {
 /// untrusted value enters the issue Vec) so EVERY surface is covered at once —
 /// per-output-site sanitize already missed the `doctor` stdout path once (the
 /// online review). Mirrors `doctor`'s R0615-06 sanitize discipline. The
-/// Sources panel is already safe (ratatui renders control bytes as literals),
-/// but source-sanitizing it too is harmless + future-proof.
+/// Source-sanitizing here keeps every current and future presenter safe.
 pub(crate) fn display_safe(p: &std::path::Path) -> String {
     crate::strip_control_chars(&p.display().to_string())
 }
@@ -143,7 +142,7 @@ pub(crate) fn assemble(
     } else if !missing_events.is_empty() {
         issues.push(format!(
             "missing hook entries for: {} (an older pixtuoid install, or an upstream config-schema \
-             change, orphaned them — reconnect via the Sources panel)",
+             change, orphaned them — reconnect with `maple-agent-market connect <source>`)",
             missing_events.join(", ")
         ));
     }
@@ -392,7 +391,7 @@ mod tests {
         // with a space round-trips through the shell. A whitespace-split reader
         // would truncate `'/Users/Jane Doe/…'` to `Doe/…'` → a bogus relative
         // path that never `.exists()` → a FALSE "shim binary missing" on every
-        // boot preflight / `doctor` / Sources panel. The R0615-09 (#311)
+        // boot preflight / `doctor` / `sources`. The R0615-09 (#311)
         // doctor::field truncation twin.
         assert_eq!(
             shell_shim_ref("PIXTUOID_SOURCE=codex '/Users/Jane Doe/bin/pixtuoid-hook'"),

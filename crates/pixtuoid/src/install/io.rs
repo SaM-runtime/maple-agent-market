@@ -190,7 +190,7 @@ fn running_exe_dir() -> Result<PathBuf> {
 /// `which` is PATHEXT-aware on Windows, so `npm i -g pixtuoid` (which
 /// materialises `pixtuoid-hook.cmd`, `.ps1` and an extensionless sh script in
 /// the global bin dir) resolves to a NON-PE before the real `pixtuoid-hook.exe`
-/// that the same install placed beside `pixtuoid.exe` — and every
+/// that the same install placed beside `maple-agent-market.exe` — and every
 /// `EmbedAbsolute` target spawns the embedded path WITHOUT a shell, so the hook
 /// silently never fires. Rejecting the shim lets the exe-sibling arm answer.
 ///
@@ -531,7 +531,7 @@ mod tests {
         // materialises `pixtuoid-hook.cmd`, `.ps1` and an extensionless sh script
         // in the global bin dir — resolves to a NON-PE before the real
         // `pixtuoid-hook.exe` sibling that the same npm install placed next to
-        // `pixtuoid.exe`. Claude's Windows arm embeds that absolute path in EXEC
+        // `maple-agent-market.exe`. Claude's Windows arm embeds that absolute path in EXEC
         // form (`"args": []`), and `check_shim_binary`'s Windows `is_executable`
         // is just `exists()` — so the hook would silently never fire with a GREEN
         // doctor. Both truth tables run on every host (the wanted extension is a

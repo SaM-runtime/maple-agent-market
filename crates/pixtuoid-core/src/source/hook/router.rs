@@ -8,7 +8,7 @@
 //! It implements [`Source`] DELIBERATELY: `Source::run` already hands the one
 //! `(Transport, AgentEvent)` sender `handle_conn` sends on, and
 //! `SourceManager::spawn_with_health` *generates* the `SourceDeath` that surfaces
-//! a fatal exit in the TUI footer (#157) — so the router inherits that path for
+//! a fatal exit in source health diagnostics — so the router inherits that path for
 //! free instead of rebuilding it. It is INFRASTRUCTURE, not a CLI: it has NO
 //! registry/descriptor/badge row (the add-a-CLI checklist does not
 //! apply); `source_set_includes_the_hook_router` closes the spawned-but-untested

@@ -289,7 +289,7 @@ pub(crate) fn verify_schema(content: &str) -> SchemaParse {
                 }
             }
             None => issues.push(format!(
-                "config.yaml hooks.{ev} has no pixtuoid-managed entry (reconnect via the Sources panel)"
+                "config.yaml hooks.{ev} has no pixtuoid-managed entry (run `maple-agent-market connect hermes`)"
             )),
         }
     }

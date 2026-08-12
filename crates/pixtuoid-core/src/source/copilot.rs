@@ -4,8 +4,8 @@
 //! lifecycle is persisted to `events.jsonl` — `session.start`,
 //! `tool.execution_start/complete`, `permission.requested/completed`,
 //! `subagent.started/completed`, `session.task_complete`, `session.shutdown` —
-//! so there is no hook install target (the Sources panel shows `cp·` as a
-//! no-target flag-flip row, like Antigravity). Only streaming events
+//! so there is no hook install target (`sources` reports a no-target source,
+//! like Antigravity). Only streaming events
 //! (`session.idle`, `*_delta`, `*_progress`, …) carry `ephemeral` and never hit
 //! disk; the decoder simply ignores everything it doesn't map.
 //!

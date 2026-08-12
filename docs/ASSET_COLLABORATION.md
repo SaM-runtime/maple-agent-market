@@ -1,86 +1,56 @@
-# 素材共同開發
+# 素材協作
 
-Maple Agent Market 用兩個值定義「大家完全相同」：
+## 內建版本
 
-1. 相同的 Git commit SHA；
-2. 相同的素材 pack SHA-256 fingerprint。
-
-只要兩者都一致，程式碼與被載入的公開素材就是同一份。螢幕縮放、字型 fallback、作業系統與當下 agent events 仍可能造成畫面呈現差異，這些不屬於素材漂移。
-
-## 安裝相同的公開素材
-
-`public-classic` 是編進目前 binary 的可再散布素材，不會從 NEXON、遊戲 CDN、Open API、WZ/client 或 YouTube 下載。它的來源與 repo 內 renderer 使用的 Pixtuoid MIT fallback 完全相同。
+乾淨 clone 不需要下載或安裝素材。雙地圖、角色、攤位、怪物、傳送點與泛用技能由 Rust 程序化繪製；相同 commit 可直接 build / run。
 
 ```powershell
-git rev-parse HEAD
 cargo build --locked -p pixtuoid
-
-$installed = .\target\debug\pixtuoid.exe assets install public-classic --json | ConvertFrom-Json
-$installed
-
-.\target\debug\pixtuoid.exe assets verify public-classic `
-  --expect $installed.fingerprint_sha256
-
-.\target\debug\pixtuoid.exe --theme maple floating `
-  --pack-dir $installed.path
+.\target\debug\maple-agent-market.exe
 ```
 
-預設安裝位置為：
+`assets list` 在沒有匯入任何本機 pack 時回傳空清單，這是正常狀態，不代表畫面缺少檔案。
 
-- Windows：`%USERPROFILE%\.config\pixtuoid\packs\public-classic`
-- macOS／Linux：`~/.config/pixtuoid/packs/public-classic`
+## 合法自訂 pack
 
-可用 `assets --root <PATH>` 指定另一個隔離目錄。`--force` 只會替換帶有相同 managed manifest 的 pack；不會刪除同名但不受 Maple Agent Market 管理的普通資料夾。
-
-## 比對團隊素材
-
-由一位共同開發者提供 fingerprint，其他人用 `--expect` 驗證：
+只在你對全部檔案具備使用與分享權時，才把 pack 提供給共同開發者。匯入不會上傳內容，也不會把素材改成 MIT。
 
 ```powershell
-.\target\debug\pixtuoid.exe assets list --json
-.\target\debug\pixtuoid.exe assets verify public-classic `
-  --expect <團隊提供的64位SHA-256>
+.\target\debug\maple-agent-market.exe validate-pack C:\team\authorized-pack
+.\target\debug\maple-agent-market.exe assets import C:\team\authorized-pack --id team-pack
+.\target\debug\maple-agent-market.exe assets verify team-pack
 ```
 
-只傳 fingerprint 不會傳送任何素材內容；它只能證明本機檔案是否逐位元一致。
+`assets import` 會：
 
-## 匯入團隊有權使用的自訂 pack
+1. 只讀 `pack.toml` 引用的 regular files；
+2. 拒絕 symlink、路徑逸出與不受管理的覆寫；
+3. 寫入 `ASSET-MANIFEST.json`；
+4. 對排序後的完整檔案 inventory 計算 SHA-256 fingerprint。
 
-如果團隊已經擁有一個可使用的 sprite pack：
+共同開發者收到同一份合法 pack 後，可比對 fingerprint：
 
 ```powershell
-$team = .\target\debug\pixtuoid.exe assets import C:\team\authorized-pack `
-  --id team-pack --json | ConvertFrom-Json
-
-.\target\debug\pixtuoid.exe assets verify team-pack `
-  --expect $team.fingerprint_sha256
+.\target\debug\maple-agent-market.exe assets verify team-pack --expect <64位SHA-256>
 ```
 
-匯入器只複製 `pack.toml` 與 `[animations.*].frames` 實際引用的檔案；不會複製同一資料夾內的其他文件，也不會上傳內容。產生的 manifest 一律標成 `local-only`，因為「能匯入」不等於「具有再散布授權」。
+啟動時使用實際 pack 目錄：
 
-若素材確實由團隊原創或具有 MIT／CC0 等明確再散布授權，可經授權審查後加入 repository 與公開 media inventory。不要把 `local-only` pack、遊戲截圖、紙娃娃、怪物、傳點、技能影格或 BGM 直接 commit。
+```powershell
+.\target\debug\maple-agent-market.exe floating --pack-dir C:\path\to\team-pack
+```
 
-## 共同修改流程
+## GitHub 邊界
 
-公開素材的權威來源仍是 Git repository，而不是某位成員的 managed install：
+本 repo 不提供 NEXON / MapleStory 素材 downloader，也不允許把遊戲圖片、紙娃娃、地圖、怪物、傳點、技能、音樂或其衍生物提交到 Git。朋友之間分享仍是再散布，必須有相應權利。
 
-1. 從相同 `main` 建立 feature branch；
-2. 修改有授權依據的 `.sprite`／程式化場景；
-3. 執行測試與 `public-release-audit.py`；
-4. commit、push、由另一位成員 review；
-5. 所有人 pull 同一 commit，重新 build；
-6. `assets install public-classic --force`；
-7. 用 `assets verify --expect ...` 比對新 fingerprint。
+若新增可公開的第三方素材，PR 必須同時提供：
 
-這樣素材與程式碼會沿 Git 歷史同步，任一成員都能看出哪個 commit 改了哪些像素。
+- 原作者與第一方來源 URL；
+- 精確授權檔；
+- 取得日期、版本與修改說明；
+- `THIRD_PARTY_NOTICES.md` 更新；
+- `policy/public-release/media-licences.toml` 對照；
+- `policy/public-release/media-allowlist.sha256` 的新 hash。
 
-## 不提供的下載來源
-
-素材管理器不會實作以下來源：
-
-- NEXON／MapleStory CDN 或 Open API 圖片抓取；
-- WZ 或遊戲 client 拆取；
-- YouTube 音訊下載或轉檔；
-- 未附作者、來源、授權與固定 hash 的第三方壓縮包。
-
-GitHub public/private、免費或只邀請朋友，都不會自動產生這些素材的複製與再散布權。若日後取得涵蓋 repository、release binary、修改與再散布的書面許可，才可把對應 pack 納入公開 catalog。
+每次變更 media 後執行 `python scripts/public-release-audit.py`。

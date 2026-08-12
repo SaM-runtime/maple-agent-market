@@ -16,8 +16,8 @@ repository = "https://github.com/SaM-runtime/maple-agent-market"
 authors = ["Ivan Wang <ivanwng97@icloud.com>", "SaM-runtime contributors"]
 description = "Unofficial local 2D multi-agent visualizer based on Pixtuoid"
 homepage = "https://github.com/SaM-runtime/maple-agent-market"
-keywords = ["tui", "pixel-art", "ai-agents", "codex", "visualizer"]
-categories = ["command-line-utilities", "visualization"]
+keywords = ["pixel-art", "ai-agents", "codex", "visualizer"]
+categories = ["visualization"]
 
 [workspace.lints.rust]
 unreachable_pub = "warn"
@@ -55,7 +55,4 @@ anyhow = "1"
 tracing = "0.1"
 tracing-subscriber = { version = "0.3", features = ["env-filter"] }
 notify = "8"
-ratatui = "0.30"
-crossterm = "0.29"
-unicode-width = "0.2"
 clap = { version = "4", features = ["derive"] }

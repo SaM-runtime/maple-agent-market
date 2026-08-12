@@ -451,7 +451,7 @@ mod tests {
         // Claude's Unix explicit hook command IS `shell_single_quote(path)`. A path
         // containing an apostrophe round-trips as `'/U/O'\''B/hook'` — a naive
         // `trim_matches('\'')` leaves the inner `'\''` and mis-decodes the path,
-        // false-flagging the install "broken" on `doctor` / the Sources panel (the
+        // false-flagging the install "broken" in `doctor` / `sources` (the
         // R0620-364-01 mis-decode class, on the bespoke claude sibling). The decoder
         // must reverse the POSIX escaping via the shared `posix_unquote`.
         use crate::install::hook_cmd::unix::shell_single_quote;

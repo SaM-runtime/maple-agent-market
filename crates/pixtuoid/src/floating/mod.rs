@@ -1,10 +1,8 @@
-//! `pixtuoid floating` — the frameless, always-on-top desktop window that renders the
-//! live office (every agent across every connected CLI) without opening the TUI.
+//! Frameless, always-on-top Maple Agent Market desktop window.
 //!
-//! A binary-only front-end on the shared engine: it boots the SAME
-//! `runtime::pipeline::spawn_pipeline` spine the TUI uses (source → reducer →
-//! SceneState; #714), but presents each frame as a full-resolution
-//! [`offscreen::OfficeRenderer`] `RgbBuffer` blitted into a `winit` +
+//! A binary-only front-end on the shared engine: the runtime pipeline produces
+//! `SceneState`, and this module presents each frame as a full-resolution
+//! [`offscreen::MapleRenderer`] `RgbBuffer` blitted into a `winit` +
 //! `softbuffer` window instead of half-block terminal cells. `pixtuoid-core` stays
 //! window-free (invariant #1) — all windowing lives here.
 
@@ -35,7 +33,6 @@ pub fn run(cfg: RunConfig) -> Result<()> {
         codex_sessions_root,
         pack_dir,
         theme,
-        pets,
         connected,
         config_path,
         audio,
@@ -54,16 +51,13 @@ pub fn run(cfg: RunConfig) -> Result<()> {
     // (presence watch, source manager) have a runtime context. We never `block_on` here.
     let _guard = rt.enter();
 
-    // --- the live pipeline: the SAME runtime::pipeline spine the TUI boots
-    //     (#714 — was a hand-mirrored copy of run_async's wiring). The
-    //     rt.enter() guard above provides the ambient runtime its spawns land
-    //     on; only the genuinely floating-specific pieces stay here. ---
+    // The shared runtime pipeline owns all source and reducer wiring. The
+    // rt.enter() guard above provides the ambient runtime its spawns land on;
+    // only window-specific pieces stay here.
     let connected = ConnectedSources::new(connected);
     let socket_path = socket.unwrap_or_else(ClaudeCodeSource::default_socket_path);
-    // Boot capacity from the WINDOW at the SAME geometry the window renders (office
-    // buffer = window / office_scale, no footer) so the boot seed and the first redraw
-    // (window::sync_floor_caps) agree — reusing the TUI's footer-subtracting,
-    // scale-ignorant boot_capacities_for over-seeds and can strand a boot-race agent.
+    // Boot capacity comes from the same scaled geometry as the first redraw so
+    // a session arriving during startup cannot be assigned outside the scene.
     let boot_caps = offscreen::boot_capacities_for_window(floating_cfg.width, floating_cfg.height);
     // The source tasks live on `rt` (kept alive to the end of `run`);
     // `_source_handles` is an inert anchor (see Pipeline's doc).
@@ -119,7 +113,7 @@ pub fn run(cfg: RunConfig) -> Result<()> {
             while health_rx.changed().await.is_ok() {
                 let deaths = health_rx.borrow_and_update().clone();
                 for death in crate::runtime::unseen_deaths(&deaths, &mut deaths_seen) {
-                    tracing::warn!("pixtuoid floating: source exited: {death:?}");
+                    tracing::warn!("maple-agent-market: source exited: {death:?}");
                 }
             }
         });
@@ -137,7 +131,6 @@ pub fn run(cfg: RunConfig) -> Result<()> {
         theme,
         pack,
         config_path,
-        pets,
         scene_rx,
         floor_caps,
         audio,

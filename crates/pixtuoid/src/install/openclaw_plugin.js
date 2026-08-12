@@ -1,7 +1,7 @@
 // @pixtuoid-openclaw-plugin
 //
 // Forwards OpenClaw gateway daemon-presence signals to pixtuoid's `pixtuoid-hook`
-// shim, which relays them to the running pixtuoid office (the wandering lobster
+// shim, which relays them to the running Maple Agent Market window
 // gateway mascot).
 //
 // PRIVACY (load-bearing): build the shim payload from an explicit ALLOWLIST of

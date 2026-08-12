@@ -249,10 +249,10 @@ mod tests {
         use pixtuoid_core::AgentId;
         use std::path::PathBuf;
 
-        use crate::runtime::FALLBACK_DESKS;
+        use crate::runtime::FALLBACK_AGENT_CAPACITY;
 
         let now = SystemTime::now();
-        let mut scene = SceneState::new([FALLBACK_DESKS; MAX_FLOORS]);
+        let mut scene = SceneState::new([FALLBACK_AGENT_CAPACITY; MAX_FLOORS]);
         let mut reducer = Reducer::new();
         let id = AgentId::from_transcript_path("/p/a.jsonl");
 
@@ -367,7 +367,7 @@ mod tests {
     fn the_connection_gate_is_source_wide_across_every_instance() {
         use pixtuoid_core::source::daemon::DaemonPresenceUpdate;
 
-        // The Sources panel has ONE openclaw row, so connecting/disconnecting is a
+        // The source registry has ONE openclaw row, so connecting/disconnecting is a
         // source-level decision: a second gateway of a CONNECTED source applies,
         // and every instance of a DISCONNECTED one drops.
         let cs = ConnectedSources::new(["openclaw".to_string()].into_iter().collect());

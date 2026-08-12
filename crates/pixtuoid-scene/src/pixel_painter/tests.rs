@@ -2,7 +2,7 @@ use super::anchors::{
     back_couch_anchor, seated_anchor, standing_at_desk_anchor, walking_anchor, waypoint_anchor,
     CHARACTER_SPRITE_W,
 };
-use super::seat::{seat_sprite, seat_sprite_in_pack, settle_seat_view, SeatView, DESK_SEAT_Z_OFF};
+use super::seat::{seat_sprite, settle_seat_view, SeatView, DESK_SEAT_Z_OFF};
 use super::wall::WALL_THICK_H_PX;
 use super::*;
 // Formerly reached via `super::*` off mod.rs's imports — now that PixelCtx no
@@ -319,33 +319,6 @@ fn seat_sprite_maps_facing_to_sprite_and_flip() {
     assert_eq!(
         seat_sprite(WaypointKind::MeetingChair, Facing::West),
         ("side_seated", true)
-    );
-}
-
-#[test]
-fn seat_sprite_in_pack_degrades_to_front_when_side_seated_is_missing() {
-    // Character anims are never inherited from the embedded default
-    // (merge_from is furniture-only), so a pre-side_seated custom pack must
-    // show the front pose — a missing animation must never mean an
-    // invisible sitter.
-    use crate::layout::{Facing, WaypointKind};
-    let full = crate::embedded_pack::load_sprite_pack(None).expect("pack");
-    assert_eq!(
-        seat_sprite_in_pack(&full, WaypointKind::MeetingChair, Facing::West),
-        ("side_seated", true),
-        "a pack WITH the profile sprite uses it"
-    );
-    // The charpack fixture predates side_seated — a real pre-F custom pack.
-    let fixture = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/charpack");
-    let old_pack = crate::embedded_pack::load_sprite_pack(Some(fixture)).expect("fixture pack");
-    assert!(
-        old_pack.animation("side_seated").is_none(),
-        "fixture must lack the profile sprite for this test to bite"
-    );
-    assert_eq!(
-        seat_sprite_in_pack(&old_pack, WaypointKind::MeetingChair, Facing::West),
-        ("seated", false),
-        "a pack WITHOUT it degrades to the front pose"
     );
 }
 
@@ -2797,56 +2770,6 @@ fn meeting_chairs_paint_with_backrests_toward_the_table_ends() {
 }
 
 #[test]
-fn meeting_chair_fabric_matches_the_sofa_sprite_palette() {
-    // The chair consts are deliberate copies of the pack palette's couch
-    // fabric ("C"/"G") — the sofa is an un-themed sprite, so the painter
-    // can't read Theme for it. This pin makes a sofa retint fail HERE
-    // instead of silently stranding the chairs in the old fabric.
-    let pack = crate::embedded_pack::load_sprite_pack(None).expect("embedded pack");
-    let c = pack.palette.get('C').flatten().expect("couch fabric key");
-    let g = pack
-        .palette
-        .get('G')
-        .flatten()
-        .expect("cushion highlight key");
-    assert_eq!(furniture::MEETING_FABRIC, c, "chair fabric == sofa 'C'");
-    assert_eq!(
-        furniture::MEETING_FABRIC_LIT,
-        g,
-        "chair highlight == sofa 'G'"
-    );
-}
-
-#[test]
-fn chair_sitter_bottom_row_lands_on_its_z_key_overlapping_the_chair_body() {
-    // The three-way identity the floating-sitter bug broke silently: the
-    // seat render anchor (pos.y − SEAT_RENDER_Y_OFF) + the REAL seated
-    // sprite's height − 1 must land exactly on SeatView::Front's z-key row
-    // (pos.y + 2) — which sits INSIDE the 7-row chair body, so the sitter
-    // visibly occupies the cushion. The z-key tests alone pass even when the
-    // sprite hovers rows above the chair, so this pins the full identity.
-    use crate::layout::{Facing, Point, WaypointKind, SEAT_RENDER_Y_OFF};
-    let pack = crate::embedded_pack::load_sprite_pack(None).expect("embedded pack");
-    let view = SeatView::of(WaypointKind::MeetingChair, Facing::West);
-    let (anim, _) = view.seated_sprite();
-    let seated_h = pack.animation(anim).expect("chair sprite").frames[0].height();
-    let pos = Point { x: 40, y: 30 };
-    let anchor_y = pos.y - SEAT_RENDER_Y_OFF;
-    let bottom = anchor_y + seated_h - 1;
-    assert_eq!(
-        bottom,
-        view.z_key_for_seat(pos),
-        "the chair sprite's bottom row must land on its seat z-key row"
-    );
-    let chair = crate::layout::furniture_def(crate::layout::Furniture::MeetingChair).visual;
-    let chair_top = pos.y - chair.h / 2;
-    assert!(
-        bottom > chair_top,
-        "sitter bottom ({bottom}) must overlap the chair body (top {chair_top})"
-    );
-}
-
-#[test]
 fn busy_printer_ejects_a_page_and_idle_printer_stays_still() {
     // B-4 (owner-ratified): appliance feedback — a page slides out of the
     // tray only while an agent stands at the printer. Probe one mid-eject
@@ -3524,42 +3447,6 @@ fn floor_shadow_ellipses_fit_each_family_in_paint_order() {
     );
 }
 
-#[test]
-fn character_render_names_resolve_in_the_animation_registry() {
-    // The CHARACTER twin of the furniture registry-subset test
-    // (decor.rs role_enum_sprite_names_resolve_…): the pose->sprite lookups in
-    // sim.rs + seat.rs (pack.animation("seated"/"typing"/…)) are validated-vs-
-    // rendered only for furniture today, so a TYPO'd character render literal
-    // would draw nothing and only redden gen-check, not validate-pack. Pin
-    // every character lookup name to core's REQUIRED_/OPTIONAL_CHARACTER_
-    // ANIMATIONS. Hand-listed because the pose arms carry no enumerable seam —
-    // catches a typo/rename, not a NEW pose's omission (that gap stays with
-    // gen-check + the embedded-pack registry-known test).
-    use pixtuoid_core::sprite::format::{
-        OPTIONAL_CHARACTER_ANIMATIONS, REQUIRED_CHARACTER_ANIMATIONS,
-    };
-    for n in [
-        "seated",
-        "typing",
-        "standing",
-        "walking",
-        "walking_back",
-        "walking_coffee",
-        "holding_coffee",
-        "seated_sleeping",
-        "seated_sleeping_alt",
-        "back_couch",
-        "side_seated",
-    ] {
-        assert!(
-            REQUIRED_CHARACTER_ANIMATIONS.contains(&n)
-                || OPTIONAL_CHARACTER_ANIMATIONS.contains(&n),
-            "character render name {n:?} is not a registered \
-             REQUIRED_/OPTIONAL_CHARACTER_ANIMATIONS key"
-        );
-    }
-}
-
 /// Paint one empty office (no agents, no pet, no mascot) through the REAL
 /// two-phase seam, so a geometry assertion sees exactly the pixels production
 /// paints — paint ORDER included (a divider drawn UNDER the desk sprite is
@@ -3990,7 +3877,7 @@ frame_ms = 1000
 }
 
 #[test]
-fn high_resolution_market_scales_merchants_to_reference_pixel_density() {
+fn high_resolution_market_scales_original_actors_to_reference_pixel_density() {
     const PACK_TOML: &str = r##"
 [pack]
 name = "market-hires-test"
@@ -4055,31 +3942,37 @@ frame_ms = 1000
         &frame,
     );
 
-    let anchor = crate::market::market_slots(
-        Bounds {
-            x: 0,
-            y: 0,
-            width: 720,
-            height: 480,
-        },
-        1,
-    )[0]
-    .anchor_px;
-    let merchant = buf.get(anchor.x, anchor.y);
-    assert_ne!(merchant, backdrop, "the merchant must paint over the plate");
-    for dy in 0..3 {
-        for dx in 0..3 {
-            assert_eq!(
-                buf.get(anchor.x + dx, anchor.y + dy),
-                merchant,
-                "a 720x480 market scales each authored character pixel to 3x3"
-            );
+    let viewport = Bounds {
+        x: 0,
+        y: 0,
+        width: 720,
+        height: 480,
+    };
+    let anchor = crate::market::build_market_placements(&scene, viewport)[0].avatar_anchor_px;
+    let mut painted_cells = 0usize;
+    for logical_y in 0..crate::market::MARKET_AVATAR_HEIGHT {
+        for logical_x in 0..crate::market::MARKET_AVATAR_WIDTH {
+            let x = anchor.x + logical_x * 3;
+            let y = anchor.y + logical_y * 3;
+            let sample = buf.get(x, y);
+            if sample == backdrop {
+                continue;
+            }
+            painted_cells += 1;
+            for dy in 0..3 {
+                for dx in 0..3 {
+                    assert_eq!(
+                        buf.get(x + dx, y + dy),
+                        sample,
+                        "each original actor cell must expand to an exact 3x3 nearest-neighbour block"
+                    );
+                }
+            }
         }
     }
-    assert_eq!(
-        buf.get(anchor.x + 3, anchor.y),
-        backdrop,
-        "the one-pixel fixture expands exactly three pixels, not beyond"
+    assert!(
+        painted_cells >= 80,
+        "the original 32x24 actor must contribute a substantial visible silhouette"
     );
 }
 
@@ -4282,10 +4175,11 @@ frame_ms = 1000
     other.created_at = created_at;
     other.state_started_at = created_at;
     other.last_event_at = created_at;
-    other.desk_index = GlobalDeskIndex(1);
+    other.desk_index = GlobalDeskIndex(7);
     let mut scene = SceneState::uniform(16);
     scene.agents.insert(completed_id, completed);
     scene.agents.insert(other_id, other);
+    let baseline_scene = scene.clone();
     pixtuoid_core::Reducer::new().apply(
         &mut scene,
         pixtuoid_core::source::AgentEvent::TurnComplete {
@@ -4320,6 +4214,37 @@ frame_ms = 1000
         &frame,
     );
 
+    let mut baseline_owned = OwnedSimStores::new();
+    let baseline_frame = sim_step(
+        &mut baseline_owned.stores(),
+        &baseline_scene,
+        &layout,
+        &pack,
+        &coffee,
+        0,
+        now,
+    );
+    let mut baseline_buf = RgbBuffer::filled(layout.buf_w, layout.buf_h, backdrop);
+    paint_frame(
+        &mut PaintCtx {
+            scene: &baseline_scene,
+            layout: &layout,
+            pack: &pack,
+            now,
+            buf: &mut baseline_buf,
+            cache: &mut FrameCache::new(),
+            theme,
+            floor: crate::floor::FloorMeta::ground(),
+            active_pet: None,
+            floor_pet: None,
+            coffee: &coffee,
+            motion: &baseline_owned.motion,
+            door_anim_max_ms: 0,
+            debug_walkable: false,
+        },
+        &baseline_frame,
+    );
+
     let viewport = Bounds {
         x: 0,
         y: 0,
@@ -4328,13 +4253,13 @@ frame_ms = 1000
     };
     let market_frame = crate::market::MarketFrameContext { viewport, now };
     let placements = crate::market::build_market_placements(&scene, viewport);
-    let count_blue_effect_pixels = |agent_id| {
+    let count_completion_delta = |agent_id| {
         let placement = placements
             .iter()
             .find(|placement| placement.agent_id == agent_id)
             .expect("agent placement");
         let agent = scene.agents.get(&agent_id).expect("agent");
-        let actor = crate::market::resolve_market_merchant(agent, *placement, market_frame)
+        let actor = crate::market::resolve_market_paperdoll(agent, *placement, market_frame)
             .expect("settled market actor");
         let foot = actor.foot_px();
         let x0 = foot.x.saturating_sub(12);
@@ -4343,19 +4268,16 @@ frame_ms = 1000
         let y1 = foot.y.saturating_add(1).min(buf.height());
         (y0..y1)
             .flat_map(|y| (x0..x1).map(move |x| (x, y)))
-            .filter(|(x, y)| {
-                let pixel = buf.get(*x, *y);
-                pixel.b > pixel.r.saturating_add(20) && pixel.b > pixel.g
-            })
+            .filter(|(x, y)| buf.get(*x, *y) != baseline_buf.get(*x, *y))
             .count()
     };
 
     assert!(
-        count_blue_effect_pixels(completed_id) >= 70,
+        count_completion_delta(completed_id) >= 70,
         "a true turn completion must paint a tall blue pillar on its merchant"
     );
     assert_eq!(
-        count_blue_effect_pixels(other_id),
+        count_completion_delta(other_id),
         0,
         "an unrelated active merchant must not inherit the completion pillar"
     );

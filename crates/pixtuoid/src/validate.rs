@@ -5,11 +5,6 @@ use pixtuoid_core::sprite::format::{load_pack, validate_pack_animations};
 
 use crate::strip_control_chars;
 
-/// The `OK:` line. **homebrew-core contract**: their `test do` asserts this
-/// output matches `OK: pack "skeleton"` after `init-pack`, so the literal
-/// prefix + quoting is a public packaging surface — rewording it breaks
-/// Homebrew's CI on the next autobump, not ours. Coordinate a core PR.
-///
 /// `pack.name`/`pack.version` are untrusted TOML string fields —
 /// a crafted pack can encode ESC/OSC bytes (TOML `\u` escapes) that would inject
 /// a terminal escape when a user runs `validate-pack` to inspect a downloaded
@@ -41,11 +36,8 @@ pub fn validate_pack(dir: &Path) -> Result<()> {
     // ERROR diagnostics and the final tally go to stderr so stdout stays the
     // parseable channel (the OK line, WARN/INFO advisories) even when a caller
     // redirects stdout — errors also drive a non-zero exit via the bail! below.
-    // The missing/insufficient names come from the REQUIRED/OPTIONAL registry
-    // constants (not pack input), so only the OK line + unknown keys are untrusted.
-    for name in &report.missing_required {
-        eprintln!("ERROR: missing required animation \"{name}\"");
-    }
+    // Known names come from the current optional Maple registry; unknown table
+    // keys are untrusted pack input and are sanitized by `unknown_line`.
     for (name, need, got) in &report.insufficient_frames {
         eprintln!("ERROR: \"{name}\" needs at least {need} frames, has {got}");
     }
@@ -56,7 +48,7 @@ pub fn validate_pack(dir: &Path) -> Result<()> {
         println!("{}", unknown_line(name));
     }
 
-    let errors = report.missing_required.len() + report.insufficient_frames.len();
+    let errors = report.insufficient_frames.len();
     let warnings = report.missing_optional.len();
     eprintln!("\n{} error(s), {} warning(s)", errors, warnings);
 

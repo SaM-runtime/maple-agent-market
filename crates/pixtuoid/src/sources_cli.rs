@@ -1,8 +1,6 @@
-//! The scriptable sources-CLI presenters over `pixtuoid::sources` (the TUI-free
-//! core): `setup` / `sources [set]` / the shared `connect`/`disconnect` runner.
-//! Binary-crate module (lifted out of `main.rs`) — a SIBLING of `sources.rs`,
-//! kept out of it on purpose: the core stays presenter-free (its other two
-//! presenters, the in-TUI panel and onboarding, live in their own modules too).
+//! Scriptable presenters over `pixtuoid::sources`: `setup`, `sources [set]`,
+//! and the shared `connect` / `disconnect` runner.
+//! Kept separate from `sources.rs` so its core remains presenter-free.
 //! `main.rs` dispatches here; the `--json` row shape is the typed
 //! [`pixtuoid::sources::OutcomeRow`] wire contract.
 
@@ -13,9 +11,8 @@ use pixtuoid::{config, sources};
 
 use crate::logging::log_file_path;
 
-/// `pixtuoid setup [--yes]` — the headless onboarding twin (CI /
-/// scripting). Detects installed agent CLIs and connects them via the SAME
-/// `sources::apply_choices` the in-TUI onboarding uses. Without `--yes` it is a
+/// `maple-agent-market setup [--yes]` detects installed agent CLIs and connects
+/// them through `sources::apply_choices`. Without `--yes` it is a
 /// DRY RUN (prints the detected set only) — writing to another tool's config is
 /// opt-in. Exits non-zero if any connect fails (a `$?`-checking caller's signal).
 pub(crate) fn run_setup(yes: bool) -> Result<()> {
@@ -55,7 +52,7 @@ pub(crate) fn run_sources_list(json: bool) -> Result<()> {
     let cfg = config::config_path();
     // Same NotFound-vs-everything-else split `doctor` makes: an unreadable log
     // leaves `health` under-reported, so say so instead of returning a silent
-    // clean bill. It rides tracing (stderr in every non-TUI mode) rather than
+    // clean bill. It rides tracing (stderr for foreground CLI commands) rather than
     // stdout — `--json` stdout is the stable machine-readable array.
     let (log, log_warning) = pixtuoid::doctor::read_log(&log_file_path());
     if let Some(w) = log_warning {

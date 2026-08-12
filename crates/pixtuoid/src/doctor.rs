@@ -13,8 +13,8 @@
 //! Strictly READ-ONLY: log file + config + install-state + best-effort
 //! `<cli> --version` subprocess probes (stdin nulled so they can't block; argv
 //! from the static registry, never user input). It never writes config
-//! (re-connecting hooks stays the Sources panel's job) and never spawns the
-//! TUI. The PROBED CLI is not read-only about its own state, though — several
+//! (re-connecting hooks stays the `connect` command's job) and never opens the
+//! floating window. The PROBED CLI is not read-only about its own state, though — several
 //! bootstrap their state dir on any invocation — so the probe is gated by
 //! `may_probe_version` on evidence the user already runs that CLI; see the
 //! `doctor` probe. The untrusted wire
@@ -168,36 +168,6 @@ pub(crate) fn scan_log_for_source(log: &str, source: &str) -> LogScanResult {
     r
 }
 
-/// Source label-prefixes (e.g. `"cc"`) that have ANY decode-drift breadcrumb in
-/// the log — for the live footer nudge. Reuses `scan_log_for_source` (tested).
-pub(crate) fn drifted_sources(log: &str) -> Vec<String> {
-    registry::registered_source_names()
-        .filter(|s| scan_log_for_source(log, s).total() > 0)
-        .filter_map(|s| registry::descriptor_for(s).map(|d| d.label_prefix.to_string()))
-        .collect()
-}
-
-/// Merge the source-death footer warning (HIGHEST priority — the office is
-/// partially frozen) with a passive decode-drift nudge. `None` when both clear.
-/// The footer (`run_tui`) sets this each frame; the drift list is throttle-scanned.
-pub fn footer_warning(source_death: Option<&str>, drifted: &[String]) -> Option<String> {
-    if let Some(d) = source_death {
-        return Some(d.to_string());
-    }
-    if drifted.is_empty() {
-        return None;
-    }
-    let prefixes = drifted
-        .iter()
-        .map(|p| format!("{p}·"))
-        .collect::<Vec<_>>()
-        .join(" ");
-    // No leading `⚠` — the footer painter (`footer.rs` `" ⚠ {warn} "`) owns the
-    // glyph, same as the source-death message. Embedding one here double-prints
-    // it (`⚠ ⚠ decode drift`), a regression a snapshot caught.
-    Some(format!("decode drift: {prefixes} — run `pixtuoid doctor`"))
-}
-
 /// Windows-only advisory for the "installed but no sprite" path-split class
 /// (CodeWhale / OpenClaw, #census-266-style): when `HOME` is set and differs from
 /// `%USERPROFILE%`, a source whose CLI resolves its home differently than pixtuoid
@@ -268,7 +238,8 @@ impl SourceDiagnostics {
     }
 
     /// The single worst issue as a one-line, glyph-prefixed summary for the
-    /// Sources panel detail + the boot warning. `None` = nothing to flag.
+    /// `doctor` detail plus the floating-window startup warning. `None` means
+    /// there is nothing to flag.
     /// Priority: install-broken (hooks can't fire) > decode-drift.
     pub(crate) fn summary(&self) -> Option<String> {
         if let Some(i) = &self.install {
@@ -317,7 +288,7 @@ pub(crate) struct DoctorSourceRow {
     /// anchor), from the source's `SourceDescriptor`.
     pub verified_version: &'static str,
     /// The shared health rollup (install soundness + decode drift) — the SAME
-    /// [`SourceDiagnostics`] the Sources panel + boot preflight read, embedded
+    /// [`SourceDiagnostics`] the sources CLI and startup preflight read, embedded
     /// whole so `is_broken`/`drift` stay the ONE authority (no re-implemented
     /// `row_broken`, no re-flattened `scan`/`schema` copy that could disagree).
     /// A non-sound install flips the verdict glyph to `⚠` and prints the reason
@@ -565,154 +536,6 @@ fn may_probe_version(connected: bool, cli_detected: Option<bool>) -> bool {
     connected || cli_detected.unwrap_or(false)
 }
 
-/// The desktop activation backend focus-jump would use on THIS host — the
-/// per-OS half of the #526 focus diagnostic. Linux detection is the pure
-/// [`linux_activation_backend`] over the env markers `focus/linux.rs` keys on.
-fn activation_backend() -> String {
-    #[cfg(target_os = "macos")]
-    {
-        "NSRunningApplication (macOS) ✓".to_string()
-    }
-    #[cfg(target_os = "linux")]
-    {
-        linux_activation_backend(
-            marker_set(std::env::var(crate::focus::SWAY_ENV).ok()),
-            marker_set(std::env::var(crate::focus::HYPRLAND_ENV).ok()),
-            marker_set(std::env::var("WAYLAND_DISPLAY").ok()),
-            marker_set(std::env::var("DISPLAY").ok()),
-        )
-        .to_string()
-    }
-    #[cfg(windows)]
-    {
-        "SetForegroundWindow (Windows) ✓ — the foreground lock may still deny".to_string()
-    }
-    #[cfg(not(any(target_os = "macos", target_os = "linux", windows)))]
-    {
-        "none — focus-jump is unsupported on this OS".to_string()
-    }
-}
-
-/// Is a compositor/display env marker actually SET? EMPTY (or whitespace-only)
-/// counts as UNSET — the workspace `install::io::nonempty` rule (#172), NOT bare
-/// presence. A leftover `WAYLAND_DISPLAY=`/`SWAYSOCK=` (systemd user units and
-/// non-forwarded ssh sessions leave them routinely) would otherwise print a
-/// confidently wrong verdict at a user whose X11 EWMH channel works fine.
-/// `focus::linux::detect_channel` keys the live channel on the SAME rule.
-#[cfg_attr(not(target_os = "linux"), allow(dead_code))]
-fn marker_set(value: Option<String>) -> bool {
-    crate::install::io::nonempty(value).is_some()
-}
-
-/// Pure so every arm is unit-tested on any host: mirrors `focus/linux.rs`'s
-/// ONE-channel-per-env order (sway IPC → hyprland IPC → X11 EWMH → nothing) —
-/// EXCEPT that a Wayland session without a pid-addressable IPC must NOT be
-/// reported as "X11 EWMH ✓": XWayland sets $DISPLAY, but a native-Wayland
-/// terminal never appears in XWayland's client list and mutter/kwin block
-/// focus-steal anyway, so the ✓ would mislead exactly the users focus fails
-/// for. Only the linux `activation_backend` arm calls this in prod — on
-/// other hosts the tests are the (deliberate) only caller.
-#[cfg_attr(not(target_os = "linux"), allow(dead_code))]
-fn linux_activation_backend(sway: bool, hyprland: bool, wayland: bool, x11: bool) -> &'static str {
-    if sway {
-        "sway IPC (swaymsg) ✓"
-    } else if hyprland {
-        "hyprland IPC (hyprctl) ✓"
-    } else if wayland {
-        "✗ Wayland compositor without a pid-addressable focus channel (GNOME/KDE \
-         forbid focus-steal; xdg-activation unimplemented) — focus will silently \
-         no-op for native-Wayland terminals"
-    } else if x11 {
-        "X11 EWMH ($DISPLAY) ✓"
-    } else {
-        "✗ none detected — focus will silently no-op"
-    }
-}
-
-/// The focus-jump block of the report: the activation backend + which
-/// pid channel each source family rides, with the transcript-family probe
-/// roots checked on disk. Pure over the probed facts; the family buckets come
-/// straight from the registry (a new source lands in the right bucket with no
-/// edit here).
-pub(crate) fn focus_section(
-    backend: &str,
-    cc_registry: Option<(&std::path::Path, bool)>,
-    codex_sessions: (&std::path::Path, bool),
-) -> String {
-    let prefix_of = |src: &str| {
-        registry::descriptor_for(src)
-            .map(|d| d.label_prefix)
-            .unwrap_or("??")
-    };
-    use registry::FocusChannel;
-    let mut shim_stamp = Vec::new();
-    let mut plugin_stamp = Vec::new();
-    let mut no_channel = Vec::new();
-    for src in registry::registered_source_names() {
-        let Some(d) = registry::descriptor_for(src) else {
-            continue;
-        };
-        // Daemons (the lobster) aren't click-focusable agents; the
-        // TranscriptProbe sources (CC/Codex) get their own rows below.
-        if d.is_daemon() || d.focus_channel() == FocusChannel::TranscriptProbe {
-            continue;
-        }
-        let tag = format!("{}\u{b7}{}", d.label_prefix, src);
-        match d.focus_channel() {
-            FocusChannel::ShimStamp => shim_stamp.push(tag),
-            FocusChannel::PluginStamp => plugin_stamp.push(tag),
-            FocusChannel::Unsupported => no_channel.push(tag),
-            FocusChannel::TranscriptProbe => unreachable!("skipped above"),
-        }
-    }
-    let mut out = String::from("focus-jump (click a sprite → its terminal comes forward):\n");
-    out.push_str(&format!("  backend: {backend}\n"));
-    let cc_prefix = prefix_of(pixtuoid_core::source::claude_code::SOURCE_NAME);
-    match cc_registry {
-        Some((dir, true)) => out.push_str(&format!(
-            "  {cc_prefix}\u{b7}claude-code — registry probe: {} ✓\n",
-            dir.display()
-        )),
-        Some((dir, false)) => out.push_str(&format!(
-            "  {cc_prefix}\u{b7}claude-code — registry probe: {} ✗ missing (focus no-ops until CC writes it)\n",
-            dir.display()
-        )),
-        None => out.push_str(&format!(
-            "  {cc_prefix}\u{b7}claude-code — registry probe disabled (non-standard projects root) — focus no-ops\n"
-        )),
-    }
-    let cx_prefix = prefix_of(pixtuoid_core::source::codex::SOURCE_NAME);
-    let (codex_dir, codex_present) = codex_sessions;
-    out.push_str(&format!(
-        "  {cx_prefix}\u{b7}codex — rollout fd probe: {} {}\n",
-        codex_dir.display(),
-        if codex_present {
-            "✓"
-        } else {
-            "✗ missing (focus no-ops until codex writes it)"
-        }
-    ));
-    if !shim_stamp.is_empty() {
-        out.push_str(&format!(
-            "  {} — shim `_pid` (getppid) rides each hook event (unix; absent on Windows)\n",
-            shim_stamp.join(", ")
-        ));
-    }
-    if !plugin_stamp.is_empty() {
-        out.push_str(&format!(
-            "  {} — plugin-stamped `_pid` rides each hook event (all platforms)\n",
-            plugin_stamp.join(", ")
-        ));
-    }
-    if !no_channel.is_empty() {
-        out.push_str(&format!(
-            "  {} — no focus channel (click no-ops)\n",
-            no_channel.join(", ")
-        ));
-    }
-    out
-}
-
 /// Read the warn-floor log for a drift scan, separating "there is no log yet"
 /// from "the log could not be read". Returns the text (empty on either failure)
 /// plus a warning line for the SECOND case only.
@@ -757,50 +580,17 @@ pub fn run(log_path: &std::path::Path) -> anyhow::Result<String> {
     // connected-set fresh from config via the SAME `resolve_connected` the boot
     // seeder uses (NOT the live in-process `ConnectedSources`, which it can't
     // see). A snapshot diagnostic reading live on-disk state is the correct
-    // semantic — it can lag a just-made in-TUI toggle until that toggle persists,
+    // semantic — it can lag a just-made CLI change until that change persists,
     // which it always does (persist-first; see `connect_source`/`disconnect_source`).
     let connected = crate::config::resolve_connected(&cfg);
     let (log, log_warning) = read_log(log_path);
 
-    let mut out = String::from("pixtuoid doctor — source health\n");
+    let mut out = String::from("Maple Agent Market doctor — source health\n");
     out.push_str(&format!("log: {}\n", log_path.display()));
     out.push_str(&format!(
         "config: {}\n",
         crate::config::config_path().display()
     ));
-    // Terminal capability: the pixel-art office needs a 24-bit-color terminal, and
-    // the #1 silent failure is a non-truecolor terminal rendering approximated
-    // colors. When $COLORTERM hasn't already declared truecolor, ASK the terminal
-    // directly (DECRQSS) — but ONLY when stdout is a real tty (so a piped
-    // `pixtuoid doctor > file` neither emits escape codes nor blocks, and the test
-    // harness, whose output is captured, never probes) AND the terminal isn't
-    // $TERM=dumb (which can't answer DECRQSS — don't emit escapes at it). The same
-    // `color_preflight` the launcher acts on drives both the probe skip and the
-    // color-status line, so the diagnostic matches what `run` would do. The row is
-    // formatted by the PURE, unit-tested `term::terminal_diagnostic_row`; `.ok()`
-    // makes an unset var a genuine `None`, not `Some("")`.
-    let color_pf = crate::term::color_preflight(
-        std::env::var("NO_COLOR").ok().as_deref(),
-        std::env::var("CLICOLOR_FORCE").ok().as_deref(),
-        std::env::var("TERM").ok().as_deref(),
-    );
-    let probe_ok = std::io::IsTerminal::is_terminal(&std::io::stdout())
-        && color_pf != crate::term::ColorPreflight::RefuseDumbTerm;
-    let truecolor_probe = if probe_ok {
-        crate::term::query_truecolor(crate::term::TRUECOLOR_PROBE_TIMEOUT)
-    } else {
-        None
-    };
-    out.push_str(&crate::term::terminal_diagnostic_row(
-        std::env::var("TERM").ok().as_deref(),
-        std::env::var("COLORTERM").ok().as_deref(),
-        truecolor_probe,
-    ));
-    out.push('\n');
-    if let Some(line) = crate::term::color_status_row(color_pf) {
-        out.push_str(line);
-        out.push('\n');
-    }
     // Surface config-load warnings IN the report — a malformed config makes every
     // source read disconnected, and a diagnostic tool must say WHY rather than
     // silently swallow it. Sanitized: a warning can interpolate config content.
@@ -824,7 +614,7 @@ pub fn run(log_path: &std::path::Path) -> anyhow::Result<String> {
             .map(|t| crate::install::has_hooks(t, None))
             .unwrap_or(false);
         // ONE shared rollup (install soundness + drift) — the same `diagnose` the
-        // Sources panel + boot preflight read, so the report can't drift apart
+        // sources CLI + boot preflight read, so the report can't drift apart
         // from the live surfaces.
         let diag = diagnose(src, &log, None);
         let is_connected = connected.contains(src);
@@ -856,20 +646,6 @@ pub fn run(log_path: &std::path::Path) -> anyhow::Result<String> {
         &broken,
         any_drift,
     ));
-    // The #526 focus diagnostic — probe roots come from the SAME default
-    // resolution the runtime seeds its watchers with (a --projects-root /
-    // --codex-sessions-root override changes the RUNNING app, and doctor
-    // diagnoses the default setup — noted so the mismatch can't surprise).
-    let cc_projects =
-        pixtuoid_core::source::claude_code::ClaudeCodeSource::default_paths().projects_root;
-    let cc_registry = pixtuoid_core::source::cc_registry_dir(&cc_projects);
-    let codex_sessions = pixtuoid_core::source::codex::CodexSource::default_paths().sessions_root;
-    out.push('\n');
-    out.push_str(&focus_section(
-        &activation_backend(),
-        cc_registry.as_deref().map(|d| (d, d.is_dir())),
-        (&codex_sessions, codex_sessions.is_dir()),
-    ));
     // Windows safety net: a HOME≠USERPROFILE shell is the one host condition under
     // which a CLI's home-resolution could land hooks where pixtuoid didn't write.
     if let Some(adv) = home_split_advisory(
@@ -893,7 +669,7 @@ fn health_summary(n: usize, broken: &[String], any_drift: bool) -> String {
     } else {
         let verb = if broken.len() == 1 { "needs" } else { "need" };
         out.push_str(&format!(
-            "\n{n} sources · ⚠ {} {verb} attention ({}) — reconnect in the Sources panel (press s)",
+            "\n{n} sources · ⚠ {} {verb} attention ({}) — reconnect with `maple-agent-market connect <source>`",
             broken.len(),
             broken.join(", ")
         ));
@@ -955,87 +731,17 @@ mod tests {
     }
 
     #[test]
-    fn linux_activation_backend_covers_every_channel_in_priority_order() {
-        assert!(linux_activation_backend(true, true, true, true).contains("sway"));
-        assert!(linux_activation_backend(false, true, true, true).contains("hyprland"));
-        // A Wayland session without sway/hyprland must be an HONEST ✗ even
-        // when XWayland set $DISPLAY — never "X11 EWMH ✓" (the F2 fix).
-        assert!(linux_activation_backend(false, false, true, true).contains("✗ Wayland"));
-        assert!(linux_activation_backend(false, false, false, true).contains("EWMH"));
-        assert!(linux_activation_backend(false, false, false, false).contains("✗ none"));
-    }
-
-    #[test]
-    fn an_exported_but_blank_compositor_marker_is_not_a_running_compositor() {
-        assert!(!marker_set(None));
-        assert!(!marker_set(Some(String::new())), "SWAYSOCK= is a leftover");
-        assert!(!marker_set(Some("  \t ".to_string())));
-        assert!(marker_set(Some("/run/user/1000/sway-ipc.sock".to_string())));
-        // The whole point: on an X11 host, blank sway/wayland markers must not
-        // outrank a real $DISPLAY. Bare `var_os(..).is_some()` reported sway.
-        assert_eq!(
-            linux_activation_backend(
-                marker_set(Some(String::new())),
-                marker_set(None),
-                marker_set(Some(String::new())),
-                marker_set(Some(":0".to_string())),
-            ),
-            "X11 EWMH ($DISPLAY) ✓"
-        );
-    }
-
-    #[test]
-    fn focus_section_buckets_sources_from_the_registry() {
-        let cc = std::path::Path::new("/home/u/.claude/sessions");
-        let cx = std::path::Path::new("/home/u/.codex/sessions");
-        let s = focus_section("test-backend ✓", Some((cc, true)), (cx, true));
-        assert!(s.contains("backend: test-backend ✓"));
-        assert!(s.contains("claude-code — registry probe") && s.contains("✓"));
-        assert!(s.contains("codex — rollout fd probe"));
-        // Hook-only sources ride the _pid stamp; transcript-only non-probe
-        // sources have no channel — both buckets are REGISTRY-derived, so a
-        // new source lands correctly with no doctor edit.
-        assert!(
-            s.contains("opencode") && s.contains("plugin-stamped"),
-            "plugin stampers listed separately: {s}"
-        );
-        assert!(
-            s.contains("cursor") && s.contains("shim `_pid`"),
-            "shim stampers listed separately: {s}"
-        );
-        let no_channel_line = s
-            .lines()
-            .find(|l| l.contains("no focus channel"))
-            .expect("a no-channel line");
-        assert!(
-            no_channel_line.contains("antigravity") && no_channel_line.contains("copilot"),
-            "transcript-only sources listed: {no_channel_line}"
-        );
-        // The daemon (lobster) is not a click-focusable agent.
-        assert!(!s.contains("openclaw"), "daemons are excluded: {s}");
-    }
-
-    #[test]
-    fn focus_section_reports_missing_and_disabled_probe_roots() {
-        let cc = std::path::Path::new("/home/u/.claude/sessions");
-        let cx = std::path::Path::new("/home/u/.codex/sessions");
-        let missing = focus_section("b", Some((cc, false)), (cx, false));
-        assert!(missing.contains("✗ missing (focus no-ops until CC writes it)"));
-        assert!(missing.contains("✗ missing (focus no-ops until codex writes it)"));
-        let disabled = focus_section("b", None, (cx, true));
-        assert!(disabled.contains("registry probe disabled (non-standard projects root)"));
-    }
-
-    #[test]
     fn run_renders_the_structural_report_headers() {
         // run() reads the real config/log/env, but the structural headers are
         // present regardless — so a whole-body `replace run with Ok(default)`
         // survivor (an empty report) is caught, giving the report builder teeth
         // beyond its pure row helpers. (A missing log path → empty log, fine.)
         let out = run(std::path::Path::new("/nonexistent-pixtuoid-doctor-log")).unwrap();
-        assert!(out.contains("pixtuoid doctor — source health"), "{out}");
+        assert!(
+            out.contains("Maple Agent Market doctor — source health"),
+            "{out}"
+        );
         assert!(out.contains("config:"), "{out}");
-        assert!(out.contains("terminal: TERM="), "{out}");
         assert!(out.contains("sources \u{b7}"), "{out}");
     }
 
@@ -1529,43 +1235,6 @@ mod tests {
         // un-probeable installed → shows unknown, no false skew.
         let n = version_status(None, "1.0.62");
         assert!(n.contains("unknown") && !n.contains("NEWER"));
-    }
-
-    #[test]
-    fn drifted_sources_and_footer_warning() {
-        let log = capture(|| {
-            drift::unknown_event("claude-code", "NewHook");
-            drift::missing_field("codex", "function_call", "name");
-        });
-        let mut d = drifted_sources(&log);
-        d.sort();
-        assert_eq!(d, vec!["cc".to_string(), "cx".to_string()]);
-        // source-death wins (the office is partially frozen).
-        assert_eq!(
-            footer_warning(Some("source 'x' died"), &d).as_deref(),
-            Some("source 'x' died")
-        );
-        // drift nudge when no death.
-        let w = footer_warning(None, &d).unwrap();
-        assert!(
-            w.contains("cc·") && w.contains("cx·") && w.contains("doctor"),
-            "{w}"
-        );
-        // The footer painter (`footer.rs` `" ⚠ {warn} "`) owns the warning glyph;
-        // neither the drift NOR the death message may embed its own or it
-        // double-prints (`⚠ ⚠ …`).
-        assert!(!w.contains('⚠'), "drift msg must not embed ⚠: {w}");
-        // Death tier: route the REAL `source_warning_message` output through the
-        // merge (not a literal) — if that producer ever embeds a glyph, this
-        // catches the same double-print at the death tier too.
-        let death = crate::tui::widgets::source_warning_message(&[
-            pixtuoid_core::source::manager::SourceDeath::new("claude-code", "x"),
-        ])
-        .unwrap();
-        let dw = footer_warning(Some(&death), &d).unwrap();
-        assert!(!dw.contains('⚠'), "death msg must not embed ⚠: {dw}");
-        // both clear → nothing.
-        assert_eq!(footer_warning(None, &[]), None);
     }
 
     #[test]

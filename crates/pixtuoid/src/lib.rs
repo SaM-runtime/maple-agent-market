@@ -1,4 +1,4 @@
-//! Public surface for the pixtuoid binary's internals — exposed so
+//! Public surface for the Maple Agent Market binary's internals — exposed so
 //! examples and integration tests can import them. The `main.rs` binary is
 //! the primary entry point.
 
@@ -9,16 +9,10 @@ pub mod cli;
 pub mod config;
 pub mod doctor;
 pub mod floating;
-pub(crate) mod focus;
-pub mod init_pack;
 pub mod install;
 pub mod runtime;
-pub mod setup;
 pub mod sources;
-pub mod term;
-pub mod tui;
 pub mod validate;
-pub(crate) mod version;
 
 /// Public side-project brand. Internal crate, config and wire identifiers keep
 /// their Pixtuoid names as an explicit upstream-compatibility layer.
@@ -26,14 +20,13 @@ pub const PRODUCT_NAME: &str = "Maple Agent Market";
 pub const PRODUCT_SLUG: &str = "maple-agent-market";
 
 /// Strip ASCII/Unicode control characters from an untrusted string before it
-/// reaches a terminal sink (the headless `println!` summary, the `doctor`
-/// stdout report, the Sources-panel path, the `connect`/`disconnect` outcome
-/// rows, the pre-altscreen config warnings). Untrusted wire values (agent
+/// reaches a terminal sink (the `doctor` stdout report, source-management
+/// output, and launch warnings). Untrusted wire values (agent
 /// labels, sampled CLI output, config paths, another CLI's config content) can
 /// carry control bytes that would reposition the cursor or inject escapes; one
 /// chokepoint so the policy can't drift across its call sites (R0615-06).
 ///
-/// The non-TUI `tracing` stream is a SIXTH terminal sink, and it cannot be
+/// The `tracing` stream is another terminal sink, and it cannot be
 /// filtered at the SINK: the subscriber emits its own SGR for level coloring, so
 /// a sink-side filter could not tell our escapes from an injected one. Its
 /// untrusted values are stripped where they ENTER a record instead, on both

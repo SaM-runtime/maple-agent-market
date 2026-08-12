@@ -1,5 +1,4 @@
-//! Crash reporting: the panic hook that restores the terminal, appends a
-//! timestamped backtrace to `~/.cache/pixtuoid/crash.log`, and prints a
+//! Crash reporting for the desktop window.
 //! pre-filled GitHub issue URL. Binary-crate module (lifted out of `main.rs`);
 //! `main()` installs it first thing.
 
@@ -7,13 +6,6 @@ use std::path::PathBuf;
 
 pub(crate) fn install_crash_hook() {
     std::panic::set_hook(Box::new(|info| {
-        // stdout is the stream `setup_terminal` entered the alt screen on, and
-        // these are ANSI bytes going to whatever writer `execute!` is handed.
-        let _ = pixtuoid::tui::unwind_terminal_modes(
-            &mut std::io::stdout(),
-            crossterm::terminal::disable_raw_mode,
-        );
-
         let version = env!("CARGO_PKG_VERSION");
         let crash_path = crash_log_path();
         let timestamp = chrono::Local::now().format("%Y-%m-%d %H:%M:%S").to_string();
@@ -28,7 +20,9 @@ pub(crate) fn install_crash_hook() {
         let bt_str = bt.to_string();
 
         let mut report = String::new();
-        report.push_str(&format!("pixtuoid v{version} crashed at {timestamp}\n"));
+        report.push_str(&format!(
+            "Maple Agent Market v{version} crashed at {timestamp}\n"
+        ));
         report.push_str(&format!("{panic_msg}\n  at {location}\n\n"));
         report.push_str(&bt_str);
         report.push('\n');
@@ -42,7 +36,7 @@ pub(crate) fn install_crash_hook() {
 
         let issue_url = build_issue_url(version, &panic_msg, &location, &bt_str, &crash_path);
 
-        eprintln!("\n\x1b[1;31mpixtuoid v{version} crashed — sorry about that.\x1b[0m\n");
+        eprintln!("\n\x1b[1;31mMaple Agent Market v{version} crashed.\x1b[0m\n");
         eprintln!("  \x1b[2m{panic_msg}\x1b[0m");
         eprintln!("  \x1b[2mat {location}\x1b[0m\n");
         eprintln!("  \x1b[1mHelp fix it\x1b[0m — open this link to file a pre-filled bug report");
@@ -110,12 +104,10 @@ fn build_issue_url(
          ```\n{bt_body}\n```\n"
     );
 
-    // Derive from the ONE repo-URL authority (the lib's version_popup.rs REPO_URL — the
-    // same const the version popup + bulletin board open; crash.rs is a BIN-crate
-    // module, hence the `pixtuoid::` path). The test pins the expanded literal.
+    const REPO_URL: &str = "https://github.com/SaM-runtime/maple-agent-market";
     format!(
         "{}/issues/new?labels=crash-report&title={}&body={}",
-        pixtuoid::tui::widgets::REPO_URL,
+        REPO_URL,
         percent_encode(&title),
         percent_encode(&body),
     )
@@ -152,15 +144,15 @@ fn crash_log_path() -> PathBuf {
     // Empty or RELATIVE XDG_STATE_HOME = unset (XDG spec; nonempty_abs_env) — an
     // unfiltered "" yields root `/pixtuoid/...`, a relative one lands CWD-relative.
     if let Some(state) = pixtuoid::install::nonempty_abs_env("XDG_STATE_HOME") {
-        return PathBuf::from(format!("{state}/pixtuoid/crash.log"));
+        return PathBuf::from(format!("{state}/maple-agent-market/crash.log"));
     }
     if let Some(home) = pixtuoid_core::platform::user_home_opt() {
         return PathBuf::from(home)
             .join(".cache")
-            .join("pixtuoid")
+            .join("maple-agent-market")
             .join("crash.log");
     }
-    std::env::temp_dir().join("pixtuoid-crash.log")
+    std::env::temp_dir().join("maple-agent-market-crash.log")
 }
 
 #[cfg(test)]
@@ -168,68 +160,6 @@ mod tests {
     use std::path::Path;
 
     use super::*;
-
-    /// The escape the alternate screen is left with. Asserted as a literal
-    /// rather than re-executing the command into a second buffer, which would
-    /// only prove `execute!` is deterministic.
-    ///
-    /// Unix-only, and so is EVERY test below that reads it — the gate is a
-    /// property of crossterm, not of either test. crossterm 0.29 dispatches on a
-    /// PROCESS-GLOBAL flag rather than on the writer: `queue` and `execute_fmt`
-    /// both `return command.execute_winapi()` when `ansi_support::supports_ansi()`
-    /// is false, and that flag is `enable_vt_processing().is_ok() || TERM is set
-    /// and != "dumb"`. Under `windows-test` nextest runs each test binary with a
-    /// PIPED stdout and no console, and windows-latest/pwsh sets no `TERM`, so
-    /// the flag is false and the sequences go to the real console — no writer,
-    /// in-memory or piped, ever sees a byte to assert on.
-    #[cfg(unix)]
-    const LEAVE_ALT_SCREEN: &str = "\x1b[?1049l";
-
-    /// Which STREAM the installed hook writes to, end to end. The panic hook is
-    /// process-global and writes to a real fd, so the only way to observe its
-    /// choice is from outside: re-exec this test binary with the child marker,
-    /// let a real panic fire the hook, and read the two pipes apart.
-    ///
-    /// Unix-only for the same crossterm dispatch reason as `LEAVE_ALT_SCREEN`
-    /// above — and the defect itself is the Unix fd-redirection case.
-    #[cfg(unix)]
-    #[test]
-    fn the_hook_restores_on_stdout_and_keeps_the_report_on_stderr() {
-        const CHILD: &str = "PIXTUOID_CRASH_HOOK_STREAM_CHILD";
-        if std::env::var_os(CHILD).is_some() {
-            install_crash_hook();
-            panic!("deliberate panic: the crash-hook stream probe");
-        }
-        // Isolated XDG_STATE_HOME so the child's crash.log never lands in the
-        // developer's real ~/.cache.
-        let state = tempfile::tempdir().unwrap();
-        let out = std::process::Command::new(std::env::current_exe().unwrap())
-            .args([
-                "--exact",
-                "crash::tests::the_hook_restores_on_stdout_and_keeps_the_report_on_stderr",
-                "--nocapture",
-            ])
-            .env(CHILD, "1")
-            .env("XDG_STATE_HOME", state.path())
-            .output()
-            .unwrap();
-        let stdout = String::from_utf8_lossy(&out.stdout);
-        let stderr = String::from_utf8_lossy(&out.stderr);
-        assert!(
-            stdout.contains(LEAVE_ALT_SCREEN),
-            "the alt screen is ENTERED on stdout (tui::setup_terminal), so the panic \
-             restore must go there — on stderr, `pixtuoid run 2>/dev/null` strands it.\n\
-             stdout: {stdout:?}"
-        );
-        assert!(
-            !stderr.contains(LEAVE_ALT_SCREEN),
-            "stderr is the human-readable channel, not the terminal-mode one: {stderr:?}"
-        );
-        assert!(
-            stderr.contains("crashed"),
-            "the crash report itself still belongs on stderr: {stderr:?}"
-        );
-    }
 
     #[test]
     fn truncate_ascii() {
@@ -302,7 +232,7 @@ mod tests {
         let home = pixtuoid_core::platform::user_home_opt().expect("a home dir in the test env");
         let cache = PathBuf::from(home)
             .join(".cache")
-            .join("pixtuoid")
+            .join("maple-agent-market")
             .join("crash.log");
         for rel in ["", "   ", "rel/state", "~/state"] {
             std::env::set_var("XDG_STATE_HOME", rel);
@@ -316,7 +246,7 @@ mod tests {
         std::env::set_var("XDG_STATE_HOME", abs);
         assert_eq!(
             crash_log_path(),
-            PathBuf::from(format!("{abs}/pixtuoid/crash.log"))
+            PathBuf::from(format!("{abs}/maple-agent-market/crash.log"))
         );
         match saved_xdg {
             Some(v) => std::env::set_var("XDG_STATE_HOME", v),

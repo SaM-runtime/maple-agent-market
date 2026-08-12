@@ -164,7 +164,7 @@ pub(crate) fn verify_schema(content: &str) -> crate::install::verify::SchemaPars
         if !doc.get("version").is_some_and(|v| v.is_number()) {
             parse.issues.push(
                 "hooks.json has no numeric top-level `version` key — Cursor requires it, \
-                 so no hooks load (reconnect via the Sources panel)"
+                 so no hooks load (run `maple-agent-market connect cursor`)"
                     .to_string(),
             );
         }

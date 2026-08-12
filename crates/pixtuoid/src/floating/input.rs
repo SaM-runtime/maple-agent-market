@@ -1,10 +1,7 @@
 //! Floating-window keyboard input — the winit KEY→action map for the hidden
-//! close gesture and audio runtime controls (#633 close-out). The audio state
-//! TRANSITION is shared with the
-//! TUI in `crate::audio` ([`crate::audio::apply_audio_action`]); only this
-//! key-decoding half is painter-specific (winit here, crossterm in the TUI),
-//! so the two surfaces can't drift on feel. The winit glue in `window.rs`
-//! stays thin (codecov-ignored, like the TUI event loop).
+//! close gesture and audio runtime controls. The audio state transition lives
+//! in `crate::audio` ([`crate::audio::apply_audio_action`]); this module only
+//! maps winit keys so the event-loop glue in `window.rs` stays thin.
 
 use crate::audio::AudioAction;
 use winit::keyboard::{Key, NamedKey};
@@ -45,14 +42,10 @@ pub(crate) fn map_view_selection(key: &Key, repeat: bool) -> Option<MapViewSelec
     }
 }
 
-/// Map a winit logical key to an [`AudioAction`] — the TUI's `m` / `+`(`=`) /
-/// `-`(`_`) vocabulary (lowercase `m` only, matching the TUI's
-/// `KeyCode::Char('m')`; no Shift+M).
+/// Map a winit logical key to an [`AudioAction`]. Lowercase `m` toggles mute;
+/// Shift+M is intentionally not a shortcut.
 ///
-/// winit delivers an explicit `repeat` flag, which the TUI's crossterm path
-/// LACKS (crossterm surfaces OS autorepeat as ordinary `Press` events unless
-/// the never-enabled kitty protocol is on, so a held `m` there re-dispatches).
-/// We use it as floating-only hardening: volume keys accept repeats (holding
+/// winit delivers an explicit `repeat` flag. Volume keys accept repeats (holding
 /// `-` slides the volume), the mute TOGGLE swallows them (a held `m` must not
 /// oscillate).
 pub(crate) fn audio_action(key: &Key, repeat: bool) -> Option<AudioAction> {
@@ -76,7 +69,7 @@ mod tests {
     }
 
     #[test]
-    fn key_map_is_the_tui_vocabulary_and_swallows_mute_repeats() {
+    fn key_map_uses_the_maple_vocabulary_and_swallows_mute_repeats() {
         assert_eq!(
             audio_action(&key("m"), false),
             Some(AudioAction::ToggleMute)
@@ -89,7 +82,7 @@ mod tests {
         assert_eq!(
             audio_action(&key("M"), false),
             None,
-            "Shift+M is not mute — parity with the TUI's Char('m')"
+            "Shift+M is not a mute shortcut"
         );
         for k in ["+", "="] {
             assert_eq!(

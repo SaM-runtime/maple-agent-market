@@ -8,8 +8,8 @@
 //! baking it).
 //!
 //! Monaspace Neon (GitHub Next, OFL) remains the brand mono and the one embedded
-//! face across the project. It covers the office's full symbol vocabulary; the
-//! `office_symbol_vocabulary_is_fully_covered` test keeps that guarantee. A
+//! face across the project. It covers the floating UI's full symbol vocabulary;
+//! the vocabulary coverage test keeps that guarantee. A
 //! floating name badge may additionally use an opt-in external fallback font
 //! for glyphs Monaspace lacks (for example Traditional Chinese task titles).
 //! The fallback never changes wall-board, footer, snapshot-cell, or proof text.
@@ -344,17 +344,14 @@ mod tests {
     }
 
     #[test]
-    fn office_symbol_vocabulary_is_fully_covered() {
-        // Every non-ASCII glyph the TUI's text surfaces emit (labels, footer,
-        // board, tooltip, dashboard, doctor) must be a REAL Monaspace Neon
+    fn maple_symbol_vocabulary_is_fully_covered() {
+        // Every non-ASCII glyph used by labels, footer, board and diagnostics
+        // must be a real Monaspace Neon
         // glyph — the vocabulary is single-face by design (no fallback face).
         // An uncovered glyph would rasterize as the snapshot fallback block
         // and as tofu in floating.
-        // HAND-MAINTAINED allowlist (no single machine-readable source of the
-        // render vocabulary exists to derive from): adding a glyph to footer.rs /
-        // wall_board.rs / theme_picker.rs / version_popup.rs / elevator.rs /
-        // board.rs / overlay.rs / tooltip.rs / dashboard.rs means ADDING IT
-        // HERE — and it must be Monaspace-covered, or the vocabulary changes.
+        // Hand-maintained because there is no single machine-readable source
+        // for the renderer's symbol vocabulary.
         for ch in [
             '●', '○', '◐', '◌', '▲', '▼', '▸', '▾', '★', '⬢', '▮', '▯', '↳', '◷', '▤', '↑', '↓',
             '·', '×', '⚠', '…', '⋮', '─', '│', '█', '▓', '▒', '░', '▀', '✓', '└', '├', 'Σ', '♩',

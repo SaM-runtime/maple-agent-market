@@ -76,7 +76,7 @@ def release_artifact(root: pathlib.Path, target: str | None = None) -> pathlib.P
     target = target or os.environ.get("CARGO_BUILD_TARGET")
     suffix = ".exe" if os.name == "nt" else ""
     target_parts = [target] if target else []
-    return target_dir.joinpath(*target_parts, "release", f"pixtuoid{suffix}")
+    return target_dir.joinpath(*target_parts, "release", f"maple-agent-market{suffix}")
 
 
 def rustc_host(root: pathlib.Path) -> str:
@@ -141,7 +141,7 @@ def build_release(root: pathlib.Path) -> pathlib.Path:
             "-p",
             "pixtuoid",
             "--bin",
-            "pixtuoid",
+            "maple-agent-market",
         ],
         cwd=root,
         check=True,

@@ -1,15 +1,9 @@
-//! Headless office → `RgbBuffer` rendering for the `pixtuoid floating` desktop window.
+//! Headless Maple world → `RgbBuffer` rendering for the desktop window.
 //!
-//! This renders the office to a raw pixel `RgbBuffer` via the shared scene seam
-//! (`pixtuoid_scene::floor::render_floor`, #423) — NOT the half-block terminal emulation
-//! `examples/snapshot/` saves (snapshot writes the ratatui `TestBackend` → a ▀-compressed
-//! PNG via `save_backend_as_png`). A floating-only surface: no `draw_scene`, no `Terminal`,
-//! no shared output with snapshot. `floating::window` renders at a DOWNSCALED buffer
-//! (~window/SCALE) and nearest-neighbor upscales it, so the pixel-art office stays
-//! chunky/legible instead of 8×12-px-tiny at 1:1. This module just paints the buffer at
-//! whatever dims it's handed, owning one `pixtuoid_scene::floor::FloorSession` (the
-//! per-frame caches + persistent office state — coffee cups, group chitchat — plus the
-//! dual eviction) across frames so motion stays continuous.
+//! The window renders at a downscaled resolution and nearest-neighbor upscales
+//! it so the procedural Maple art stays crisp. This module owns one
+//! `pixtuoid_scene::floor::FloorSession` across frames so movement and other
+//! persistent scene state remain continuous.
 
 use std::time::SystemTime;
 
@@ -25,24 +19,22 @@ use pixtuoid_scene::layout::{Bounds, Size};
 use pixtuoid_scene::theme::Theme;
 
 /// Pack an `Rgb` into the softbuffer word format, `0x00RRGGBB` (XRGB) — the ONE
-/// definition of the floating painter's surface pixel format. The office blit
+/// definition of the floating painter's surface pixel format. The scene blit
 /// (`window.rs`) and this label overlay write into the SAME surface, so they must
 /// agree on channel order / shift widths; a lone edit to one would color-swap the
-/// badges while the office renders correctly, with no compile error. (The test
+/// badges while the scene renders correctly, with no compile error. (The test
 /// oracle re-derives the packing independently ON PURPOSE, so a bug here can't
 /// hide behind a shared helper — don't route it through this.)
 pub(crate) fn pack_xrgb(c: Rgb) -> u32 {
     (c.r as u32) << 16 | (c.g as u32) << 8 | c.b as u32
 }
 
-/// Owns everything needed to render the live office to a reusable `RgbBuffer`
-/// across frames: a [`FloorSession`] — the scene-owned painter session (sim
-/// stores + buffer + coffee + chitchat + the dual eviction, written once).
-/// One per window — keeping it alive across frames is what keeps motion/pose
-/// continuous (no walk-flash).
-pub struct OfficeRenderer {
+/// Owns the two persistent Maple map sessions and their reusable RGB buffers.
+/// One renderer lives for the window's lifetime, which keeps entry, exit and
+/// activity animation continuous across frames.
+pub struct MapleRenderer {
     session: FloorSession,
-    /// Independent sim/cache domain for the forest map.  The market/office
+    /// Independent sim/cache domain for the forest map.  The market/scene
     /// session therefore never evicts training-map actors when the camera flips.
     training_session: FloorSession,
     /// Reusable output for the side-by-side Maple world. Each map keeps its own
@@ -50,8 +42,6 @@ pub struct OfficeRenderer {
     composite: RgbBuffer,
     /// Sticky root-party routing and the camera's selected Maple map.
     maple_world: pixtuoid_scene::maple_world::MapleWorldSession,
-    /// Enabled only when the loaded local pack actually carries the second plate.
-    maple_multi_map: bool,
     /// User-selected camera mode. Dual is the default; compact buffers render
     /// the selected single map without mutating this preference.
     view_mode: MapleViewMode,
@@ -59,7 +49,7 @@ pub struct OfficeRenderer {
     dual_rendered: bool,
     /// The market viewport captured by the last successful Maple scene frame.
     /// `labels()` rebuilds placements from this exact geometry instead of the
-    /// office layout, keeping each shop card attached to its merchant.
+    /// scene layout, keeping each shop card attached to its merchant.
     market_viewport: Option<Bounds>,
     /// Training viewport captured by the last selected forest-map frame.
     training_viewport: Option<Bounds>,
@@ -68,8 +58,8 @@ pub struct OfficeRenderer {
     market_avatars: bool,
     /// Ambient-audio gateway (#633). Inert unless installed. The per-frame
     /// `AudioFrame` is composed through the session's shared `AudioObserver`
-    /// (`FloorSession::audio_frame`) — full TUI parity (stems + door + appliance
-    /// one-shots), with the floor-reprime handled automatically by the observer
+    /// (`FloorSession::audio_frame`) — stems plus door and appliance one-shots,
+    /// with floor reprime handled automatically by the observer
     /// (so floor nav, if ever added, needs no hand-mirrored guard).
     audio: crate::audio::AudioHandle,
 }
@@ -104,14 +94,13 @@ pub struct MapleOverlayBatch {
 const MAPLE_DUAL_PANEL_MIN_WIDTH: u16 = 240;
 const MAPLE_DUAL_MIN_HEIGHT: u16 = 160;
 
-impl OfficeRenderer {
+impl MapleRenderer {
     pub fn new() -> Self {
         Self {
             session: FloorSession::new(),
             training_session: FloorSession::new(),
             composite: RgbBuffer::filled(1, 1, Rgb { r: 0, g: 0, b: 0 }),
             maple_world: pixtuoid_scene::maple_world::MapleWorldSession::default(),
-            maple_multi_map: false,
             view_mode: MapleViewMode::Dual,
             dual_rendered: false,
             market_viewport: None,
@@ -173,21 +162,35 @@ impl OfficeRenderer {
     #[doc(hidden)]
     pub fn assign_snapshot_scene_across_maps(&mut self, scene: &SceneState) {
         self.maple_world.reconcile(scene);
-        for (index, agent_id) in scene.agents.keys().copied().enumerate() {
+        let roots = scene
+            .agents
+            .keys()
+            .copied()
+            .map(
+                |agent_id| match pixtuoid_scene::maple_world::agent_relation(scene, agent_id) {
+                    Some(pixtuoid_scene::maple_world::MapleAgentRelation::Root {
+                        root_id, ..
+                    })
+                    | Some(pixtuoid_scene::maple_world::MapleAgentRelation::Child {
+                        root_id,
+                        ..
+                    }) => root_id,
+                    None => agent_id,
+                },
+            )
+            .collect::<std::collections::BTreeSet<_>>();
+        for (index, root_id) in roots.into_iter().enumerate() {
             let map = if index % 2 == 0 {
                 pixtuoid_scene::maple_world::MapleMapId::FreeMarket
             } else {
                 pixtuoid_scene::maple_world::MapleMapId::ForestTraining
             };
-            self.maple_world.assign_party(agent_id, map);
+            self.maple_world.assign_party(root_id, map);
         }
     }
 
-    /// Cycle the camera when the loaded pack supports the two-map world.
+    /// Cycle the camera through the built-in two-map world.
     pub(crate) fn cycle_map(&mut self) -> bool {
-        if !self.maple_multi_map {
-            return false;
-        }
         // A compact window keeps Dual as the preference but can only paint one
         // plate. Toggle that visible fallback immediately; resizing wide later
         // still restores the preferred simultaneous view.
@@ -217,9 +220,6 @@ impl OfficeRenderer {
     }
 
     pub(crate) fn select_map_view(&mut self, selection: MapleViewSelection) -> bool {
-        if !self.maple_multi_map {
-            return false;
-        }
         match selection {
             MapleViewSelection::Dual => {
                 self.view_mode = MapleViewMode::Dual;
@@ -246,9 +246,6 @@ impl OfficeRenderer {
     /// Visible compact map-switch affordance for the native floating surface.
     #[doc(hidden)]
     pub fn map_selector_text(&self) -> Option<String> {
-        if !self.maple_multi_map {
-            return None;
-        }
         let selection = match self.view_mode {
             MapleViewMode::Dual if self.dual_rendered => "雙圖".to_owned(),
             MapleViewMode::Dual => format!("雙圖準備｜{}", self.current_map_title()),
@@ -257,12 +254,10 @@ impl OfficeRenderer {
         Some(format!("地圖：{selection} [1/2/3]"))
     }
 
-    /// Render `scene`'s floor (per `floor_meta`) into the owned buffer at `buf_w`×`buf_h`
-    /// PIXELS — the caller maps window px → cells → pixels (`buf_w = cols`,
-    /// `buf_h = rows * 2`, the half-block 1:2 cell aspect; floating has no footer row to
-    /// subtract, unlike `draw_scene`). Returns the rendered buffer (a borrow of the
-    /// reused allocation). On a too-small / uncomputable layout it returns the buffer
-    /// unchanged — never panics.
+    /// Render the selected Maple map(s) into the owned `buf_w × buf_h` RGB
+    /// surface. Wide windows receive both maps; compact windows receive the
+    /// selected map. The public build always has both procedural maps, so this
+    /// path never falls back to Pixtuoid's former scene renderer.
     #[allow(clippy::too_many_arguments)] // the render inputs are genuinely flat (scene/pack/theme/clock/size/floor)
     pub fn render(
         &mut self,
@@ -273,190 +268,143 @@ impl OfficeRenderer {
         buf_w: u16,
         buf_h: u16,
         floor_meta: FloorMeta,
-        floor_pet: Option<&pixtuoid_scene::pet::Pet>,
     ) -> &RgbBuffer {
-        self.maple_multi_map = theme.name == "maple"
-            && pack.animation("scene_background").is_some()
-            && pack.animation("training_background").is_some();
-        if self.maple_multi_map {
-            self.maple_world.reconcile(scene);
-            if self.view_mode == MapleViewMode::Dual {
-                if let Some((market_panel, training_panel)) = split_map_panels(buf_w, buf_h) {
-                    let market_scene = self
-                        .maple_world
-                        .project_scene(scene, pixtuoid_scene::maple_world::MapleMapId::FreeMarket);
-                    let training_scene = self.maple_world.project_scene(
-                        scene,
-                        pixtuoid_scene::maple_world::MapleMapId::ForestTraining,
-                    );
-                    let market_rendered = self
-                        .session
-                        .render_maple(
-                            FrameInputs {
-                                scene: &market_scene,
-                                pack,
-                                theme,
-                                now,
-                                size: Size {
-                                    w: market_panel.width,
-                                    h: market_panel.height,
-                                },
-                                floor_meta,
-                                active_pet: None,
-                                floor_pet,
-                                debug_walkable: false,
+        // Maple Agent Market owns a complete procedural two-map fallback.
+        // A local pack may replace either plate, but it is never the feature
+        // switch: a clean clone must open the product UI without Pixtuoid's
+        // embedded scene or any separately downloaded game assets.
+        self.maple_world.reconcile(scene);
+        if self.view_mode == MapleViewMode::Dual {
+            if let Some((market_panel, training_panel)) = split_map_panels(buf_w, buf_h) {
+                let market_scene = self
+                    .maple_world
+                    .project_scene(scene, pixtuoid_scene::maple_world::MapleMapId::FreeMarket);
+                let training_scene = self.maple_world.project_scene(
+                    scene,
+                    pixtuoid_scene::maple_world::MapleMapId::ForestTraining,
+                );
+                let market_rendered = self
+                    .session
+                    .render_maple(
+                        FrameInputs {
+                            scene: &market_scene,
+                            pack,
+                            theme,
+                            now,
+                            size: Size {
+                                w: market_panel.width,
+                                h: market_panel.height,
                             },
-                            pixtuoid_scene::maple_world::MapleMapId::FreeMarket,
-                        )
-                        .is_some();
-                    let training_rendered = self
-                        .training_session
-                        .render_maple(
-                            FrameInputs {
-                                scene: &training_scene,
-                                pack,
-                                theme,
-                                now,
-                                size: Size {
-                                    w: training_panel.width,
-                                    h: training_panel.height,
-                                },
-                                floor_meta,
-                                active_pet: None,
-                                floor_pet,
-                                debug_walkable: false,
-                            },
-                            pixtuoid_scene::maple_world::MapleMapId::ForestTraining,
-                        )
-                        .is_some();
-
-                    self.composite
-                        .resize_fill(buf_w, buf_h, theme.surface.bg_fallback);
-                    if market_rendered {
-                        copy_rgb_panel(&mut self.composite, self.session.buf(), market_panel);
-                    }
-                    if training_rendered {
-                        copy_rgb_panel(
-                            &mut self.composite,
-                            self.training_session.buf(),
-                            training_panel,
-                        );
-                    }
-                    self.market_viewport = market_rendered.then_some(market_panel);
-                    self.training_viewport = training_rendered.then_some(training_panel);
-                    self.market_avatars =
-                        market_rendered && pixtuoid_scene::market::supports_market_avatars(pack);
-                    self.dual_rendered = market_rendered && training_rendered;
-
-                    let market_audio =
-                        self.session
-                            .audio_frame(&market_scene, floor_meta.floor_idx, now);
-                    let _training_audio = self.training_session.audio_frame(
-                        &training_scene,
-                        floor_meta.floor_idx,
-                        now,
-                    );
-                    if self.audio.is_enabled() {
-                        self.audio.frame(market_audio);
-                    }
-                    return &self.composite;
-                }
-            }
-
-            self.dual_rendered = false;
-            let map = self.maple_world.current_map();
-            let projected = self.maple_world.project_scene(scene, map);
-            let inputs = FrameInputs {
-                scene: &projected,
-                pack,
-                theme,
-                now,
-                size: Size { w: buf_w, h: buf_h },
-                floor_meta,
-                active_pet: None,
-                floor_pet,
-                debug_walkable: false,
-            };
-            let rendered = match map {
-                pixtuoid_scene::maple_world::MapleMapId::FreeMarket => {
-                    self.session.render_maple(inputs, map)
-                }
-                pixtuoid_scene::maple_world::MapleMapId::ForestTraining => {
-                    self.training_session.render_maple(inputs, map)
-                }
-            };
-            let viewport = rendered.is_some().then_some(Bounds {
-                x: 0,
-                y: 0,
-                width: buf_w,
-                height: buf_h,
-            });
-            self.market_viewport = (map == pixtuoid_scene::maple_world::MapleMapId::FreeMarket)
-                .then_some(viewport)
-                .flatten();
-            self.training_viewport = (map
-                == pixtuoid_scene::maple_world::MapleMapId::ForestTraining)
-                .then_some(viewport)
-                .flatten();
-            self.market_avatars = self.market_viewport.is_some()
-                && pixtuoid_scene::market::supports_market_avatars(pack);
-            let audio_frame = match map {
-                pixtuoid_scene::maple_world::MapleMapId::FreeMarket => {
-                    self.session
-                        .audio_frame(&projected, floor_meta.floor_idx, now)
-                }
-                pixtuoid_scene::maple_world::MapleMapId::ForestTraining => self
+                            floor_meta,
+                            active_pet: None,
+                            floor_pet: None,
+                            debug_walkable: false,
+                        },
+                        pixtuoid_scene::maple_world::MapleMapId::FreeMarket,
+                    )
+                    .is_some();
+                let training_rendered = self
                     .training_session
-                    .audio_frame(&projected, floor_meta.floor_idx, now),
-            };
-            if self.audio.is_enabled() {
-                self.audio.frame(audio_frame);
-            }
-            return match map {
-                pixtuoid_scene::maple_world::MapleMapId::FreeMarket => self.session.buf(),
-                pixtuoid_scene::maple_world::MapleMapId::ForestTraining => {
-                    self.training_session.buf()
+                    .render_maple(
+                        FrameInputs {
+                            scene: &training_scene,
+                            pack,
+                            theme,
+                            now,
+                            size: Size {
+                                w: training_panel.width,
+                                h: training_panel.height,
+                            },
+                            floor_meta,
+                            active_pet: None,
+                            floor_pet: None,
+                            debug_walkable: false,
+                        },
+                        pixtuoid_scene::maple_world::MapleMapId::ForestTraining,
+                    )
+                    .is_some();
+
+                self.composite
+                    .resize_fill(buf_w, buf_h, theme.surface.bg_fallback);
+                if market_rendered {
+                    copy_rgb_panel(&mut self.composite, self.session.buf(), market_panel);
                 }
-            };
+                if training_rendered {
+                    copy_rgb_panel(
+                        &mut self.composite,
+                        self.training_session.buf(),
+                        training_panel,
+                    );
+                }
+                self.market_viewport = market_rendered.then_some(market_panel);
+                self.training_viewport = training_rendered.then_some(training_panel);
+                self.market_avatars = market_rendered;
+                self.dual_rendered = market_rendered && training_rendered;
+
+                let market_audio =
+                    self.session
+                        .audio_frame(&market_scene, floor_meta.floor_idx, now);
+                let _training_audio =
+                    self.training_session
+                        .audio_frame(&training_scene, floor_meta.floor_idx, now);
+                if self.audio.is_enabled() {
+                    self.audio.frame(market_audio);
+                }
+                return &self.composite;
+            }
         }
 
         self.dual_rendered = false;
-
-        // active_pet stays None: click-to-pet needs window pointer hit-testing
-        // (deferred); the WANDERING floor pet is wired. The rest is the session's.
-        let rendered = self.session.render(FrameInputs {
-            scene,
+        let map = self.maple_world.current_map();
+        let projected = self.maple_world.project_scene(scene, map);
+        let inputs = FrameInputs {
+            scene: &projected,
             pack,
             theme,
             now,
             size: Size { w: buf_w, h: buf_h },
             floor_meta,
             active_pet: None,
-            floor_pet,
+            floor_pet: None,
             debug_walkable: false,
-        });
-        self.market_viewport = (rendered.is_some()
-            && theme.name == "maple"
-            && pack.animation("scene_background").is_some())
-        .then_some(Bounds {
+        };
+        let rendered = match map {
+            pixtuoid_scene::maple_world::MapleMapId::FreeMarket => {
+                self.session.render_maple(inputs, map)
+            }
+            pixtuoid_scene::maple_world::MapleMapId::ForestTraining => {
+                self.training_session.render_maple(inputs, map)
+            }
+        };
+        let viewport = rendered.is_some().then_some(Bounds {
             x: 0,
             y: 0,
             width: buf_w,
             height: buf_h,
         });
-        self.training_viewport = None;
-        self.market_avatars =
-            self.market_viewport.is_some() && pixtuoid_scene::market::supports_market_avatars(pack);
-        // Ambient audio: compose via the session's shared observer EVERY
-        // frame (even muted) so its cue edges stay warm — re-enabling fires no
-        // volley; only DELIVERY is gated. Single-sourced with the TUI (was a
-        // hand-rolled block that re-inlined waypoint_kind — the floating-vs-web
-        // drift). Floor-reprime is automatic inside the observer.
-        let audio_frame = self.session.audio_frame(scene, floor_meta.floor_idx, now);
+        self.market_viewport = (map == pixtuoid_scene::maple_world::MapleMapId::FreeMarket)
+            .then_some(viewport)
+            .flatten();
+        self.training_viewport = (map == pixtuoid_scene::maple_world::MapleMapId::ForestTraining)
+            .then_some(viewport)
+            .flatten();
+        self.market_avatars = self.market_viewport.is_some();
+        let audio_frame = match map {
+            pixtuoid_scene::maple_world::MapleMapId::FreeMarket => {
+                self.session
+                    .audio_frame(&projected, floor_meta.floor_idx, now)
+            }
+            pixtuoid_scene::maple_world::MapleMapId::ForestTraining => self
+                .training_session
+                .audio_frame(&projected, floor_meta.floor_idx, now),
+        };
         if self.audio.is_enabled() {
             self.audio.frame(audio_frame);
         }
-        self.session.buf()
+        match map {
+            pixtuoid_scene::maple_world::MapleMapId::FreeMarket => self.session.buf(),
+            pixtuoid_scene::maple_world::MapleMapId::ForestTraining => self.training_session.buf(),
+        }
     }
 
     /// Build the name-badge overlay for the LAST rendered frame (call right after `render`).
@@ -467,11 +415,10 @@ impl OfficeRenderer {
         scene: &SceneState,
         now: SystemTime,
     ) -> Vec<pixtuoid_scene::overlay::LabelElement> {
-        let batches = self.maple_overlay_batches(scene, now);
-        if !batches.is_empty() {
-            return batches.into_iter().flat_map(|batch| batch.labels).collect();
-        }
-        self.session.overlay(scene, now, None)
+        self.maple_overlay_batches(scene, now)
+            .into_iter()
+            .flat_map(|batch| batch.labels)
+            .collect()
     }
 
     #[doc(hidden)]
@@ -482,11 +429,10 @@ impl OfficeRenderer {
     ) -> Vec<MapleOverlayBatch> {
         let mut batches = Vec::with_capacity(2);
         if let Some(viewport) = self.market_viewport {
-            let projected = self.maple_multi_map.then(|| {
-                self.maple_world
-                    .project_scene(scene, pixtuoid_scene::maple_world::MapleMapId::FreeMarket)
-            });
-            let market_scene = projected.as_ref().unwrap_or(scene);
+            let projected = self
+                .maple_world
+                .project_scene(scene, pixtuoid_scene::maple_world::MapleMapId::FreeMarket);
+            let market_scene = &projected;
             let placements =
                 pixtuoid_scene::market::build_market_placements(market_scene, viewport);
             let market_frame = pixtuoid_scene::market::MarketFrameContext { viewport, now };
@@ -557,11 +503,10 @@ impl OfficeRenderer {
         let Some(viewport) = self.market_viewport else {
             return Vec::new();
         };
-        let projected = self.maple_multi_map.then(|| {
-            self.maple_world
-                .project_scene(scene, pixtuoid_scene::maple_world::MapleMapId::FreeMarket)
-        });
-        let market_scene = projected.as_ref().unwrap_or(scene);
+        let projected = self
+            .maple_world
+            .project_scene(scene, pixtuoid_scene::maple_world::MapleMapId::FreeMarket);
+        let market_scene = &projected;
         let placements = pixtuoid_scene::market::build_market_placements(market_scene, viewport);
         let market_frame = pixtuoid_scene::market::MarketFrameContext { viewport, now };
         if self.market_avatars {
@@ -585,11 +530,11 @@ impl OfficeRenderer {
         self.session.board(scene, now, None)
     }
 
-    /// The status-footer model for the current scene — full TUI parity via the
-    /// shared [`build_footer`]. Single-floor, so `floor = None` (no breadcrumb).
+    /// The shared status-footer model for the current scene. Single-floor, so
+    /// `floor = None` (no breadcrumb).
     /// `budget` is the caller's column budget ([`footer_budget`] at the live
-    /// width); `audio_audible`/`volume_flash` drive the ♩ suffix exactly as the
-    /// TUI's do. Source-death is deferred here (`source_warning: None`) — floating
+    /// width); `audio_audible`/`volume_flash` drive the ♩ suffix. Source-death
+    /// is deferred here (`source_warning: None`) — floating
     /// doesn't thread the `SourceDeath` health channel yet; the seam is ready the
     /// day it does.
     pub fn footer(
@@ -663,18 +608,18 @@ fn copy_rgb_panel(destination: &mut RgbBuffer, source: &RgbBuffer, panel: Bounds
     }
 }
 
-impl Default for OfficeRenderer {
+impl Default for MapleRenderer {
     fn default() -> Self {
         Self::new()
     }
 }
 
-/// Integer upscale factor: render the office at `win_h / SCALE` so the buffer stays around
+/// Integer upscale factor: render the scene at `win_h / SCALE` so the buffer stays around
 /// `OFFICE_TARGET_H` px tall, keeping pixel-art sprites chunky + legible (a native 1:1 blit
 /// renders 8×12 sprites at 8×12 px — unreadably tiny). Min 1 (never downscale-and-blur).
 /// Shared by `window::redraw` and the `floating_snapshot` example so their downscale —
 /// and thus the label `anchor_px × scale` placement — can't drift.
-fn default_office_scale(win_h: u32) -> u32 {
+fn default_maple_scale(win_h: u32) -> u32 {
     const OFFICE_TARGET_H: u32 = 180;
     (win_h as f64 / OFFICE_TARGET_H as f64).round().max(1.0) as u32
 }
@@ -688,8 +633,8 @@ fn configured_floating_scale() -> Option<u32> {
         .filter(|scale| (1..=8).contains(scale))
 }
 
-pub fn office_scale(win_h: u32) -> u32 {
-    configured_floating_scale().unwrap_or_else(|| default_office_scale(win_h))
+pub fn maple_scale(win_h: u32) -> u32 {
+    configured_floating_scale().unwrap_or_else(|| default_maple_scale(win_h))
 }
 
 fn window_buffer_geometry_with_scale_override(
@@ -699,33 +644,29 @@ fn window_buffer_geometry_with_scale_override(
 ) -> (u32, u16, u16) {
     let scale = scale_override
         .filter(|scale| (1..=8).contains(scale))
-        .unwrap_or_else(|| default_office_scale(win_h));
+        .unwrap_or_else(|| default_maple_scale(win_h));
     let buf_w = (win_w / scale).clamp(1, u16::MAX as u32) as u16;
     let buf_h = (win_h / scale).clamp(1, u16::MAX as u32) as u16;
     (scale, buf_w, buf_h)
 }
 
-/// The window→office-buffer projection for a `win_w`×`win_h` PHYSICAL-px window: the
-/// integer `office_scale` plus the downscaled buffer dims (`window / scale`,
+/// The window→scene-buffer projection for a `win_w`×`win_h` PHYSICAL-px window: the
+/// integer `maple_scale` plus the downscaled buffer dims (`window / scale`,
 /// clamped non-zero, NO footer row). The ONE place this geometry lives — shared
 /// by `window::redraw` (which needs `scale` for the upscale blit and the buffer
 /// dims for `sync_floor_caps` + the render) and the boot seed
-/// (`boot_capacities_for_window`) — so the desk capacity they derive can't drift
-/// on an `office_scale`/clamp change.
+/// (`boot_capacities_for_window`) — so the agent capacity they derive cannot drift
+/// when the internal scale or clamp changes.
 pub(crate) fn window_buffer_geometry(win_w: u32, win_h: u32) -> (u32, u16, u16) {
     window_buffer_geometry_with_scale_override(win_w, win_h, configured_floating_scale())
 }
 
-/// Per-floor boot desk-capacities for the FLOATING window, from a PHYSICAL-px
-/// window size. Uses the SAME
-/// `window_buffer_geometry` the first redraw's `window::sync_floor_caps` does —
-/// the office buffer is `window / office_scale` with NO footer row. The TUI's
-/// `runtime::boot_capacities_for`
-/// instead subtracts a footer row AND ignores the window upscale, so reusing it
-/// here OVER-seeds: in the sub-frame boot race before the first redraw, a
+/// Per-floor boot capacities for the floating window, from a physical-pixel
+/// window size. Uses the same `window_buffer_geometry` as the first redraw's
+/// `window::sync_floor_caps`. In the sub-frame boot race before the first redraw, a
 /// `SessionStart` could land at a `desk_index` the smaller real layout lacks
 /// (immutable → invisible-but-alive until a resize). A floor whose layout rejects
-/// the size falls back to `FALLBACK_DESKS`, matching the TUI boot helper.
+/// the size falls back to a conservative agent capacity.
 ///
 /// Known residual: this path intentionally keeps the historical boot seed.
 /// The only caller, `floating::run`, has just the
@@ -734,7 +675,7 @@ pub(crate) fn window_buffer_geometry(win_w: u32, win_h: u32) -> (u32, u16, u16) 
 /// logical seeds floor 0 at 70; at 2× the real 720×480 buffer holds 30). It
 /// cannot be fixed here: winit 0.30 exposes `primary_monitor` only on
 /// `ActiveEventLoop`, which does not exist until `run_app` is already driving the
-/// window, and no conservative logical-side seed is sound either — `office_scale`
+/// window, and no conservative logical-side seed is sound either — `maple_scale`
 /// ROUNDS, so the buffer for one logical size is not monotone in the scale factor
 /// (360×240 logical yields buffers 360×240 / 225×150 / 315×210 / 240×160 at
 /// 1×/1.25×/1.75×/2×). The sound fix is to seed the pipeline from the real
@@ -748,7 +689,7 @@ pub(crate) fn boot_capacities_for_window(
         let seed = pixtuoid_scene::floor::floor_seed(i);
         let cap = pixtuoid_scene::floor::floor_capacity(buf_w, buf_h, seed);
         if cap == 0 {
-            crate::runtime::FALLBACK_DESKS
+            crate::runtime::FALLBACK_AGENT_CAPACITY
         } else {
             cap
         }
@@ -762,7 +703,7 @@ pub(crate) fn boot_capacities_for_window(
 const FLOATING_SPRITE_W: i32 = pixtuoid_scene::layout::CHARACTER_SPRITE_W as i32;
 
 /// Name-badge AA font size (px), drawn at NATIVE surface res (not upscaled by the
-/// office `scale`) so a badge stays a crisp fixed-height caption over the chunky
+/// scene `scale`) so a badge stays a crisp fixed-height caption over the chunky
 /// sprites — the same "fixed px, not upscaled" intent the old 8px bitmap had, now
 /// anti-aliased. Tuned by eye against `examples/floating_snapshot`.
 const LABEL_FONT_PX: f32 = 12.0;
@@ -800,7 +741,7 @@ pub(crate) fn label_font_px(dpi_scale: f64, user_scale: f32) -> f32 {
     LABEL_FONT_PX * dpi * preference
 }
 /// Near-black badge drop-shadow (`0x00RRGGBB`) — the AA text draws straight over
-/// the office (no TUI cell background), so a 1px offset shadow keeps it legible
+/// the scene, so a 1px offset shadow keeps it legible
 /// over bright windows / plants.
 const BADGE_SHADOW: u32 = 0x0000_0000;
 /// The near-white AA ink for foreground captions with no theme cell behind them
@@ -813,9 +754,7 @@ const HOVER_INK: Rgb = Rgb {
 };
 
 /// The floating footer's keybind-hint tail — floating's REAL controls (`m` mute,
-/// `+`/`-` volume; no terminal `[q]uit`/`[t]heme`/`[?]help` chrome). The ONE
-/// painter-specific input to the shared footer model; the TUI supplies its own
-/// terminal tail. Everything else (stats/rungs/tools/gateway/♩) is TUI-identical.
+/// `+`/`-` volume). This is the painter-specific input to the shared footer model.
 const FOOTER_KEYS: &str = " [m]ute [+/-]vol ";
 /// Breathing room from the window edges for the footer band (both the paint and
 /// the [`footer_budget`] column math read it, so they can't drift).
@@ -823,7 +762,7 @@ const FOOTER_MARGIN_PX: i32 = 6;
 
 /// Alpha-composite `color` over the surface pixel at `(x, y)` by `coverage` (the
 /// AA rasterizer's per-pixel strength), a straight linear blend in `0x00RRGGBB`
-/// space — the badge/board sit on opaque office pixels, no alpha channel to keep.
+/// space — the badge/board sit on opaque scene pixels, no alpha channel to keep.
 fn blend_xrgb(
     sb: &mut [u32],
     win_w: usize,
@@ -2198,7 +2137,7 @@ impl<'a> LabelCardCanvas<'a> {
 }
 
 /// Paint name cards into the upscaled `u32` surface (`0x00RRGGBB`). Each label's `anchor_px`
-/// is office-buffer space → multiply by `scale` for screen space; its card stays on the
+/// is scene-buffer space → multiply by `scale` for screen space; its card stays on the
 /// head-height baseline and may move horizontally only within the small bounded head zone.
 /// Crisp single-pass anti-aliased text plus the optional missing-glyph fallback keeps it a
 /// sharp caption over the chunky sprites. Shared by the live window (`window::redraw`) and
@@ -2394,7 +2333,7 @@ fn paint_labels_with_style(
     let mut canvas = LabelCardCanvas::new(sb, win_w, win_h);
 
     if style == LabelCardStyle::Generic {
-        // Generic office cards retain their short ownership leader. Both Maple
+        // Generic scene cards retain their short ownership leader. Both Maple
         // card styles attach directly above the character, without a tail.
         for card in &placed {
             let el = &labels[card.label_index];
@@ -2632,11 +2571,11 @@ pub fn paint_market_player_ids_into_surface_with_font_px_in_panel(
 }
 
 /// Paint the neon wall-board text over the already-painted panel, into the upscaled
-/// surface. The panel interior is `NEON_PANEL_INNER_*` in office-buffer px, so the
-/// board text ANCHORS to it and SCALES with the office `scale` (unlike the fixed-height
+/// surface. The panel interior is `NEON_PANEL_INNER_*` in scene-buffer px, so the
+/// board text ANCHORS to it and SCALES with the scene `scale` (unlike the fixed-height
 /// name badges) — the three rows always fit inside the glowing frame. At a very small
-/// office scale the rows would be sub-legible; there we leave the panel empty rather
-/// than paint mush (the footer/TUI carry nothing critical the board owns). Shared by
+/// scene scale the rows would be sub-legible; there we leave the panel empty rather
+/// than paint mush. Shared by
 /// the live window and the `floating_snapshot` verify example.
 pub fn paint_wall_board_into_surface(
     sb: &mut [u32],
@@ -2646,8 +2585,8 @@ pub fn paint_wall_board_into_surface(
     scale: i32,
     theme: &Theme,
 ) {
-    // The local Free Market plate has no office neon panel. Leaving this text
-    // pass enabled would float office telemetry over the sky at top-left.
+    // The local Free Market plate has no scene neon panel. Leaving this text
+    // pass enabled would float scene telemetry over the sky at top-left.
     if theme.name == "maple" {
         return;
     }
@@ -3134,15 +3073,14 @@ fn paint_maple_chat_footer(
     }
 }
 
-/// Paint the shared status footer as a bottom-overlay band — the floating twin of
-/// the TUI's status row, rendering the SAME [`build_footer`] model so the two
-/// can't drift. Each segment is toned via the ONE shared [`footer_tone_rgb`], then
+/// Paint the shared status footer as a bottom-overlay band. Each segment is
+/// toned via the shared [`footer_tone_rgb`], then
 /// packed to the surface XRGB; laid left-to-right from the left margin, the model's
 /// baked right-flush padding pushes the ♩/keys suffix to the right edge. Fixed
-/// caption height like the name badges (crisp at any office scale); an OVERLAY over
-/// the office's bottom rows — it never insets the buffer (that would shift the
-/// desk-capacity lockstep). This carries the ♩/♩N% audio feedback the standalone
-/// volume flash used to (now TUI-consistent: silent when muted).
+/// caption height like the name badges (crisp at any scene scale); an OVERLAY over
+/// the scene's bottom rows — it never insets the buffer (that would shift the
+/// agent-capacity lockstep). This carries the ♩/♩N% audio feedback and remains
+/// silent when muted.
 pub fn paint_footer_into_surface(
     sb: &mut [u32],
     win_w: usize,
@@ -3170,7 +3108,7 @@ mod tests {
     #[test]
     fn pack_xrgb_is_0x00rrggbb() {
         // Pin the surface pixel format (channel order + shift widths) so the two
-        // production packers (office blit + label overlay) can't re-drift. The
+        // production packers (scene blit + label overlay) can't re-drift. The
         // per-tone label test below independently cross-checks it via `as_u32`.
         assert_eq!(
             pack_xrgb(Rgb {
@@ -3185,48 +3123,60 @@ mod tests {
     }
 
     #[test]
-    fn renders_a_sized_nonblank_office_buffer() {
-        // A fresh empty office still paints floor/walls/windows → never all-black, and the
-        // buffer is sized to the requested pixel dims. Pins the floating render seam end-to-end.
+    fn embedded_public_runtime_opens_the_maple_dual_world_without_a_custom_pack() {
         let scene = SceneState::new([8; pixtuoid_core::state::MAX_FLOORS]);
         let pack =
             pixtuoid_scene::embedded_pack::load_sprite_pack(None).expect("embedded pack loads");
-        let theme = pixtuoid_scene::theme::theme_by_name("normal").expect("normal theme exists");
+        let theme = pixtuoid_scene::theme::theme_by_name("maple").expect("maple theme exists");
         let now = std::time::UNIX_EPOCH + std::time::Duration::from_secs(1_700_000_000);
-        let mut renderer = OfficeRenderer::new();
-        let buf = renderer.render(
-            &scene,
-            &pack,
-            theme,
-            now,
-            160,
-            96,
-            FloorMeta::ground(),
-            None,
+        let mut renderer = MapleRenderer::new();
+
+        let buf = renderer.render(&scene, &pack, theme, now, 640, 240, FloorMeta::ground());
+
+        assert_eq!((buf.width(), buf.height()), (640, 240));
+        assert!(
+            renderer.dual_rendered,
+            "both built-in maps must render after clone"
         );
+        assert!(renderer.market_viewport.is_some());
+        assert!(renderer.training_viewport.is_some());
+        assert!(
+            renderer.market_avatars,
+            "the original built-in chibi renderer uses the paperdoll-sized label geometry"
+        );
+    }
+
+    #[test]
+    fn renders_a_sized_nonblank_maple_buffer() {
+        // A fresh scene still paints the selected procedural map and sizes the
+        // RGB buffer exactly to the requested dimensions.
+        let scene = SceneState::new([8; pixtuoid_core::state::MAX_FLOORS]);
+        let pack =
+            pixtuoid_scene::embedded_pack::load_sprite_pack(None).expect("embedded pack loads");
+        let theme = pixtuoid_scene::theme::theme_by_name("maple").expect("maple theme exists");
+        let now = std::time::UNIX_EPOCH + std::time::Duration::from_secs(1_700_000_000);
+        let mut renderer = MapleRenderer::new();
+        let buf = renderer.render(&scene, &pack, theme, now, 160, 96, FloorMeta::ground());
         assert_eq!((buf.width(), buf.height()), (160, 96));
-        // Assert PAINTED content, not the pre-fill: `ensure_size` fills the buffer with
-        // `bg_fallback` (non-black) BEFORE the painter runs, so "any non-black pixel" would
-        // pass even if the painter no-op'd. Require a pixel that is neither black NOR
-        // `bg_fallback` → the floor/walls/windows pass actually ran.
+        // Assert painted content, not the pre-fill.
         let bg = theme.surface.bg_fallback;
         assert!(
             buf.as_slice()
                 .iter()
                 .any(|p| *p != Rgb { r: 0, g: 0, b: 0 } && *p != bg),
-            "the painter draws office content beyond the cleared background"
+            "the painter draws scene content beyond the cleared background"
         );
     }
 
     #[test]
-    fn office_scale_keeps_the_office_chunky_and_never_zero() {
-        // Downscale so the office buffer stays ~OFFICE_TARGET_H (180px) tall.
-        assert_eq!(office_scale(180), 1);
-        assert_eq!(office_scale(360), 2);
-        assert_eq!(office_scale(720), 4);
+    fn maple_scale_keeps_the_scene_chunky_and_never_zero() {
+        // Downscale so the scene buffer stays near the 180px target height.
+        assert_eq!(maple_scale(180), 1);
+        assert_eq!(maple_scale(360), 2);
+        assert_eq!(maple_scale(720), 4);
         // A short window still renders at scale 1 — never 0 (redraw divides by it).
-        assert_eq!(office_scale(90), 1);
-        assert_eq!(office_scale(0), 1);
+        assert_eq!(maple_scale(90), 1);
+        assert_eq!(maple_scale(0), 1);
     }
 
     #[test]
@@ -3250,13 +3200,12 @@ mod tests {
     }
 
     #[test]
-    fn boot_capacities_for_window_match_the_first_redraw_geometry_not_the_tui_overseed() {
-        // A 4x-upscaled window (720px tall → office_scale 4): the boot seed must
+    fn boot_capacities_for_window_match_the_first_redraw_geometry() {
+        // A 4x-upscaled window (720px tall → maple_scale 4): the boot seed must
         // match what the first redraw's `sync_floor_caps` stores — `floor_capacity`
-        // at the DOWNSCALED buffer (win/scale), no footer — not the full-window
-        // over-seed the TUI helper produces.
+        // at the downscaled buffer (window / scale), not the full-window size.
         let (w, h) = (1280u32, 720u32);
-        let scale = office_scale(h);
+        let scale = maple_scale(h);
         let buf_w = (w / scale) as u16;
         let buf_h = (h / scale) as u16;
         let boot = boot_capacities_for_window(w, h);
@@ -3267,7 +3216,7 @@ mod tests {
                 pixtuoid_scene::floor::floor_seed(i),
             );
             let want = if cap == 0 {
-                crate::runtime::FALLBACK_DESKS
+                crate::runtime::FALLBACK_AGENT_CAPACITY
             } else {
                 cap
             };
@@ -3276,15 +3225,6 @@ mod tests {
                 "floor {i} boot cap must match the rendered geometry"
             );
         }
-        // The old TUI helper (footer subtraction + no office_scale) over-seeds the
-        // ground floor — the bug this fix removes.
-        let overseed = crate::runtime::boot_capacities_for(w as u16, (h / 2) as u16);
-        assert!(
-            overseed[0] >= boot[0],
-            "TUI helper over-seeds ({} vs {})",
-            overseed[0],
-            boot[0]
-        );
     }
 
     #[test]
@@ -3300,7 +3240,7 @@ mod tests {
         assert_eq!(
             window_buffer_geometry_with_scale_override(720, 480, Some(0)),
             window_buffer_geometry_with_scale_override(720, 480, None),
-            "zero is invalid and must retain the normal chunky-office scale"
+            "zero is invalid and must retain the normal chunky-scene scale"
         );
     }
 
@@ -3772,7 +3712,7 @@ mod tests {
         let body = sb[15 * 40 + 15] & 0xff;
         assert!(
             (55..=105).contains(&body),
-            "the office must remain visible through the dark card body; channel={body}"
+            "the scene must remain visible through the dark card body; channel={body}"
         );
     }
 
@@ -4343,12 +4283,12 @@ mod tests {
         paint_wall_board_into_surface(&mut tiny, w, h, &board, 1, theme);
         assert!(
             tiny.iter().all(|&p| p == 0),
-            "a scale-1 office suppresses the sub-legible board"
+            "a scale-1 scene suppresses the sub-legible board"
         );
     }
 
     #[test]
-    fn maple_market_suppresses_the_office_wall_board_overlay() {
+    fn maple_market_suppresses_the_scene_wall_board_overlay() {
         let theme = pixtuoid_scene::theme::theme_by_name("maple").expect("maple theme exists");
         let board = pixtuoid_scene::board::build_board(
             pixtuoid_scene::board::StateCounts {
@@ -4367,12 +4307,11 @@ mod tests {
         paint_wall_board_into_surface(&mut surface, 320, 96, &board, 8, theme);
         assert!(
             surface.iter().all(|pixel| *pixel == sentinel),
-            "office telemetry must not float over the Free Market sky"
+            "scene telemetry must not float over the Free Market sky"
         );
     }
 
-    /// Local twin of the TUI harness's `active_on` — `tui` and `floating` are
-    /// sibling painters that don't share code, test helpers included.
+    /// Build an active slot for floating-renderer tests.
     fn active_on(path: &str, floor_idx: usize, desk: usize) -> pixtuoid_core::state::AgentSlot {
         use pixtuoid_core::state::{ActivityState, AgentSlot, GlobalDeskIndex, ToolKind};
         use std::sync::Arc;
@@ -4416,9 +4355,37 @@ mod tests {
     }
 
     #[test]
+    fn snapshot_dual_map_split_assigns_each_party_once() {
+        use pixtuoid_scene::maple_world::MapleMapId;
+
+        let mut agents = (0..4)
+            .map(|index| active_on(&format!("/snapshot/agent-{index}.jsonl"), 0, index))
+            .collect::<Vec<_>>();
+        agents.sort_by_key(|agent| agent.agent_id);
+        agents[1].parent_id = Some(agents[0].agent_id);
+        agents[3].parent_id = Some(agents[2].agent_id);
+        let scene = scene_with(agents, 8);
+
+        let mut renderer = MapleRenderer::new();
+        renderer.assign_snapshot_scene_across_maps(&scene);
+
+        assert_eq!(
+            renderer.maple_world.agents_on(MapleMapId::FreeMarket).len(),
+            2
+        );
+        assert_eq!(
+            renderer
+                .maple_world
+                .agents_on(MapleMapId::ForestTraining)
+                .len(),
+            2
+        );
+    }
+
+    #[test]
     fn floating_stems_count_only_the_rendered_floor() {
-        // The floating twin of the TUI harness's floor-scoping pin: 1 active on
-        // the rendered ground floor vs 3 on floor 1 must read MODERATE typing,
+        // One active on the rendered ground floor versus three on floor 1 must
+        // read MODERATE typing,
         // not the BUSY a global count would produce.
         let cap = 16;
         let scene = scene_with(
@@ -4434,19 +4401,10 @@ mod tests {
             pixtuoid_scene::embedded_pack::load_sprite_pack(None).expect("embedded pack loads");
         let theme = pixtuoid_scene::theme::theme_by_name("normal").expect("normal theme exists");
         let now = std::time::UNIX_EPOCH + std::time::Duration::from_secs(1_700_000_000);
-        let mut renderer = OfficeRenderer::new();
+        let mut renderer = MapleRenderer::new();
         let (handle, rx) = crate::audio::AudioHandle::test_pair();
         renderer.set_audio(handle);
-        renderer.render(
-            &scene,
-            &pack,
-            theme,
-            now,
-            160,
-            96,
-            FloorMeta::ground(),
-            None,
-        );
+        renderer.render(&scene, &pack, theme, now, 160, 96, FloorMeta::ground());
         let frames = crate::audio::drain_frames(&rx);
         assert!(!frames.is_empty(), "an enabled handle receives frames");
         let stems = frames.last().unwrap().stems;
@@ -4468,9 +4426,8 @@ mod tests {
 
     #[test]
     fn paint_footer_blits_into_the_bottom_band_and_tones_via_the_shared_authority() {
-        // The floating footer's parity with the TUI: it renders the SHARED
-        // build_footer model into the bottom band, toned through footer_tone_rgb
-        // (the same authority the TUI uses). The pure tier/policy is pinned in
+        // The floating footer renders the shared build_footer model into the
+        // bottom band, toned through footer_tone_rgb. The pure tier/policy is pinned in
         // scene::footer; this pins the blit region + the tone routing — the
         // phantom-feedback twin of the label/volume blit tests it replaces.
         use pixtuoid_scene::board::{per_floor_counts, scene_stats};
@@ -4508,7 +4465,7 @@ mod tests {
             changed.iter().all(|&i| i / w >= h / 2),
             "the footer stays in the bottom band"
         );
-        // The ●A rung tones via the shared authority (parity with the TUI adapter).
+        // The ●A rung tones via the shared authority.
         assert!(
             sb.contains(&pack_xrgb(footer_tone_rgb(
                 FooterTone::Rung(RungKind::Active),
@@ -4522,7 +4479,7 @@ mod tests {
     fn maple_footer_adds_a_translucent_market_hud_band_without_insetting_the_scene() {
         let theme = pixtuoid_scene::theme::theme_by_name("maple").expect("maple theme exists");
         let scene = SceneState::uniform(8);
-        let renderer = OfficeRenderer::new();
+        let renderer = MapleRenderer::new();
         let (w, h) = (320usize, 120usize);
         let model = renderer.footer(&scene, footer_budget(w), false, None);
         let ground = 0x0080_90a0;
@@ -4616,8 +4573,8 @@ mod tests {
 
     #[test]
     fn floating_appliance_cues_fire_from_the_sessions_occupancy() {
-        // TUI cue parity (#633 close-out): the tracker now receives the
-        // session's occupied_waypoints + this frame's waypoint kinds, so a
+        // The tracker receives the session's occupied_waypoints plus this
+        // frame's waypoint kinds, so a
         // wanderer standing at the printer / vending machine fires the
         // appliance one-shot in the floating window too. Deterministic —
         // fixed agent id + a hand-stepped clock; the loop bound mirrors the
@@ -4630,7 +4587,7 @@ mod tests {
         let mut idle = active_on("/w/wanderer.jsonl", 0, 0);
         idle.state = pixtuoid_core::state::ActivityState::Idle;
         let scene = scene_with(vec![idle], 16);
-        let mut renderer = OfficeRenderer::new();
+        let mut renderer = MapleRenderer::new();
         let (handle, rx) = crate::audio::AudioHandle::test_pair();
         renderer.set_audio(handle);
         let mut heard = Vec::new();
@@ -4638,16 +4595,7 @@ mod tests {
             let now = now0 + std::time::Duration::from_secs(2 * step);
             // 192x160: tall enough that the corridor hosts BOTH appliances
             // (the vending/printer height gates in layout::compute).
-            renderer.render(
-                &scene,
-                &pack,
-                theme,
-                now,
-                192,
-                160,
-                FloorMeta::ground(),
-                None,
-            );
+            renderer.render(&scene, &pack, theme, now, 192, 160, FloorMeta::ground());
             heard.extend(
                 crate::audio::drain_frames(&rx)
                     .into_iter()
@@ -4675,38 +4623,20 @@ mod tests {
             pixtuoid_scene::embedded_pack::load_sprite_pack(None).expect("embedded pack loads");
         let theme = pixtuoid_scene::theme::theme_by_name("normal").expect("normal theme exists");
         let mut now = std::time::UNIX_EPOCH + std::time::Duration::from_secs(1_700_000_000);
-        let mut renderer = OfficeRenderer::new();
+        let mut renderer = MapleRenderer::new();
         let (handle, rx) = crate::audio::AudioHandle::test_pair();
         renderer.set_audio(handle);
 
         let mut agents = vec![active_on("/d/f0.jsonl", 0, 0)];
         let scene = scene_with(agents.clone(), cap);
-        renderer.render(
-            &scene,
-            &pack,
-            theme,
-            now,
-            160,
-            96,
-            FloorMeta::ground(),
-            None,
-        );
+        renderer.render(&scene, &pack, theme, now, 160, 96, FloorMeta::ground());
         crate::audio::drain_frames(&rx); // discard the priming frames
 
         // an arrival on ANOTHER floor: silent in the ground-floor window
         agents.push(active_on("/d/f1-new.jsonl", 1, cap));
         let scene = scene_with(agents.clone(), cap);
         now += std::time::Duration::from_millis(33);
-        renderer.render(
-            &scene,
-            &pack,
-            theme,
-            now,
-            160,
-            96,
-            FloorMeta::ground(),
-            None,
-        );
+        renderer.render(&scene, &pack, theme, now, 160, 96, FloorMeta::ground());
         let off_floor: Vec<_> = crate::audio::drain_frames(&rx)
             .into_iter()
             .flat_map(|f| f.events)
@@ -4720,16 +4650,7 @@ mod tests {
         agents.push(active_on("/d/f0-new.jsonl", 0, 1));
         let scene = scene_with(agents, cap);
         now += std::time::Duration::from_millis(33);
-        renderer.render(
-            &scene,
-            &pack,
-            theme,
-            now,
-            160,
-            96,
-            FloorMeta::ground(),
-            None,
-        );
+        renderer.render(&scene, &pack, theme, now, 160, 96, FloorMeta::ground());
         let on_floor: Vec<_> = crate::audio::drain_frames(&rx)
             .into_iter()
             .flat_map(|f| f.events)
@@ -4741,23 +4662,24 @@ mod tests {
     }
 
     #[test]
-    fn labels_is_empty_before_render_then_builds_a_positioned_badge_for_a_seeded_agent() {
+    fn maple_labels_are_empty_before_render_then_follow_a_settled_agent() {
         use pixtuoid_core::source::AgentEvent;
         use pixtuoid_core::{AgentId, Reducer, Transport};
         let pack =
             pixtuoid_scene::embedded_pack::load_sprite_pack(None).expect("embedded pack loads");
-        let theme = pixtuoid_scene::theme::theme_by_name("normal").expect("normal theme exists");
+        let theme = pixtuoid_scene::theme::theme_by_name("maple").expect("maple theme exists");
         let now = std::time::UNIX_EPOCH + std::time::Duration::from_secs(1_700_000_000);
-        let mut renderer = OfficeRenderer::new();
+        let mut renderer = MapleRenderer::new();
+        renderer.set_maple_map(pixtuoid_scene::maple_world::MapleMapId::FreeMarket);
 
-        // One real agent, seeded the production way: a SessionStart through the reducer
-        // registers the slot and assigns it a desk on floor 0.
+        // One real agent, seeded through the production reducer path.
         let mut scene = SceneState::new([8; pixtuoid_core::state::MAX_FLOORS]);
         let mut reducer = Reducer::new();
+        let agent_id = AgentId::from_parts("claude-code", "offscreen-labels-test");
         reducer.apply(
             &mut scene,
             AgentEvent::SessionStart {
-                agent_id: AgentId::from_parts("claude-code", "offscreen-labels-test"),
+                agent_id,
                 source: "claude-code".to_string(),
                 session_id: "offscreen-labels-test".to_string(),
                 cwd: std::path::PathBuf::from("/home/user/demo-project"),
@@ -4766,28 +4688,33 @@ mod tests {
             now,
             Transport::Jsonl,
         );
-
-        // No frame rendered yet → no cached layout → the guard returns empty.
-        assert!(renderer.labels(&scene, now).is_empty());
-        // After a render, labels() builds the overlay off the cached layout → one badge for the
-        // seeded agent, anchored inside the rendered 160×96 office buffer (proves the seam wires
-        // render's geometry into build_overlay, not just that the line executed).
-        renderer.render(
-            &scene,
-            &pack,
-            theme,
+        reducer.apply(
+            &mut scene,
+            AgentEvent::ActivityStart {
+                agent_id,
+                tool_use_id: Some("render-maple-label".to_owned()),
+                detail: None,
+            },
             now,
-            160,
-            96,
-            FloorMeta::ground(),
-            None,
+            Transport::Jsonl,
         );
-        let labels = renderer.labels(&scene, now);
+        renderer.assign_snapshot_scene_to_map(
+            &scene,
+            pixtuoid_scene::maple_world::MapleMapId::FreeMarket,
+        );
+
+        // No frame rendered yet means no captured Maple viewport.
+        assert!(renderer.labels(&scene, now).is_empty());
+        // Let the production entry route settle, then require the Maple market
+        // overlay to attach exactly one card inside its captured viewport.
+        let settled = now + std::time::Duration::from_millis(10_000);
+        renderer.render(&scene, &pack, theme, settled, 640, 240, FloorMeta::ground());
+        let labels = renderer.labels(&scene, settled);
         assert_eq!(labels.len(), 1, "one seeded agent → one name badge");
         let anchor = labels[0].anchor_px;
         assert!(
-            (0..160).contains(&(anchor.x as i32)) && (0..96).contains(&(anchor.y as i32)),
-            "badge anchor {anchor:?} lands inside the rendered office buffer"
+            (0..640).contains(&(anchor.x as i32)) && (0..240).contains(&(anchor.y as i32)),
+            "badge anchor {anchor:?} lands inside the rendered scene buffer"
         );
     }
 
@@ -4855,33 +4782,19 @@ frame_ms = 1000
             ));
         let agent = active_on("/market/paperdoll.jsonl", 0, 0);
         let scene = scene_with(vec![agent], 8);
-        let mut renderer = OfficeRenderer::new();
-
-        renderer.render(
+        let mut renderer = MapleRenderer::new();
+        renderer.assign_snapshot_scene_to_map(
             &scene,
-            &pack,
-            theme,
-            now,
-            240,
-            160,
-            FloorMeta::ground(),
-            None,
+            pixtuoid_scene::maple_world::MapleMapId::FreeMarket,
         );
+
+        renderer.render(&scene, &pack, theme, now, 240, 160, FloorMeta::ground());
         assert!(
             renderer.market_player_ids(&scene, now).is_empty(),
             "the stall nameplate stays empty while its merchant is still walking in"
         );
 
-        renderer.render(
-            &scene,
-            &pack,
-            theme,
-            settled,
-            240,
-            160,
-            FloorMeta::ground(),
-            None,
-        );
+        renderer.render(&scene, &pack, theme, settled, 240, 160, FloorMeta::ground());
         let labels = renderer.labels(&scene, settled);
         let player_ids = renderer.market_player_ids(&scene, settled);
         assert_eq!(labels.len(), 1);
@@ -4939,24 +4852,19 @@ frame_ms = 1000
         let mut agent = active_on("/market/merchant.jsonl", 0, 0);
         agent.label = "cx\u{b7}繪製自由市場".into();
         let scene = scene_with(vec![agent], 8);
-        let mut renderer = OfficeRenderer::new();
-
-        renderer.render(
+        let mut renderer = MapleRenderer::new();
+        renderer.assign_snapshot_scene_to_map(
             &scene,
-            &pack,
-            theme,
-            settled,
-            240,
-            160,
-            FloorMeta::ground(),
-            None,
+            pixtuoid_scene::maple_world::MapleMapId::FreeMarket,
         );
+
+        renderer.render(&scene, &pack, theme, settled, 240, 160, FloorMeta::ground());
         let labels = renderer.labels(&scene, settled);
         assert_eq!(labels.len(), 1);
         assert_eq!(
             labels[0].anchor_px,
-            pixtuoid_scene::layout::Point { x: 120, y: 127 },
-            "the first shop card must copy the first merchant's Free Market anchor"
+            pixtuoid_scene::layout::Point { x: 120, y: 115 },
+            "the first shop card must attach to the original procedural actor's Free Market anchor"
         );
         assert_eq!(labels[0].text, "素材狐\u{b7}繪製自由市場");
     }
@@ -4998,20 +4906,11 @@ frame_ms = 1000
         let scene = SceneState::uniform(8);
         let before = serde_json::to_value(&scene).expect("serialize scene before render");
         let now = std::time::UNIX_EPOCH + std::time::Duration::from_secs(1_700_000_000);
-        let mut renderer = OfficeRenderer::new();
+        let mut renderer = MapleRenderer::new();
         renderer.set_maple_map(pixtuoid_scene::maple_world::MapleMapId::FreeMarket);
 
         let market_pixel = renderer
-            .render(
-                &scene,
-                &pack,
-                theme,
-                now,
-                240,
-                160,
-                FloorMeta::ground(),
-                None,
-            )
+            .render(&scene, &pack, theme, now, 240, 160, FloorMeta::ground())
             .get(0, 0);
         assert_eq!(
             renderer.current_map(),
@@ -5019,16 +4918,7 @@ frame_ms = 1000
         );
         renderer.cycle_map();
         let training_pixel = renderer
-            .render(
-                &scene,
-                &pack,
-                theme,
-                now,
-                240,
-                160,
-                FloorMeta::ground(),
-                None,
-            )
+            .render(&scene, &pack, theme, now, 240, 160, FloorMeta::ground())
             .get(0, 0);
 
         assert_eq!(
@@ -5080,19 +4970,10 @@ frame_ms = 1000
         let theme = pixtuoid_scene::theme::theme_by_name("maple").expect("maple theme exists");
         let scene = SceneState::uniform(8);
         let now = std::time::UNIX_EPOCH + std::time::Duration::from_secs(1_700_000_000);
-        let mut renderer = OfficeRenderer::new();
+        let mut renderer = MapleRenderer::new();
 
         let (market_pixel, training_pixel) = {
-            let frame = renderer.render(
-                &scene,
-                &pack,
-                theme,
-                now,
-                480,
-                160,
-                FloorMeta::ground(),
-                None,
-            );
+            let frame = renderer.render(&scene, &pack, theme, now, 480, 160, FloorMeta::ground());
             (frame.get(0, 0), frame.get(479, 0))
         };
 
@@ -5119,8 +5000,7 @@ frame_ms = 1000
 
     #[test]
     fn maple_tab_cycle_preserves_dual_and_both_single_map_views() {
-        let mut renderer = OfficeRenderer::new();
-        renderer.maple_multi_map = true;
+        let mut renderer = MapleRenderer::new();
         renderer.dual_rendered = true;
 
         assert_eq!(renderer.view_mode(), MapleViewMode::Dual);
@@ -5142,8 +5022,7 @@ frame_ms = 1000
 
     #[test]
     fn map_selector_stays_visible_and_names_dual_and_each_single_map() {
-        let mut renderer = OfficeRenderer::new();
-        renderer.maple_multi_map = true;
+        let mut renderer = MapleRenderer::new();
         renderer.dual_rendered = true;
 
         assert!(renderer.map_selector_text().unwrap().contains("雙圖"));
@@ -5157,8 +5036,7 @@ frame_ms = 1000
 
     #[test]
     fn compact_dual_fallback_switches_visible_map_on_the_first_tab() {
-        let mut renderer = OfficeRenderer::new();
-        renderer.maple_multi_map = true;
+        let mut renderer = MapleRenderer::new();
 
         assert_eq!(renderer.view_mode(), MapleViewMode::Dual);
         assert_eq!(

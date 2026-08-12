@@ -3,80 +3,32 @@ use std::path::{Path, PathBuf};
 
 use anyhow::{Context, Result};
 
-/// One `[[pets]]` stanza. `kind` is an OPTIONAL raw `String` (NOT a required
-/// field, NOT a serde-derived `PetKind`) on purpose: an unknown value (`kind =
-/// "hamster"`) OR a missing/typo'd key (`knid = "cat"` → `kind` defaults to
-/// `None`) is validated + warn-skipped in [`resolve_pets`], rather than failing
-/// the whole `toml::from_str` and tripping `load`'s all-or-nothing malformed arm
-/// — which would silently revert EVERY user setting (theme, etc.) to defaults.
-/// (A wrong-TYPE value like `kind = 5` still fails the parse; not worth a custom
-/// deserializer.) `name` is optional; omit it for the pet's default name.
-#[derive(Debug, Default, Clone, PartialEq, serde::Serialize, serde::Deserialize)]
-pub struct PetEntry {
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub kind: Option<String>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub name: Option<String>,
-}
-
 #[derive(Debug, Default, serde::Serialize, serde::Deserialize)]
 pub struct AppConfig {
-    pub theme: Option<String>,
-    /// Optional per-floor desk cap. When set, each floor holds at most
-    /// this many desks — excess agents overflow to additional floors.
-    /// When absent, capacity is fully auto-computed from terminal size.
-    #[serde(rename = "max-desks")]
-    pub max_desks: Option<usize>,
     /// Custom sprite pack directory. Supports ~ expansion.
     #[serde(rename = "pack-dir")]
     pub pack_dir: Option<String>,
-    #[serde(
-        rename = "last-seen-version",
-        default,
-        skip_serializing_if = "Option::is_none"
-    )]
-    pub last_seen_version: Option<String>,
     /// Per-source connection flags (registry source id → connected). An absent
     /// id is simply DISCONNECTED ([`resolve_connected`] — only an explicit
     /// `true` connects; the old v0.4–0.7 "absent ⇒ connected iff hooks
     /// installed" migrate inference was dropped in 0.12.0). The `s` Sources
-    /// panel writes a flag on toggle. A `[sources]` table; empty ⇒ omitted on
-    /// save. Keep BEFORE `pets` — pets must stay last (its array-of-tables
-    /// serializes cleanest after all tables, and a `[sources]` table written
-    /// after `[[pets]]` would re-parent).
+    /// panel writes a flag on toggle. A `[sources]` table; empty ⇒ omitted.
     #[serde(
         rename = "sources",
         default,
         skip_serializing_if = "BTreeMap::is_empty"
     )]
     pub sources: BTreeMap<String, bool>,
-    /// `pixtuoid floating` desktop-window geometry — a single `[floating]` table
+    /// Maple Agent Market desktop-window geometry — one `[floating]` table
     /// (size/position/opacity). Absent ⇒ defaults from [`resolve_floating`]. Keep
-    /// BEFORE `pets`: it's a `[table]`, and the `[[pets]]` array-of-tables must
-    /// stay last (a table written after an AoT would re-parent under it).
     #[serde(rename = "floating", default, skip_serializing_if = "Option::is_none")]
     pub floating: Option<FloatingConfigRaw>,
-    /// Ambient office sound — a single `[audio]` table (#633). Absent ⇒
-    /// MUTED (the office starts silent; `m` is the whole opt-in and persists
-    /// here). Resolved by [`resolve_audio`]. Keep BEFORE `pets` (the
-    /// table-before-array-of-tables rule above).
+    /// Local window sound. An absent `[audio]` table starts muted.
     #[serde(rename = "audio", default, skip_serializing_if = "Option::is_none")]
     pub audio: Option<AudioConfigRaw>,
-    /// The office's pets — one `[[pets]]` stanza each (`kind` + optional
-    /// `name`). Absent = all kinds with default names; `pets = []` = no pets;
-    /// an unknown `kind` is warn-skipped (non-fatal). Resolved into the runtime
-    /// `Vec<Pet>` by [`resolve_pets`].
-    ///
-    /// Keep `pets` LAST in the struct by convention: an array-of-tables
-    /// serializes cleanest after all scalar keys (matching where `pet_names`
-    /// used to sit). `toml` does not *require* it — it tolerates a scalar after
-    /// an AoT — but don't rely on its key/table interleaving; just keep it last.
-    #[serde(rename = "pets", default, skip_serializing_if = "Option::is_none")]
-    pub pets: Option<Vec<PetEntry>>,
 }
 
-/// Default `pixtuoid floating` window size (logical px) + the minimum below which the
-/// half-block office art is unreadable — `resolve_floating` clamps up to it.
+/// Default Maple Agent Market window size and its legibility floor.
 pub const FLOATING_DEFAULT_W: u32 = 360;
 pub const FLOATING_DEFAULT_H: u32 = 240;
 pub const FLOATING_MIN_W: u32 = 240;
@@ -219,9 +171,8 @@ pub fn config_path() -> PathBuf {
 /// control-char-stripped string (R0615-06).
 ///
 /// Every consumer is a real terminal: the `warnings` Vec reaches `main`'s
-/// pre-altscreen `eprintln!` and the `doctor` report, and `tracing` writes to
-/// RAW stderr in every non-TUI mode (`doctor`, `run --headless`,
-/// `connect`/`disconnect`/`setup`) at a `warn` floor. These lines interpolate
+/// startup `eprintln!` and the `doctor` report, and short CLI commands write
+/// tracing to raw stderr. These lines interpolate
 /// config CONTENT — a `toml::de::Error` Display embeds the raw offending source
 /// line — so an ANSI/OSC escape or a Trojan-Source bidi override would render
 /// live on either.
@@ -236,11 +187,11 @@ fn warn_user(warnings: &mut Vec<String>, line: String) {
 
 /// Load the config, never crashing: unreadable/malformed files fall back to
 /// defaults. Each fallback is reported twice on purpose (#87): to the log file
-/// via `tracing`, and onto `warnings` so `main` can print it to stderr BEFORE
-/// the alternate screen swallows it — the resolvers stay layer-clean (no
+/// via `tracing`, and onto `warnings` so `main` can print it before the window
+/// opens — the resolvers stay layer-clean (no
 /// printing here; the caller picks the sink), and `warn_user` emits both from
 /// one sanitized string. Callers that have no user to warn (the save path's
-/// internal reload, the in-TUI version re-load) pass a throwaway Vec.
+/// internal reload) pass a throwaway Vec.
 pub fn load(path: &Path, warnings: &mut Vec<String>) -> AppConfig {
     let contents = match std::fs::read_to_string(path) {
         Ok(c) => c,
@@ -329,21 +280,9 @@ where
     lock.write_atomic(&doc.to_string())
 }
 
-pub(crate) fn save(path: &Path, theme_name: &str) -> Result<()> {
-    update_config(path, |doc| {
-        doc["theme"] = toml_edit::value(theme_name);
-    })
-}
-
-pub(crate) fn save_version(path: &Path, version: &str) -> Result<()> {
-    update_config(path, |doc| {
-        doc["last-seen-version"] = toml_edit::value(version);
-    })
-}
-
 /// Persist a single source's connection flag, auto-vivifying the `[sources]`
 /// table, through the comment/unknown-key-preserving `update_config` path. The
-/// `s` Sources panel calls this on every connect/disconnect toggle.
+/// Source CLI commands call this after connect/disconnect changes.
 pub(crate) fn save_source_connected(
     path: &Path,
     source_id: &'static str,
@@ -357,8 +296,8 @@ pub(crate) fn save_source_connected(
 /// Remove a single source's connection flag — the connect-rollback restore for a
 /// flag that was ABSENT before the attempt (rollback must restore absence, the
 /// pre-attempt state; an absent flag and an explicit `false` both read as
-/// disconnected in [`resolve_connected`], but only absence keeps the
-/// `setup::is_first_run` empty-table signal intact). Drops an emptied
+/// disconnected in [`resolve_connected`], but only absence preserves the
+/// distinction between unconfigured and explicitly disabled). Drops an emptied
 /// `[sources]` table so a rolled-back first connect leaves the config exactly
 /// as it was.
 pub(crate) fn remove_source_connected(path: &Path, source_id: &str) -> Result<()> {
@@ -376,7 +315,7 @@ pub(crate) fn remove_source_connected(path: &Path, source_id: &str) -> Result<()
     })
 }
 
-/// Persist the `pixtuoid floating` window geometry into the `[floating]` table (size always;
+/// Persist the Maple Agent Market window geometry into `[floating]` (size always;
 /// position when the OS reported it). Same `toml_edit` ConfigLock round as
 /// `save_source_connected`, so the user's other settings + hand-formatting survive.
 pub(crate) fn save_floating(
@@ -415,116 +354,13 @@ pub(crate) fn save_floating(
 /// `true`. An absent flag (or an absent/empty `[sources]` table) is plainly
 /// DISCONNECTED — the v0.4–0.7 "absent ⇒ connected iff hooks installed"
 /// migrate inference was dropped in 0.12.0 (too old to keep supporting).
-/// CONSEQUENCE: a v0.4–0.7 upgrader's config (exists, no `[sources]`, not
-/// degraded) now reads as a first run (`setup::is_first_run`), so the
-/// onboarding wizard replays and they re-connect there — acceptable, that IS
-/// the connect flow.
+/// A v0.4–0.7 config without `[sources]` therefore reads as disconnected; the
+/// user can explicitly reconnect with the current CLI.
 pub fn resolve_connected(config: &AppConfig) -> std::collections::HashSet<String> {
     pixtuoid_core::source::registry::registered_source_names()
         .filter(|src| config.sources.get(*src).copied().unwrap_or(false))
         .map(String::from)
         .collect()
-}
-
-/// Resolve the config `max-desks` into the runtime desk cap. `0` is treated
-/// as unset with a collected warning (#87 channel): the cap clamps every
-/// floor via `min`, and the per-frame capacity re-seed only grows atomics
-/// when `capacity > 0` — so an accepted 0 would permanently zero every floor
-/// and silently drop every SessionStart (a permanently empty office with no
-/// in-TUI signal). The hidden `--max-desks` CLI flag rejects 0 at the clap
-/// seam (`range(1..)`); this is the config file's twin of that guard.
-pub fn resolve_max_desks(config: &AppConfig, warnings: &mut Vec<String>) -> Option<usize> {
-    match config.max_desks {
-        Some(0) => {
-            warn_user(
-                warnings,
-                "max-desks = 0 in config would hide every agent — ignoring it \
-                 (the --max-desks flag or auto-computed capacity applies)"
-                    .into(),
-            );
-            None
-        }
-        other => other,
-    }
-}
-
-/// Resolve CLI + config into the one `&'static Theme` the runtime uses
-/// (CLI > config > `NORMAL`). The asymmetry is deliberate: a `--theme` typo is
-/// explicit user intent and hard-errors (listing valid names), while a config
-/// typo soft-warns and falls back so a stale config file never bricks startup.
-pub fn resolve_theme(
-    config: &AppConfig,
-    cli_theme: Option<&str>,
-    warnings: &mut Vec<String>,
-) -> Result<&'static pixtuoid_scene::theme::Theme> {
-    use pixtuoid_scene::theme::{theme_by_name, ALL_THEMES, NORMAL};
-
-    // Validate the config theme even when the CLI overrides it — the warn is
-    // the only signal that a persisted theme in config.toml has gone stale.
-    let config_theme = config.theme.as_deref().and_then(|t| {
-        let theme = theme_by_name(t);
-        if theme.is_none() {
-            warn_user(
-                warnings,
-                format!("unknown theme {t:?} in config — ignoring (falling back to the default)"),
-            );
-        }
-        theme
-    });
-    if let Some(name) = cli_theme {
-        return theme_by_name(name).ok_or_else(|| {
-            let valid: Vec<&str> = ALL_THEMES.iter().map(|t| t.name).collect();
-            anyhow::anyhow!("unknown theme: {name}. Valid: {}", valid.join(", "))
-        });
-    }
-    Ok(config_theme.unwrap_or(&NORMAL))
-}
-
-/// Resolve config into the office's `Pet`s. `[[pets]]` absent → all kinds
-/// with default names. `pets = []` → no pets. An unknown `kind` is warn-skipped
-/// (non-fatal; the rest of the config and the remaining stanzas survive). A
-/// `name` is trimmed; empty/absent → `PetKind::default_name`. Resolving HERE
-/// (once, at startup) means the render path reads `pet.name` directly — no
-/// per-frame lookup, no parallel kind→name map to keep in sync.
-pub fn resolve_pets(
-    config: &AppConfig,
-    warnings: &mut Vec<String>,
-) -> Vec<pixtuoid_scene::pet::Pet> {
-    use pixtuoid_scene::pet::{Pet, PetKind};
-
-    match &config.pets {
-        None => PetKind::ALL.iter().map(|&k| Pet::defaulted(k)).collect(),
-        Some(entries) => {
-            let mut out = Vec::with_capacity(entries.len());
-            for entry in entries {
-                let Some(kind) = entry.kind.as_deref().and_then(PetKind::from_config_name) else {
-                    warn_user(
-                        warnings,
-                        format!(
-                            "missing or unknown pet `kind` {:?} in [[pets]] config — skipping that pet",
-                            entry.kind.as_deref().unwrap_or("<missing>")
-                        ),
-                    );
-                    continue;
-                };
-                let name = entry
-                    .name
-                    .as_deref()
-                    .map(str::trim)
-                    .filter(|s| !s.is_empty())
-                    .map(str::to_string)
-                    .unwrap_or_else(|| kind.default_name().to_string());
-                out.push(Pet { kind, name });
-            }
-            if out.is_empty() && !entries.is_empty() {
-                warn_user(
-                    warnings,
-                    "all [[pets]] entries had unknown kinds — no pets will appear".into(),
-                );
-            }
-            out
-        }
-    }
 }
 
 #[cfg(test)]

@@ -33,7 +33,7 @@ pub(crate) fn windows_short_path(long: &str) -> Option<String> {
 /// bytes; a rename here propagates to both sides, closing the compiler-invisible
 /// write↔read desync (writer emits the new form, reader still splits the old → a
 /// path with the un-stripped tail baked in → a false "shim missing" in doctor /
-/// the Sources panel). NOTE: the shim (pixtuoid-hook crate) parses the word-split
+/// `sources`). NOTE: the shim (pixtuoid-hook crate) parses the word-split
 /// BARE `--source`/`--event` argv tokens — a separate copy this const can't reach;
 /// keep them in sync by hand (the shim's own round-trip tests pin that side).
 pub(crate) const SOURCE_FLAG: &str = " --source ";

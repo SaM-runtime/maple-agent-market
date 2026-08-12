@@ -574,7 +574,7 @@ pub(crate) const MAX_DECODED_FIELD_CHARS: usize = 80;
 /// where a value renders differently from its bytes. Applied where a wire value leaves
 /// the decoder for a HUMAN sink that is NOT a cell buffer: the [`super::drift`]
 /// breadcrumbs and the unsupported-event `bail!`s. Both reach a real terminal in every
-/// non-TUI mode, whose `tracing` stream writes to raw stderr — the one sink in the
+/// foreground CLI mode, whose `tracing` stream writes to raw stderr — the one sink in the
 /// project that no cell-clipping or presenter sanitize covers.
 ///
 /// The binary keeps `pixtuoid::strip_control_chars` with the SAME predicate: it cannot

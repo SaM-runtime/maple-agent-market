@@ -12,9 +12,6 @@ licence_file = "LICENSE"
 notice_file = "THIRD_PARTY_NOTICES.md"
 patterns = [
   "crates/pixtuoid-core/tests/render/fixtures/**",
-  "crates/pixtuoid-scene/sprites/default/**",
-  "crates/pixtuoid-scene/tests/fixtures/**",
-  "crates/pixtuoid/sprites/**",
 ]
 
 [[asset_group]]

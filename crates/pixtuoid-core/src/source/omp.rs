@@ -4,7 +4,7 @@
 //! shell-hook seam (its "hooks" are in-process TS extension modules —
 //! upstream `docs/hooks.md`, `extensibility/extensions/loader.ts` filters
 //! discovered hook files to `.ts`/`.js`), so there is no install target; the
-//! Sources panel shows `om·` as a no-target flag-flip row.
+//! `sources` reports it as a no-target source.
 //!
 //! Grounded in the upstream source @ v16.3.12 (`can1357/oh-my-pi`, commit
 //! ff1fe5f) — pin comments below cite the upstream files —
