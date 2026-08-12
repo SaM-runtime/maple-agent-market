@@ -189,15 +189,16 @@ def stage_bundle(request: BundleRequest) -> pathlib.Path:
     return request.output
 
 
-def git_root() -> pathlib.Path:
+def git_root(start: pathlib.Path | None = None) -> pathlib.Path:
     """Resolve the repository containing this script."""
 
     output = subprocess.run(
         ["git", "rev-parse", "--show-toplevel"],
-        cwd=pathlib.Path(__file__).resolve().parent,
+        cwd=start or pathlib.Path(__file__).resolve().parent,
         check=True,
         capture_output=True,
         text=True,
+        encoding="utf-8",
     ).stdout.strip()
     return pathlib.Path(output).resolve()
 
@@ -211,6 +212,7 @@ def require_clean_publication_candidate(root: pathlib.Path) -> None:
         check=True,
         capture_output=True,
         text=True,
+        encoding="utf-8",
     ).stdout
     if status.strip():
         count = len(status.splitlines())
@@ -256,7 +258,12 @@ def built_release_artifact(root: pathlib.Path) -> pathlib.Path:
 
     rustc = os.environ.get("RUSTC", "rustc")
     version_output = subprocess.run(
-        [rustc, "-vV"], cwd=root, check=True, capture_output=True, text=True
+        [rustc, "-vV"],
+        cwd=root,
+        check=True,
+        capture_output=True,
+        text=True,
+        encoding="utf-8",
     ).stdout
     host = next(
         (line.removeprefix("host: ").strip() for line in version_output.splitlines() if line.startswith("host: ")),
@@ -294,7 +301,7 @@ def run_release_build(root: pathlib.Path) -> pathlib.Path:
 def selftest() -> int:
     failures: list[str] = []
     with tempfile.TemporaryDirectory() as tmp:
-        root = pathlib.Path(tmp) / "source"
+        root = pathlib.Path(tmp) / "繁體中文-source"
         artifact = pathlib.Path(tmp) / "build" / "pixtuoid.exe"
         output = pathlib.Path(tmp) / "public-bundle"
         source_files = {
@@ -316,6 +323,9 @@ homepage = "https://github.com/IvanWng97/pixtuoid"
             path = root / relative
             path.parent.mkdir(parents=True, exist_ok=True)
             path.write_text(content, encoding="utf-8")
+        subprocess.run(["git", "init", "--quiet"], cwd=root, check=True)
+        if git_root(root) != root.resolve():
+            failures.append("git root must decode a UTF-8 non-ASCII worktree path")
         artifact.parent.mkdir(parents=True, exist_ok=True)
         artifact.write_bytes(b"MZ public fixture")
 
@@ -407,6 +417,7 @@ def main() -> int:
             check=True,
             capture_output=True,
             text=True,
+            encoding="utf-8",
         ).stdout.strip()
         output = stage_bundle(
             BundleRequest(

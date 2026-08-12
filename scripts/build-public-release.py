@@ -36,15 +36,16 @@ def remap_flags(paths: dict[str, pathlib.Path]) -> list[str]:
     return [f"--remap-path-prefix={source}={alias}" for _, source, alias in entries]
 
 
-def git_root() -> pathlib.Path:
+def git_root(start: pathlib.Path | None = None) -> pathlib.Path:
     """Resolve the worktree containing this script, independent of caller cwd."""
 
     output = subprocess.run(
         ["git", "rev-parse", "--show-toplevel"],
-        cwd=pathlib.Path(__file__).resolve().parent,
+        cwd=start or pathlib.Path(__file__).resolve().parent,
         check=True,
         capture_output=True,
         text=True,
+        encoding="utf-8",
     ).stdout.strip()
     return pathlib.Path(output).resolve()
 
@@ -87,6 +88,7 @@ def rustc_host(root: pathlib.Path) -> str:
         check=True,
         capture_output=True,
         text=True,
+        encoding="utf-8",
     ).stdout
     for line in output.splitlines():
         if line.startswith("host: "):
@@ -176,6 +178,13 @@ def selftest() -> int:
     if target not in artifact.parts:
         print("FAIL: release artifact path omitted the explicit Cargo target")
         return 1
+    with tempfile.TemporaryDirectory() as tmp:
+        unicode_root = pathlib.Path(tmp) / "繁體中文-repo"
+        unicode_root.mkdir()
+        subprocess.run(["git", "init", "--quiet"], cwd=unicode_root, check=True)
+        if git_root(unicode_root) != unicode_root.resolve():
+            print("FAIL: git root must decode a UTF-8 non-ASCII worktree path")
+            return 1
     print("build-public-release selftest passed")
     return 0
 
