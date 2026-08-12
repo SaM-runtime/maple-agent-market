@@ -128,6 +128,10 @@ disabled during the transition.
 
 With Git and Rust 1.89 or newer:
 
+> **Windows:** clone into a short path such as `C:\dev\maple-agent-market`.
+> Some inherited conformance fixtures have intentionally descriptive filenames;
+> a deeply nested checkout can exceed Git for Windows' legacy path limit.
+
 ```bash
 git clone https://github.com/SaM-runtime/maple-agent-market.git
 cd maple-agent-market
