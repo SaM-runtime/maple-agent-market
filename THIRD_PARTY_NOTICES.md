@@ -20,6 +20,15 @@
 - 檔案：`crates/pixtuoid/fonts/MonaspaceNeon-SemiBold.otf`
 - 完整授權：`crates/pixtuoid/fonts/OFL-Monaspace.txt`
 
+## RustCrypto SHA-2
+
+- 專案：[RustCrypto/hashes](https://github.com/RustCrypto/hashes/tree/sha2-v0.11.0/sha2)
+- 版本：`sha2 0.11.0`
+- 版權：RustCrypto Project Developers、Artyom Pavlov、Mozilla Foundation、Graydon Hoare
+- 授權：MIT OR Apache-2.0；本專案依 MIT 選項使用與再散布
+- 用途：素材 manager 的逐檔 SHA-256 與 pack fingerprint
+- 完整 MIT 文字：`LICENSES/RustCrypto-SHA2-MIT.txt`
+
 ## 本專案產生的公開媒體
 
 `assets/readme/maple-agent-market-overview.png` 由目前的 `floating_snapshot` example 使用公開 renderer 與 Pixtuoid MIT 預設 pack 產生，未載入私人素材，也不是遊戲擷取畫面。

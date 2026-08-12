@@ -3,6 +3,7 @@
 //! the primary entry point.
 
 pub mod aa_text;
+pub mod assets;
 pub(crate) mod audio;
 pub mod cli;
 pub mod config;

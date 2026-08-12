@@ -52,6 +52,17 @@ repo 內的 `crates/pixtuoid/sprites/skeleton/` 是格式範本。使用者素�
 
 Windows 也提供 `tools/windows/MapleSkinWorkshop.psm1` 協助建立與驗證本機角色 pack；其測試位於 `tools/windows/tests/`。
 
+## 素材管理器
+
+```powershell
+.\target\debug\pixtuoid.exe assets list
+.\target\debug\pixtuoid.exe assets install public-classic
+.\target\debug\pixtuoid.exe assets import C:\team\authorized-pack --id team-pack
+.\target\debug\pixtuoid.exe assets verify team-pack --expect <64位SHA-256>
+```
+
+managed packs 預設位於設定目錄下的 `packs/`；所有子命令都可在 `assets` 後加上 `--root <PATH>` 使用隔離位置。安裝／匯入結果會印出可直接傳給 `--pack-dir` 的路徑。完整協作流程見 [`ASSET_COLLABORATION.md`](ASSET_COLLABORATION.md)。
+
 ## 診斷
 
 ```powershell

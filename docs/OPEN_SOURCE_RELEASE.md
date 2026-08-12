@@ -19,6 +19,8 @@
 
 朋友乾淨 clone 後可以直接建置與開啟公開安全版；要呈現另一套視覺，可自行在本機以 `--pack-dir` 載入有權使用的素材。沒有私人 pack 時不會重現維護者本機的 NEXON 風格畫面。
 
+`assets install public-classic` 只抽出 binary 已內嵌的可再散布 fallback，並以 SHA-256 manifest 鎖定；`assets import` 只做本機複製且固定標示 `local-only`。兩者都不會從 NEXON／遊戲 CDN／Open API／WZ/client／YouTube 取得內容，也不會把本機 pack 上傳到 GitHub。
+
 ## 自動稽核
 
 ```powershell

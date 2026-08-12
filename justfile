@@ -11,6 +11,14 @@ build:
 run:
     cargo run --locked -p pixtuoid -- --theme maple floating
 
+# 列出公開 catalog 與本機 managed packs。
+assets-list:
+    cargo run --locked -p pixtuoid -- assets list
+
+# 從目前 build 安裝／更新完全相同的公開素材。
+assets-install:
+    cargo run --locked -p pixtuoid -- assets install public-classic --force
+
 # 套用 Rust 格式。
 fmt:
     cargo fmt --all

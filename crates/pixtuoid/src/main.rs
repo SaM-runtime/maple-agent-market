@@ -4,8 +4,10 @@ mod sources_cli;
 
 use anyhow::Result;
 use clap::Parser;
-use pixtuoid::cli::{Cli, Cmd, SourceArgs, SourcesAction};
-use pixtuoid::{config, doctor, floating, init_pack, install, runtime, setup, sources, validate};
+use pixtuoid::cli::{AssetsAction, Cli, Cmd, SourceArgs, SourcesAction};
+use pixtuoid::{
+    assets, config, doctor, floating, init_pack, install, runtime, setup, sources, validate,
+};
 
 fn main() -> Result<()> {
     crash::install_crash_hook();
@@ -112,6 +114,39 @@ fn main() -> Result<()> {
             let rc = build_run_config(cli_theme.as_deref(), source, None, false)?;
             floating::run(rc)
         }
+        Cmd::Assets { root, action } => {
+            let root = root.unwrap_or_else(assets::default_assets_root);
+            match action {
+                AssetsAction::List { json } => {
+                    let entries = assets::list_assets(&root)?;
+                    assets::print_asset_list(&entries, json)
+                }
+                AssetsAction::Install { id, force, json } => {
+                    if id != assets::PUBLIC_CLASSIC_ID {
+                        anyhow::bail!(
+                            "unknown public asset pack {id:?}; available: {}",
+                            assets::PUBLIC_CLASSIC_ID
+                        );
+                    }
+                    let result = assets::install_public_classic(&root, install_mode(force))?;
+                    assets::print_asset_result("installed", &result, json)
+                }
+                AssetsAction::Import {
+                    source,
+                    id,
+                    force,
+                    json,
+                } => {
+                    let result =
+                        assets::import_local_pack(&root, &source, &id, install_mode(force))?;
+                    assets::print_asset_result("imported locally", &result, json)
+                }
+                AssetsAction::Verify { id, expected, json } => {
+                    let result = assets::verify_installed(&root, &id, expected.as_deref())?;
+                    assets::print_asset_result("verified", &result, json)
+                }
+            }
+        }
         Cmd::ValidatePack { pack_dir } => validate::validate_pack(&pack_dir),
         Cmd::InitPack { dest, force } => init_pack::init_pack(&dest, force),
         Cmd::Doctor => doctor::run(&logging::log_file_path()).map(|report| print!("{report}")),
@@ -157,6 +192,15 @@ fn main() -> Result<()> {
             clap_mangen::Man::new(Cli::command()).render(&mut std::io::stdout())?;
             Ok(())
         }
+    }
+}
+
+/// Convert the CLI replacement flag into the asset manager's explicit policy.
+fn install_mode(force: bool) -> assets::InstallMode {
+    if force {
+        assets::InstallMode::ReplaceManaged
+    } else {
+        assets::InstallMode::RefuseExisting
     }
 }
 

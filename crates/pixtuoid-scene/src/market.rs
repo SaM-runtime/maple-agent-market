@@ -256,7 +256,7 @@ pub enum MarketLayer {
 
 /// One resolved free-market position in the renderer's internal pixel space.
 ///
-/// `anchor_px` is the authored resting position. [`resolve_market_actor`]
+/// `anchor_px` is the authored resting position. `resolve_market_actor`
 /// derives both the moving character and label anchors from it each frame.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub struct MarketSlot {

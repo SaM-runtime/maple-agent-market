@@ -21,6 +21,7 @@ SOURCE_BUNDLE_FILES = (
     ("README.md", "README.md", "MIT"),
     ("FORK_NOTICE.md", "FORK_NOTICE.md", "MIT"),
     ("THIRD_PARTY_NOTICES.md", "THIRD_PARTY_NOTICES.md", "MIT"),
+    ("LICENSES/RustCrypto-SHA2-MIT.txt", "RustCrypto-SHA2-MIT.txt", "MIT"),
     ("docs/OPEN_SOURCE_RELEASE.md", "OPEN_SOURCE_RELEASE.md", "MIT"),
     ("crates/pixtuoid/fonts/OFL-Monaspace.txt", "OFL-Monaspace.txt", "OFL-1.1"),
 )
@@ -307,6 +308,7 @@ homepage = "https://github.com/IvanWng97/pixtuoid"
             "README.md": "# Fixture\n",
             "FORK_NOTICE.md": "unofficial fixture\n",
             "THIRD_PARTY_NOTICES.md": "notices fixture\n",
+            "LICENSES/RustCrypto-SHA2-MIT.txt": "RustCrypto MIT fixture\n",
             "docs/OPEN_SOURCE_RELEASE.md": "release fixture\n",
             "crates/pixtuoid/fonts/OFL-Monaspace.txt": "OFL fixture\n",
         }
@@ -345,6 +347,7 @@ homepage = "https://example.github.io/maple-agent-market"
             "OPEN_SOURCE_RELEASE.md",
             "PUBLIC_BUNDLE_MANIFEST.json",
             "README.md",
+            "RustCrypto-SHA2-MIT.txt",
             "SHA256SUMS.txt",
             "THIRD_PARTY_NOTICES.md",
             "pixtuoid.exe",

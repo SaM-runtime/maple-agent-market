@@ -34,6 +34,8 @@ serde              = { workspace = true }
 serde_json         = { workspace = true, features = ["preserve_order"] }
 toml               = { workspace = true }
 toml_edit          = { workspace = true }
+# Content-addressed local asset manifests shared by collaborators.
+sha2               = "0.11"
 # YAML parse+emit for the Hermes install target (config.yaml hooks merge). saphyr
 # is the maintained yaml-rust successor (serde_yaml/serde_yml are both abandoned);
 # it data-preserves a user's other config keys on merge but does NOT round-trip

@@ -37,4 +37,6 @@ flowchart LR
 
 Renderer 先嘗試載入使用者指定的本機 sprite pack；缺少對應素材時回到 repo 內可再散布的 Pixtuoid 預設素材與程式化畫面。NEXON／MapleStory 圖像、音樂、API 紙娃娃、遊戲截圖與衍生檔不屬於此架構的公開輸入，請保持在 repo 外。
 
+`crates/pixtuoid/src/assets.rs` 是內容定址的本機素材管理層：`public-classic` 直接抽出 `pixtuoid-scene` 實際載入的 embedded default bytes；local import 只收集 `pack.toml` 引用的 regular files。兩條路徑都輸出排序後的逐檔 SHA-256 manifest，拒絕 symlink、路徑逸出、額外檔案與未受管理的強制覆寫。它不包含遠端 downloader 或上傳能力。
+
 公開候選版的媒體與路徑規則由 `policy/public-release/` 和 `scripts/public-release-audit.py` 管理。

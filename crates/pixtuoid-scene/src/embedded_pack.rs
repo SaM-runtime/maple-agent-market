@@ -208,6 +208,19 @@ fn embedded_sprite_srcs() -> Vec<(&'static str, &'static str)> {
     ]
 }
 
+/// Exact redistributable default-pack sources embedded in the binary.
+///
+/// This is an in-workspace extraction seam for the asset manager. It returns
+/// the same bytes [`load_embedded_pack`] consumes, so an installed
+/// `public-classic` pack cannot drift from the standalone fallback renderer.
+#[doc(hidden)]
+pub fn embedded_default_pack_sources() -> Vec<(&'static str, &'static str)> {
+    let mut files = Vec::with_capacity(1 + embedded_sprite_srcs().len());
+    files.push(("pack.toml", include_str!("../sprites/default/pack.toml")));
+    files.extend(embedded_sprite_srcs());
+    files
+}
+
 /// The default pack with a 10px-wide `standing` frame (robot packs go up to 10)
 /// so the pack-resolved `char_w` differs from the bundled 8-wide `CHARACTER_SPRITE_W`
 /// — the only way to drive `sim_step`/`resolve_characters` occupancy + anchors

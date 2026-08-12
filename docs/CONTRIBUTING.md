@@ -56,6 +56,10 @@ just snapshot
 
 單純把檔案放在網頁、API 或遊戲 client 中，不代表它具有開源再散布授權。
 
+共同修改公開 sprite 後，重新 build 並執行 `assets install public-classic --force`；在 PR 描述附上 `assets verify public-classic` 的新 fingerprint，讓 reviewer 可重現逐檔內容。
+
+`assets import` 產生的 pack 固定標為 `local-only`；除非已另行完成作者、來源與再散布授權審查，不能把 managed install 反向複製進 Git。完整流程見 [`ASSET_COLLABORATION.md`](ASSET_COLLABORATION.md)。
+
 ## Pull request
 
 PR 請說明問題、視覺／狀態影響與實際執行的驗證。安全性問題不要開公開 issue，請依 `SECURITY.md` 使用 GitHub private vulnerability reporting。

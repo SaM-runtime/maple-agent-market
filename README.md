@@ -11,6 +11,7 @@
 <p align="center">
   <a href="#快速開始">快速開始</a> ·
   <a href="#目前功能">目前功能</a> ·
+  <a href="#讓朋友取得完全相同的公開素材">素材同步</a> ·
   <a href="#自訂本機素材">自訂素材</a> ·
   <a href="#專案來源與完整署名">來源與署名</a> ·
   <a href="docs/OPEN_SOURCE_RELEASE.md">公開發布邊界</a>
@@ -136,6 +137,38 @@ python scripts\public-release-audit.py
 
 稽核會檢查未核准媒體、私有素材路徑、音訊、封裝檔、憑證特徵與本機絕對路徑。已核准媒體的 SHA-256 與來源群組位於 [`policy/public-release`](policy/public-release)。
 
+## 讓朋友取得完全相同的公開素材
+
+朋友是否與你相同，由兩個值決定：Git commit SHA 與素材 fingerprint。`public-classic` 已編進 binary，不需連到外部素材站；安裝後會逐檔建立 `ASSET-MANIFEST.json` 與 SHA-256 inventory。
+
+```powershell
+git rev-parse HEAD
+cargo build --locked -p pixtuoid
+
+$installed = .\target\debug\pixtuoid.exe assets install public-classic --json | ConvertFrom-Json
+.\target\debug\pixtuoid.exe assets verify public-classic `
+  --expect $installed.fingerprint_sha256
+
+.\target\debug\pixtuoid.exe --theme maple floating `
+  --pack-dir $installed.path
+```
+
+列出目前公開 catalog 與本機 pack：
+
+```powershell
+.\target\debug\pixtuoid.exe assets list
+.\target\debug\pixtuoid.exe assets list --json
+```
+
+有權使用的團隊自訂 pack 可以只在本機匯入，再交換 fingerprint 做一致性驗證：
+
+```powershell
+.\target\debug\pixtuoid.exe assets import C:\team\authorized-pack --id team-pack
+.\target\debug\pixtuoid.exe assets verify team-pack --expect <64位SHA-256>
+```
+
+匯入不會上傳檔案，也不會把素材自動改成 MIT；manifest 會保守標示 `local-only`。完整共同修改、重裝與驗證流程請看 [`docs/ASSET_COLLABORATION.md`](docs/ASSET_COLLABORATION.md)。
+
 ## 自訂本機素材
 
 公開版可直接執行；如果你擁有可使用、修改與載入的素材，也可以建立自己的本機 sprite pack。請勿把沒有再散布權的素材提交到 pull request。
@@ -191,7 +224,7 @@ python scripts\public-release-audit.py
 just preflight
 ```
 
-架構與相容契約在 [`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md)，貢獻流程在 [`docs/CONTRIBUTING.md`](docs/CONTRIBUTING.md)，安全問題請看 [`SECURITY.md`](SECURITY.md)。
+架構與相容契約在 [`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md)，素材協作在 [`docs/ASSET_COLLABORATION.md`](docs/ASSET_COLLABORATION.md)，貢獻流程在 [`docs/CONTRIBUTING.md`](docs/CONTRIBUTING.md)，安全問題請看 [`SECURITY.md`](SECURITY.md)。
 
 ## 專案來源與完整署名
 

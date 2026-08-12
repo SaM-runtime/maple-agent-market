@@ -81,6 +81,14 @@ pub enum Cmd {
         #[command(flatten)]
         source: SourceArgs,
     },
+    /// Install, import, list, and verify content-addressed local sprite packs.
+    Assets {
+        /// Managed pack root. Defaults to the application's config directory.
+        #[arg(long, global = true, value_hint = clap::ValueHint::DirPath)]
+        root: Option<PathBuf>,
+        #[command(subcommand)]
+        action: AssetsAction,
+    },
     /// Validate a custom sprite pack directory.
     ValidatePack {
         /// Path to the pack directory (must contain pack.toml).
@@ -169,6 +177,53 @@ pub enum SourcesAction {
     Set {
         #[arg(required = true)]
         ids: Vec<String>,
+    },
+}
+
+#[derive(Debug, Subcommand)]
+pub enum AssetsAction {
+    /// List the bundled public pack and locally installed packs.
+    List {
+        /// Emit machine-readable JSON.
+        #[arg(long)]
+        json: bool,
+    },
+    /// Install a bundled, redistributable pack by id.
+    Install {
+        /// Pack id. The initial public catalog contains `public-classic`.
+        id: String,
+        /// Replace an existing managed installation of the same id.
+        #[arg(long, default_value_t = false)]
+        force: bool,
+        /// Emit machine-readable JSON.
+        #[arg(long)]
+        json: bool,
+    },
+    /// Import a local sprite pack without publishing or uploading it.
+    Import {
+        /// Directory containing pack.toml and the referenced sprite files.
+        #[arg(value_hint = clap::ValueHint::DirPath)]
+        source: PathBuf,
+        /// Stable local id used by list and verify.
+        #[arg(long)]
+        id: String,
+        /// Replace an existing managed installation of the same id.
+        #[arg(long, default_value_t = false)]
+        force: bool,
+        /// Emit machine-readable JSON.
+        #[arg(long)]
+        json: bool,
+    },
+    /// Verify every managed file and print the pack fingerprint.
+    Verify {
+        /// Installed pack id.
+        id: String,
+        /// Fail unless the computed pack fingerprint equals this SHA-256.
+        #[arg(long = "expect")]
+        expected: Option<String>,
+        /// Emit machine-readable JSON.
+        #[arg(long)]
+        json: bool,
     },
 }
 
@@ -426,6 +481,70 @@ mod tests {
         assert!(matches!(dry.cmd, Some(Cmd::Setup { yes: false })));
         let apply = Cli::try_parse_from(["pixtuoid", "setup", "--yes"]).unwrap();
         assert!(matches!(apply.cmd, Some(Cmd::Setup { yes: true })));
+    }
+
+    #[test]
+    fn assets_subcommands_parse_the_collaboration_contract() {
+        let list = Cli::try_parse_from(["pixtuoid", "assets", "list", "--json"]).unwrap();
+        assert!(matches!(
+            list.cmd,
+            Some(Cmd::Assets {
+                action: AssetsAction::List { json: true, .. },
+                ..
+            })
+        ));
+
+        let install =
+            Cli::try_parse_from(["pixtuoid", "assets", "install", "public-classic", "--force"])
+                .unwrap();
+        assert!(matches!(
+            install.cmd,
+            Some(Cmd::Assets {
+                action: AssetsAction::Install {
+                    id,
+                    force: true,
+                    ..
+                },
+                ..
+            }) if id == "public-classic"
+        ));
+
+        let import = Cli::try_parse_from([
+            "pixtuoid",
+            "assets",
+            "import",
+            "C:/my-pack",
+            "--id",
+            "team-pack",
+        ])
+        .unwrap();
+        assert!(matches!(
+            import.cmd,
+            Some(Cmd::Assets {
+                action: AssetsAction::Import { id, .. },
+                ..
+            }) if id == "team-pack"
+        ));
+
+        let verify = Cli::try_parse_from([
+            "pixtuoid",
+            "assets",
+            "verify",
+            "team-pack",
+            "--expect",
+            "0123456789abcdef",
+        ])
+        .unwrap();
+        assert!(matches!(
+            verify.cmd,
+            Some(Cmd::Assets {
+                action: AssetsAction::Verify {
+                    expected: Some(_),
+                    ..
+                },
+                ..
+            })
+        ));
     }
 
     #[test]
