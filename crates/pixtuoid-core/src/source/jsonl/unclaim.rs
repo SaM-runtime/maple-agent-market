@@ -145,7 +145,7 @@ impl Default for ChildEndUnclaims {
 /// drain are consumed silently (indistinguishable from pre-stop stragglers
 /// without per-byte timestamps) — the next append re-registers, and an active
 /// turn appends continuously; and a revival start landing inside the slot's
-/// 4.5s exit grace is swallowed by the root-gated resurrect pin (documented
+/// 9.5s exit grace is swallowed by the root-gated resurrect pin (documented
 /// reducer edge) — the turn N+2 stop re-arms this same path.
 pub(super) async fn drain_child_end_unclaims(
     unclaims: Option<&ChildEndUnclaims>,

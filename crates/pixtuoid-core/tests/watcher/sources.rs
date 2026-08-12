@@ -72,6 +72,132 @@ async fn codex_source_run_emits_events_from_rollout() {
     handle.abort();
 }
 
+// Windows has no validated Codex rollout-FD probe, and this local install keeps
+// Codex hooks disabled. After the reducer's short idle reap, the watcher still
+// owns its first-sight claim; a new task_started append must therefore re-emit
+// the normal SessionStart + Rename pair before its ActivityStart reaches the
+// now-empty reducer.
+#[tokio::test]
+async fn codex_task_started_re_registers_after_short_idle_reap_without_hooks() {
+    use std::time::SystemTime;
+
+    use pixtuoid_core::state::reducer::{EXIT_GRACE_WINDOW, STALE_SHORT_IDLE_TIMEOUT};
+    use pixtuoid_core::state::ActivityState;
+    use pixtuoid_core::{Reducer, SceneState};
+
+    fast_watch();
+    let dir = TempDir::new().unwrap();
+    let sessions_root = dir.path().to_path_buf();
+    let uuid = "019e7762-9ded-7e33-be41-946ecf105bf4";
+    let transcript = sessions_root.join(format!("rollout-2026-05-29T22-36-52-{uuid}.jsonl"));
+
+    let (tx, mut rx) = mpsc::channel::<(Transport, AgentEvent)>(64);
+    let src = CodexSource {
+        sessions_root,
+        child_end_unclaims: None,
+    };
+    let handle = tokio::spawn(async move { Box::new(src).run(tx).await });
+    tokio::time::sleep(Duration::from_millis(50)).await;
+
+    let initial = [
+        serde_json::json!({
+            "type": "session_meta",
+            "payload": { "id": uuid, "cwd": "/repo" }
+        }),
+        serde_json::json!({
+            "type": "event_msg",
+            "payload": { "type": "task_started", "turn_id": "t1" }
+        }),
+        serde_json::json!({
+            "type": "event_msg",
+            "payload": { "type": "task_complete", "turn_id": "t1" }
+        }),
+    ];
+    let mut file = tokio::fs::OpenOptions::new()
+        .create(true)
+        .append(true)
+        .open(&transcript)
+        .await
+        .unwrap();
+    for line in initial {
+        file.write_all(format!("{line}\n").as_bytes())
+            .await
+            .unwrap();
+    }
+    file.flush().await.unwrap();
+
+    let applied_at = SystemTime::now();
+    let mut scene = SceneState::uniform(8);
+    let mut reducer = Reducer::new();
+    let initial_deadline = tokio::time::Instant::now() + Duration::from_secs(5);
+    let mut saw_turn_complete = false;
+    while tokio::time::Instant::now() < initial_deadline && !saw_turn_complete {
+        if let Ok(Some((transport, event))) =
+            tokio::time::timeout(Duration::from_millis(200), rx.recv()).await
+        {
+            saw_turn_complete = matches!(&event, AgentEvent::TurnComplete { .. });
+            reducer.apply(&mut scene, event, applied_at, transport);
+        }
+    }
+    assert!(
+        saw_turn_complete,
+        "initial Codex turn must reach TurnComplete"
+    );
+    assert_eq!(scene.agents.len(), 1, "initial rollout must register");
+
+    let stale_at = applied_at + STALE_SHORT_IDLE_TIMEOUT + Duration::from_secs(1);
+    reducer.tick(&mut scene, stale_at);
+    assert!(
+        scene.agents.values().all(|slot| slot.exiting_at.is_some()),
+        "the Codex short-idle sweep must start the walkout"
+    );
+    reducer.tick(
+        &mut scene,
+        stale_at + EXIT_GRACE_WINDOW + Duration::from_secs(1),
+    );
+    assert!(
+        scene.agents.is_empty(),
+        "the reproduction requires a fully reaped scene"
+    );
+
+    let resumed = serde_json::json!({
+        "type": "event_msg",
+        "payload": { "type": "task_started", "turn_id": "t2" }
+    });
+    file.write_all(format!("{resumed}\n").as_bytes())
+        .await
+        .unwrap();
+    file.flush().await.unwrap();
+
+    let resumed_at = stale_at + EXIT_GRACE_WINDOW + Duration::from_secs(2);
+    let resume_deadline = tokio::time::Instant::now() + Duration::from_secs(5);
+    let mut resumed_active = false;
+    while tokio::time::Instant::now() < resume_deadline && !resumed_active {
+        if let Ok(Some((transport, event))) =
+            tokio::time::timeout(Duration::from_millis(200), rx.recv()).await
+        {
+            reducer.apply(&mut scene, event, resumed_at, transport);
+            resumed_active = scene
+                .agents
+                .values()
+                .any(|slot| matches!(slot.state, ActivityState::Active { .. }));
+        }
+    }
+    handle.abort();
+
+    assert!(
+        resumed_active,
+        "task_started must re-register the reaped Codex slot before ActivityStart"
+    );
+    assert_eq!(scene.agents.len(), 1, "the resumed rollout is one agent");
+    let slot = scene.agents.values().next().unwrap();
+    assert_eq!(
+        &*slot.label.text(),
+        "cx·repo",
+        "re-entry must reuse first-sight identity and label derivation"
+    );
+}
+
 // AntigravitySource::run mirrors CodexSource::run — drive the real Source impl
 // against a TempDir brain_root.
 #[tokio::test]

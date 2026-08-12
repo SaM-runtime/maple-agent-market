@@ -11,12 +11,13 @@ use super::{borderless_panel, panel_inner_width, to_color, truncate, PanelGeomet
 /// issue-report URL from this same authority — crash.rs is a `main.rs` module,
 /// a separate crate the lib's `pub(crate)` can't reach (and the pixtuoid lib
 /// target is not a semver surface, so the widening is free).
-pub const REPO_URL: &str = "https://github.com/IvanWng97/pixtuoid";
+pub const REPO_URL: &str = "https://github.com/SaM-runtime/maple-agent-market";
 
 /// The releases page — opened when the version popup's link is clicked. Kept a
 /// full literal (const &str can't `concat!`); pinned to `REPO_URL/releases` by a
 /// test. The DISPLAY is the short `LINK_LABEL`; this is only the click target.
-pub(crate) const VERSION_POPUP_URL: &str = "https://github.com/IvanWng97/pixtuoid/releases";
+pub(crate) const VERSION_POPUP_URL: &str =
+    "https://github.com/SaM-runtime/maple-agent-market/releases";
 
 /// The clickable link's VISIBLE text — short so it fits any usable terminal. The
 /// raw URL is ~46 cols and was hard-clipped below ~66 cols (and every frame of the

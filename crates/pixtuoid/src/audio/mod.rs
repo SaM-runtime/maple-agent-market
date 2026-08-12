@@ -3,8 +3,8 @@
 //! audio-device dependency (#633; the plan's single-gateway rule). Pure
 //! synthesis (`dsp`/`synth`) pre-renders every sample buffer at startup —
 //! including the Phase 2 musical stems (`score` + `synth`), which are
-//! ALL-PROCEDURAL by owner decision (no committed assets, no decoder dep;
-//! the ratified composition is frozen data in `score.rs`). Playback rides
+//! the upstream composition frozen in `score.rs`. A configured user-owned
+//! local file replaces that score; no media is committed. Playback rides
 //! its own thread behind a bounded channel — the render loop only ever
 //! `try_send`s (drop-on-backpressure, never blocks).
 
@@ -50,6 +50,39 @@ pub(crate) const VOLUME_STEP: f32 = 0.05;
 /// volume-timer pattern) — the TUI footer flash, the floating overlay, and
 /// the volume-persist debounce window on both painters all read this one.
 pub(crate) const VOLUME_FLASH_MS: u128 = 1000;
+
+/// Which single soundtrack owns the output device. A configured local file
+/// replaces (rather than overlays) the procedural Pixtuoid score. Invalid
+/// explicit paths resolve to silence so a missing private asset can never
+/// unexpectedly fall back to a different soundtrack.
+#[derive(Debug, Clone, PartialEq, Eq)]
+enum AudioProgram {
+    Procedural,
+    LocalFile(std::path::PathBuf),
+    Silent,
+}
+
+impl AudioProgram {
+    fn resolve(bgm_path: Option<std::path::PathBuf>) -> Self {
+        let Some(path) = bgm_path else {
+            return Self::Procedural;
+        };
+        let supported = path
+            .extension()
+            .and_then(|extension| extension.to_str())
+            .is_some_and(|extension| {
+                matches!(
+                    extension.to_ascii_lowercase().as_str(),
+                    "mp3" | "wav" | "ogg" | "flac"
+                )
+            });
+        if supported && path.is_file() {
+            Self::LocalFile(path)
+        } else {
+            Self::Silent
+        }
+    }
+}
 
 /// The two audio gestures both painters drive — the `m` toggle and the
 /// `+`/`-` nudge. The KEY→action map is painter-specific (crossterm vs winit,
@@ -158,21 +191,54 @@ impl AudioController {
     /// with no manual shutdown wiring. `muted`/`volume` come pre-resolved from
     /// config; a muted boot stays at zero cost (no device/thread/buffers) until
     /// the first `m`/`+` lazy-respawns in place.
-    pub(crate) fn new(muted: bool, volume: f32, config_path: std::path::PathBuf) -> Self {
-        Self::new_with(muted, volume, config_path, respawn)
+    pub(crate) fn new(audio: crate::config::AudioConfig, config_path: std::path::PathBuf) -> Self {
+        let crate::config::AudioConfig {
+            muted,
+            volume,
+            bgm_path,
+        } = audio;
+        let requested_bgm = bgm_path.clone();
+        let program = AudioProgram::resolve(bgm_path);
+        if matches!(program, AudioProgram::Silent) {
+            tracing::warn!(
+                path = %requested_bgm
+                    .as_deref()
+                    .unwrap_or_else(|| std::path::Path::new(""))
+                    .display(),
+                "audio: requested local BGM is missing or unsupported; running silent"
+            );
+        }
+        Self::new_with_program(muted, volume, config_path, program, respawn)
     }
 
     /// [`new`] with the boot-spawn INJECTED, mirroring [`apply`]'s `respawn`
     /// seam: production passes the real [`respawn`] free fn; a test passes a
     /// device-free closure to pin the boot decision (muted ⇒ no spawn) and that
     /// `Drop` joins a spawned thread — without opening an output device.
+    #[cfg(test)]
     fn new_with(
         muted: bool,
         volume: f32,
         config_path: std::path::PathBuf,
         respawn: impl FnOnce(&AudioHandle, f32),
     ) -> Self {
-        let handle = AudioHandle::disabled();
+        Self::new_with_program(
+            muted,
+            volume,
+            config_path,
+            AudioProgram::Procedural,
+            respawn,
+        )
+    }
+
+    fn new_with_program(
+        muted: bool,
+        volume: f32,
+        config_path: std::path::PathBuf,
+        program: AudioProgram,
+        respawn: impl FnOnce(&AudioHandle, f32),
+    ) -> Self {
+        let handle = AudioHandle::disabled_for_program(program);
         if !muted {
             respawn(&handle, volume);
         }
@@ -656,6 +722,8 @@ mod controls_tests {
 /// (audio off in config, or no device) swallows everything.
 #[derive(Clone)]
 pub(crate) struct AudioHandle {
+    /// Immutable soundtrack selection shared by every cached handle clone.
+    program: std::sync::Arc<AudioProgram>,
     /// The live device sender, swappable IN PLACE behind a shared cell. A lazy
     /// respawn ([`AudioHandle::respawn_in_place`]) fills it, and because every
     /// clone shares this `Arc`, a consumer's cached clone never goes stale — no
@@ -686,7 +754,12 @@ impl AudioHandle {
     /// with the lazy spawn untriggered) or no usable output device. Every
     /// call is a no-op.
     pub(crate) fn disabled() -> Self {
+        Self::disabled_for_program(AudioProgram::Procedural)
+    }
+
+    fn disabled_for_program(program: AudioProgram) -> Self {
         Self {
+            program: std::sync::Arc::new(program),
             tx: std::sync::Arc::new(std::sync::Mutex::new(None)),
             muted: std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false)),
             volume: std::sync::Arc::new(std::sync::atomic::AtomicU32::new(1.0f32.to_bits())),
@@ -752,16 +825,36 @@ impl AudioHandle {
         self.set_volume(volume);
         #[cfg(feature = "audio")]
         {
-            let Some(device) = sink::rodio_sink::RodioSink::open() else {
+            if matches!(self.program.as_ref(), AudioProgram::Silent) {
                 return;
+            }
+            let Some(mut device) = sink::rodio_sink::RodioSink::open() else {
+                return;
+            };
+            let local_file = if let AudioProgram::LocalFile(path) = self.program.as_ref() {
+                if let Err(error) = device.start_music_file(path) {
+                    tracing::warn!(
+                        path = %path.display(),
+                        "audio: local BGM could not be decoded; running silent: {error}"
+                    );
+                    return;
+                }
+                true
+            } else {
+                false
             };
             let (tx, rx) = mpsc::sync_channel(64);
             let muted_for_loop = std::sync::Arc::clone(&self.muted);
             let vol_for_loop = std::sync::Arc::clone(&self.volume);
             match std::thread::Builder::new()
-                .name("pixtuoid-audio".into())
-                .spawn(move || run_loop(rx, Box::new(device), muted_for_loop, vol_for_loop))
-            {
+                .name("maple-agent-market-audio".into())
+                .spawn(move || {
+                    if local_file {
+                        run_local_file_loop(rx, device, muted_for_loop, vol_for_loop);
+                    } else {
+                        run_loop(rx, Box::new(device), muted_for_loop, vol_for_loop);
+                    }
+                }) {
                 Ok(join) => {
                     // Swap the live sender in place; every cached clone follows.
                     // Replacing the sole sender also CLOSES any prior thread's
@@ -821,6 +914,7 @@ impl AudioHandle {
         let (tx, rx) = mpsc::sync_channel(256);
         (
             Self {
+                program: std::sync::Arc::new(AudioProgram::Procedural),
                 tx: std::sync::Arc::new(std::sync::Mutex::new(Some(tx))),
                 muted: std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false)),
                 volume: std::sync::Arc::new(std::sync::atomic::AtomicU32::new(1.0f32.to_bits())),
@@ -874,6 +968,44 @@ const TICK_MS: u64 = 50;
 /// synth can still exceed it — accepted: debug is not shipped, and a slow-quit
 /// leak in a dev build is the mild failure, not a user one.
 const SHUTDOWN_JOIN_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(8);
+
+#[cfg(test)]
+mod local_bgm_program_tests {
+    use super::*;
+
+    #[test]
+    fn local_bgm_program_accepts_supported_existing_files() {
+        let dir = tempfile::tempdir().unwrap();
+        for extension in ["mp3", "wav", "ogg", "flac"] {
+            let path = dir.path().join(format!("market.{extension}"));
+            std::fs::write(&path, b"test fixture").unwrap();
+            assert_eq!(
+                AudioProgram::resolve(Some(path.clone())),
+                AudioProgram::LocalFile(path),
+                "{extension} should select native local-file playback"
+            );
+        }
+    }
+
+    #[test]
+    fn missing_or_unsupported_requested_bgm_degrades_to_silence() {
+        let dir = tempfile::tempdir().unwrap();
+        let missing = dir.path().join("missing.mp3");
+        assert_eq!(AudioProgram::resolve(Some(missing)), AudioProgram::Silent);
+
+        let unsupported = dir.path().join("market.aac");
+        std::fs::write(&unsupported, b"test fixture").unwrap();
+        assert_eq!(
+            AudioProgram::resolve(Some(unsupported)),
+            AudioProgram::Silent
+        );
+    }
+
+    #[test]
+    fn absent_local_bgm_preserves_the_upstream_procedural_mode() {
+        assert_eq!(AudioProgram::resolve(None), AudioProgram::Procedural);
+    }
+}
 
 /// Join `handle`, but give up after `timeout` so a hung device-close (or a
 /// still-in-flight multi-second synth build, see [`SHUTDOWN_JOIN_TIMEOUT`])
@@ -938,10 +1070,34 @@ fn clamped_dt(prev: Instant, now: Instant) -> f32 {
         .min(MAX_DT_S)
 }
 
-/// The audio thread body — the DEVICE shell over the shared [`AudioEngine`]:
-/// the clamped clock, the mute/volume atomics, the caller-side bed BUILD, and
-/// forwarding each tick's `TickCommands` to the [`AudioSink`] (the test probe
-/// drives the SAME loop). All mixing/crossfade/scheduling lives in the engine.
+/// Local-file owner loop. Rodio handles decoding and repetition; this thread
+/// mirrors the shared mute/volume state and owns synchronous device teardown.
+#[cfg(feature = "audio")]
+fn run_local_file_loop(
+    rx: mpsc::Receiver<AudioFrame>,
+    mut device: sink::rodio_sink::RodioSink,
+    muted: std::sync::Arc<std::sync::atomic::AtomicBool>,
+    volume: std::sync::Arc<std::sync::atomic::AtomicU32>,
+) {
+    use std::sync::atomic::Ordering::Relaxed;
+
+    loop {
+        let gain = if muted.load(Relaxed) {
+            0.0
+        } else {
+            f32::from_bits(volume.load(Relaxed)).clamp(0.0, 1.0)
+        };
+        device.set_music_gain(gain);
+        match rx.recv_timeout(std::time::Duration::from_millis(TICK_MS)) {
+            Ok(_) | Err(mpsc::RecvTimeoutError::Timeout) => {}
+            Err(mpsc::RecvTimeoutError::Disconnected) => return,
+        }
+    }
+}
+
+/// The procedural-audio thread body — the DEVICE shell over the shared
+/// [`AudioEngine`]. It owns the clamped clock, mute/volume atomics, bed build,
+/// and forwarding each tick's commands to [`AudioSink`].
 #[cfg(feature = "audio")]
 fn run_loop(
     rx: mpsc::Receiver<AudioFrame>,

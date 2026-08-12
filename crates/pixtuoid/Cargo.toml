@@ -1,6 +1,7 @@
 [package]
 name                   = "pixtuoid"
-description            = "Terminal pixel-art office for AI coding agents"
+description            = "Maple-inspired agent orchestration market, based on Pixtuoid"
+publish                = false
 version.workspace      = true
 edition.workspace      = true
 rust-version.workspace = true
@@ -69,16 +70,16 @@ softbuffer         = "0.4"
 clap_complete = "4.6.5"
 clap_mangen = "0.3.0"
 
-# Ambient office audio (#633): rodio's playback half only (cpal underneath) —
-# no decoder features, every sound is synthesized into raw sample buffers at
-# startup (src/audio/synth.rs). Optional behind the default-on `audio`
-# feature: `--no-default-features` builds a silent binary (and skips cpal's
+# Audio gateway: rodio/cpal playback plus optional local-file decoding.
+# Local BGM adds MP3/WAV/OGG/FLAC decoders but commits no media; an absent
+# `bgm-path` preserves the synthesized score. Optional behind the default-on
+# `audio` feature: `--no-default-features` builds a silent binary (and skips cpal's
 # Linux ALSA system-header requirement). `tracing` routes rodio's OWN diagnostics
 # (mid-session stream errors, the device-list-enumeration failure, the drop log)
 # to `tracing::error!/debug!` instead of its default `eprintln!` — a raw stderr
 # write mid-altscreen corrupts the TUI (lowfi's first-ever bug). See
 # `sink::rodio_sink::RodioSink::open`.
-rodio = { version = "0.22.2", default-features = false, features = ["playback", "tracing"], optional = true }
+rodio = { version = "0.22.2", default-features = false, features = ["playback", "tracing", "mp3", "wav", "vorbis", "flac"], optional = true }
 
 [features]
 default = ["audio"]

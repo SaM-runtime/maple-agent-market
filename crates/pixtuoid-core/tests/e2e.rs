@@ -105,7 +105,7 @@ fn scripted_timeline_drives_scene_through_states() {
         ActivityState::Waiting { .. }
     ));
     // After SessionEnd the slot is marked for exit (renderer plays the
-    // walkout animation) and the reducer's sweep removes it ~4.5s later
+    // walkout animation) and the reducer's sweep removes it ~9.5s later
     // on the next tick / event. The slot is still present in the
     // immediate snapshot but has `exiting_at` set.
     let exit_slot = snaps[4]

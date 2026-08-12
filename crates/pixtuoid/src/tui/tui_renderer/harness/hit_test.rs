@@ -261,7 +261,7 @@ fn click_hit_test_follows_a_walking_sprite_where_from_tui_misses_it() {
     // Now the agent EXITS: its sprite walks off the desk toward the door.
     s.exiting_at = Some(t0());
     let scene = scene_with(vec![s], 16);
-    // Mid-exit-walk (EXIT_GRACE_WINDOW is 4.5s) — off the desk box, not yet GC'd.
+    // Mid-exit-walk (EXIT_GRACE_WINDOW is 9.5s) — off the desk box, not yet GC'd.
     let walk_now = t0() + Duration::from_millis(1500);
     r.render(&scene, &pack(), walk_now).unwrap();
 

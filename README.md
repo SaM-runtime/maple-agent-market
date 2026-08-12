@@ -1,77 +1,169 @@
-<p align="center">
-  <img src="docs/images/sprite-banner.png" alt="pixtuoid sprites" width="500" />
-</p>
-
-<h1 align="center">pixtuoid</h1>
+<h1 align="center">Maple Agent Market</h1>
 
 <p align="center">
-  <em>Your AI coding agents, visualized as pixel-art coworkers in a terminal office.</em>
+  <em>Your AI coding agents, visualized as merchants in a nostalgic 2D market.</em>
 </p>
 
 <p align="center">
-  <sub><em><b>pix</b>el + <b>tu</b>i + (agent-)<b>oid</b></em></sub>
+  <sub><em>An unofficial side project based on Pixtuoid.</em></sub>
 </p>
 
 <p align="center">
-  <a href="https://github.com/IvanWng97/pixtuoid/stargazers"><img src="https://img.shields.io/github/stars/IvanWng97/pixtuoid?style=flat-square" alt="Stars" /></a>
-  <a href="https://pixtuoid.dev/"><img src="https://img.shields.io/badge/dynamic/json?url=https%3A%2F%2Fraw.githubusercontent.com%2FIvanWng97%2Fpixtuoid%2Fmain%2Fsite%2Fsrc%2Fsources.json&query=%24.length&label=agents%20supported&style=flat-square&color=8957e5" alt="Supported agents" /></a>
-  <a href="https://github.com/IvanWng97/pixtuoid/releases"><img src="https://img.shields.io/github/v/release/IvanWng97/pixtuoid?label=version&style=flat-square" alt="Version" /></a>
-  <a href="https://github.com/IvanWng97/pixtuoid/actions/workflows/ci.yml"><img src="https://img.shields.io/github/actions/workflow/status/IvanWng97/pixtuoid/ci.yml?style=flat-square&label=CI" alt="CI" /></a>
-  <a href="https://codecov.io/gh/IvanWng97/pixtuoid"><img src="https://img.shields.io/codecov/c/github/IvanWng97/pixtuoid?style=flat-square" alt="Coverage" /></a>
-  <a href="LICENSE"><img src="https://img.shields.io/badge/license-MIT-blue.svg?style=flat-square" alt="License" /></a>
-  <a href="https://buymeacoffee.com/IvanWng97"><img src="https://img.shields.io/badge/Buy%20Me%20a%20Coffee-ffdd00?style=flat-square&logo=buy-me-a-coffee&logoColor=black" alt="Buy Me a Coffee" /></a>
-</p>
-
-<p align="center">
-  <img src="docs/images/demo.gif" alt="pixtuoid animated demo" width="800" />
-</p>
-
-<p align="center">
-  <a href="https://pixtuoid.dev/"><strong>🖥&#xFE0E; Live demo ↗</strong></a>
-  &nbsp;·&nbsp; <a href="https://pixtuoid.dev/architecture">Architecture</a>
-  &nbsp;·&nbsp; <a href="https://pixtuoid.dev/config">Configuration</a>
-  &nbsp;·&nbsp; <a href="https://pixtuoid.dev/contributing">Contributing</a>
+  <a href="https://github.com/IvanWng97/pixtuoid">Pixtuoid upstream</a>
+  &nbsp;·&nbsp; <a href="FORK_NOTICE.md">Attribution and asset boundary</a>
+  &nbsp;·&nbsp; <a href="docs/OPEN_SOURCE_RELEASE.md">Public-release checklist</a>
+  &nbsp;·&nbsp; <a href="LICENSE">MIT code license</a>
 </p>
 
 ---
 
-## Why?
+## Fork status and asset boundary
 
-Running several coding agents means alt-tabbing between terminals to find out who's stuck, who's waiting on a permission prompt, and who finished ten minutes ago. **pixtuoid** puts them all in one tiny pixel-art office you can watch from above — every session is a character at a desk: typing while it works, raising a `?` when it needs you, dozing off when it's done.
+Maple Agent Market is an unofficial, fan-made side project built from
+[Pixtuoid](https://github.com/IvanWng97/pixtuoid). Internal crate, configuration
+and wire identifiers intentionally retain `pixtuoid` names as a compatibility
+layer while the product-facing UI uses the new brand.
+
+The source repository contains no local Maple media pack. MapleStory screenshots,
+NEXON/Open API paperdolls, Free Market derivatives and commercial music are
+local test assets and must not be committed or distributed under this
+repository's MIT license.
+The app can loop a user-selected MP3, WAV, OGG or FLAC natively, but it does not
+download, extract or bundle YouTube audio. See [FORK_NOTICE.md](FORK_NOTICE.md).
+
+The public-safe profile remains runnable without that local pack: it uses the
+inherited MIT Pixtuoid sprites, a schematic training fallback, and original
+programmatic combat/task effects. It does not reproduce the local Maple scenes
+or paperdolls. `python scripts/stage-public-release.py --output <new-directory>` is
+the strict binary-bundle path. It refuses a dirty tree, unresolved fork URLs,
+an in-repository output directory, or an existing destination; the result
+includes a machine-readable manifest, notices and SHA-256 inventory.
+
+## Local character skin workshop (Windows prototype)
+
+The local Windows launcher can shuffle the eight complete paperdoll slots,
+lock or assign a slot, and import a user-owned nine-frame PNG skin containing
+three stand, four walk and two climb poses. Imports stay under the isolated
+install's `private-assets/skins` directory. The immutable base pack is copied to
+a generated active pack, all nine poses are remapped together, and the existing
+`validate-pack` command must pass before that pack becomes active.
+The local built-in roster additionally carries NEXON-rendered `stand2`, `sit`,
+and `alert` sets. A legacy nine-frame user skin reuses its own `stand1` pixels
+for those optional states; it never borrows another character's body or invents
+an unsupported pose.
+
+The market state mapping is reference-gated: entering/exiting uses `walk1` and
+`ladder`; the first active arrival plays one `alert` cycle, then the shop stays
+open through later tool calls while `stand1` breathes behind it. Idle agents
+close shop and retrace the authored platform/ladder tail before returning;
+waiting agents close shop and use `sit` with the existing monitoring-only `?`
+mark. A successful Codex `task_complete` / `turn_complete` event now gives only
+that task's paperdoll a single 2.2-second blue level-up pillar; a tool ending,
+waiting transition, or `turn_aborted` never triggers it. The pillar is
+programmatic pixel art rather than bundled Maple media, and its absolute-time
+animation expires instead of looping or stretching when the window is throttled.
+The existing command-success flash remains a separate `exec`-specific cue.
+
+In the Maple floating window, the shared footer data is rendered as a pink
+in-game-style chat strip. Raw monitor tokens such as `A`, `W`, `I`, `Exec` and
+`Bash` are translated to player-facing Traditional Chinese; the reducer and
+terminal UI contracts remain unchanged.
+
+The v21 floating view composes Free Market 1-1 and Henesys Hunting Ground I
+side by side while retaining one independent scene session per map. Each root
+task and its children remain on exactly one map. When the source supplies a
+real `parent_id`, shop and training cards show the root task's child count or a
+child's depth and root-task title; one family also shares a colored edge. An
+unlinked source stays ungrouped instead of inferring lineage from its name.
+`Tab` cycles through the views, while `1`/`2`/`3` select dual view, Free Market,
+or training directly. `Z` (or the compact on-screen size chip) cycles small,
+medium, and large window presets; manual drag and corner resize remain
+available, and every preset is capped to the current monitor. Undersized dual
+views automatically use the single-map fallback. Training-map entry and exit follow horizontal
+platforms and the authored rope anchors, switching to the paperdoll's ladder
+frames while climbing. Active combat keeps the selected paperdoll identity and
+composites a rotating arcane-claw, holy-light and dragon-pulse deck across work
+cycles as a separate environment layer, so a cast never replaces the paperdoll
+body. The public build draws all three itself; a separately licensed local pack
+may override a typed animation key. Living Slimes and Green Mushrooms use elapsed-time horizontal patrols,
+turn at their platform endpoints, and keep the source move-frame timing instead
+of shuffling in place.
+
+The reusable launcher module and focused tests live under
+`tools/windows/MapleSkinWorkshop.psm1` and
+`tools/windows/tests/MapleSkinWorkshop.Tests.ps1`. No paperdoll or user image is
+stored in this repository. This is a complete animated-skin importer, not a
+Maple-Atelier-style layered hair/face/equipment compositor.
+
+The upstream installation commands and reference documentation below remain for
+compatibility during the fork transition; they are not a release of Maple Agent
+Market.
+
+> **Development status:** public source prototype for collaboration. There is
+> no supported public binary, package-manager release or hosted fork demo yet.
+
+The intended public distribution is a source repository containing the MIT
+code, its inherited redistributable Pixtuoid defaults, and local import tools.
+The exact Maple presentation remains an external, user-local pack. Before every
+commit intended for the public repository or a release candidate, run
+`python3 scripts/public-release-audit.py`;
+the gate verifies Git candidates against the reviewed media hashes and rejects
+private assets, audio, archives, credentials and machine-local paths. See the
+[public-release checklist](docs/OPEN_SOURCE_RELEASE.md) for the remaining
+repository identity and packaging decisions. A distributable executable must
+be produced with `python3 scripts/build-public-release.py`, which remaps and
+then audits embedded build-machine paths.
+
+## Upstream overview (reference)
+
+Running several coding agents means alt-tabbing between terminals to find out who's stuck, who's waiting on a permission prompt, and who finished ten minutes ago. The **Pixtuoid** foundation puts them all in one tiny pixel-art office you can watch from above — every session is a character at a desk: typing while it works, raising a `?` when it needs you, dozing off when it's done. Maple Agent Market reinterprets that state model as merchants entering, opening a shop while active, idling or sitting when work pauses, and leaving through a 2D market.
 
 A little bit *Black Mirror*, a little bit *The Sims* — and the most glanceable multi-agent dashboard you'll ever use.
 
-## Quick Start
+## Build the fork from source
 
-Pick one:
+The inherited Homebrew, npm, crates.io and `pixtuoid.dev` channels install
+upstream Pixtuoid, not Maple Agent Market. Fork publication is intentionally
+disabled during the transition.
 
-<!-- install:start · generated from site/src/install.json by `just gen-readme` — edit the JSON, not this block -->
-**Homebrew** (Linux, macOS, or WSL2):
-
-```bash
-brew install pixtuoid
-```
-
-**npm** (any OS):
+With Git and Rust 1.89 or newer:
 
 ```bash
-npm install -g pixtuoid
+git clone https://github.com/SaM-runtime/maple-agent-market.git
+cd maple-agent-market
+cargo build --release -p pixtuoid
+cargo run -p pixtuoid -- --help
 ```
-<!-- install:end -->
 
-Then launch:
+To work on a change, create a branch and run the repository gate before opening
+a pull request:
 
 ```bash
-pixtuoid
+git switch -c feature/my-change
+just preflight
 ```
 
-Press `s` to open the **Sources** panel and connect your agent CLI (Claude Code, Codex, Antigravity, Reasonix, …) — pixtuoid wires up the integration for you, no separate install step. In another terminal, start that coding agent. A character walks in from the elevator within a second; disconnect in the same panel and it walks back out. The panel also flags a source whose hooks are connected but broken (run `pixtuoid doctor` for the full health report).
+If `just` is not installed yet, `cargo test --workspace` is the minimum Rust
+test pass; the complete gate and tool bootstrap are documented in
+[`CLAUDE.md`](CLAUDE.md).
+
+Internal crate, binary and config identifiers currently remain `pixtuoid` for
+compatibility. The binary runs with the redistributable upstream default pack
+when no `--pack-dir` is supplied. A user-local Maple pack can be selected with
+`--pack-dir <directory>`; that directory is deliberately not part of this
+repository or its release artifacts.
+
+Press `s` to open the **Sources** panel and connect an agent CLI. In another
+terminal, start that coding agent. A character appears when the session is
+detected; `pixtuoid doctor` reports source health while the internal command
+name remains in transition.
 
 **Keyboard shortcuts:** `q` quit · `p` pause · `s` sources (connect / health) · `t` themes · `m` sound (`+`/`-` volume) · `Tab` agent dashboard · `?` help · `↑↓/jk/PgUp/PgDn` floors · click an agent to bring its terminal to the front (`f` in the dashboard)
 
-**More ways to install** — Cargo, prebuilt binaries, and Debian `.deb`s — are on the **[install guide ↗](https://pixtuoid.dev/#install)**.
+The inherited Pixtuoid install guide describes upstream packages, not this
+fork. For now, collaborators should build this repository from source.
 
-## Features
+## Upstream capabilities retained
 
 <!-- features:start · generated from site/src/features.json by `just gen-readme` — edit the JSON, not this table -->
 | &nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp; | Feature | Description |
@@ -140,10 +232,11 @@ Agent CLIs emit events two ways — a hook shim (a 200ms fire-and-forget write t
 
 ## Privacy & Security
 
-pixtuoid is **local-only and telemetry-free** — it makes no network connections,
-ships no analytics or "phone home", and reads your agent transcripts read-only to
-animate the office. Your session data never leaves your machine. The dependency
-set is audited for advisories daily (`cargo-deny`). For the trust boundaries (the
+pixtuoid is **local-only and telemetry-free** — it makes no automatic network
+connections, ships no analytics or "phone home", and reads your agent transcripts
+read-only to animate the office. Your session data never leaves your machine.
+The repository includes a daily `cargo-deny` advisory workflow for use after CI
+is enabled. For the trust boundaries (the
 hook shim, the owner-only socket, and how hook installation edits another tool's
 config), see **[SECURITY.md](SECURITY.md)**.
 
@@ -157,20 +250,7 @@ Inspired by [`pixel-agents`](https://github.com/pablodelucca/pixel-agents) (VS C
 
 ## License
 
-[MIT](LICENSE)
-
-## Star History
-
-<p align="center">
-  <a href="https://www.star-history.com/?repos=IvanWng97%2Fpixtuoid&type=date&legend=top-left">
-    <picture>
-      <source media="(prefers-color-scheme: dark)" srcset="https://api.star-history.com/svg?repos=IvanWng97/pixtuoid&type=Date&theme=dark" />
-      <source media="(prefers-color-scheme: light)" srcset="https://api.star-history.com/svg?repos=IvanWng97/pixtuoid&type=Date" />
-      <img alt="star history chart for IvanWng97/pixtuoid" src="https://api.star-history.com/svg?repos=IvanWng97/pixtuoid&type=Date" width="640" />
-    </picture>
-  </a>
-</p>
-
-<p align="center">
-  <sub>Enjoying the little office? <a href="https://buymeacoffee.com/IvanWng97">☕ Buy me a coffee</a> · <a href="https://github.com/IvanWng97/pixtuoid">⭐ Star the repo</a></sub>
-</p>
+Code is [MIT licensed](LICENSE). Local Maple/NEXON-derived packs are not covered
+by that licence and are not distributed here. See
+[third-party notices](THIRD_PARTY_NOTICES.md) for the retained Pixtuoid and
+Monaspace attributions.

@@ -671,6 +671,15 @@ impl DaemonPresence {
 pub struct SceneState {
     /// Live agent slots, keyed by `AgentId`.
     pub agents: BTreeMap<AgentId, AgentSlot>,
+    /// Last normal model-turn completion per live agent.
+    ///
+    /// This short-lived presentation edge is intentionally kept beside the
+    /// roster instead of widening every [`AgentSlot`] fixture. It is not a
+    /// persisted/debug wire contract; renderers read it only for one-shot
+    /// feedback and discard it as soon as fresh work starts or the slot is
+    /// reclaimed.
+    #[serde(skip, default)]
+    pub(crate) last_turn_completed: BTreeMap<AgentId, SystemTime>,
     /// Desk capacity per floor, indexed by floor (`0..MAX_FLOORS`).
     pub floor_capacities: [usize; MAX_FLOORS],
     /// Daemon-style sources (the OpenClaw gateway is instance #1) rendered as
@@ -689,6 +698,23 @@ pub struct SceneState {
 }
 
 impl SceneState {
+    /// When this live agent most recently completed a model turn normally.
+    /// Tool completions and aborted turns never populate this edge.
+    pub fn last_turn_completed_at(&self, agent_id: AgentId) -> Option<SystemTime> {
+        self.last_turn_completed.get(&agent_id).copied()
+    }
+
+    /// Copy one agent's transient completion edge into a projected scene.
+    ///
+    /// `#[doc(hidden)]`: workspace render projections use this after cloning a
+    /// slot. Production completion mutation remains reducer-owned.
+    #[doc(hidden)]
+    pub fn clone_turn_completion_from(&mut self, other: &SceneState, agent_id: AgentId) {
+        if let Some(completed_at) = other.last_turn_completed_at(agent_id) {
+            self.last_turn_completed.insert(agent_id, completed_at);
+        }
+    }
+
     /// Every daemon mascot as `(source, instance, presence)` — the ONE read seam
     /// the renderers/rollups iterate. Deterministic order (source, then instance).
     pub fn daemons(&self) -> impl Iterator<Item = (&str, &DaemonInstanceId, &DaemonPresence)> + '_ {
@@ -821,6 +847,7 @@ impl SceneState {
     pub fn new(floor_capacities: [usize; MAX_FLOORS]) -> Self {
         Self {
             agents: BTreeMap::new(),
+            last_turn_completed: BTreeMap::new(),
             floor_capacities,
             daemons: DaemonRoster::default(),
         }

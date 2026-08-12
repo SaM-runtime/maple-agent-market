@@ -39,6 +39,27 @@ pub enum LabelTone {
     Exiting,
 }
 
+/// Parent/child semantics attached to an agent label when the live scene can
+/// resolve them.  The reducer's `AgentSlot.parent_id` remains the sole mutable
+/// authority; this is a presentation value rebuilt for the current frame.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum AgentRelation {
+    /// A top-level task that currently supervises one or more descendants.
+    Root {
+        root_id: AgentId,
+        descendant_count: usize,
+    },
+    /// A subagent and the root task of its lineage.
+    Child {
+        root_id: AgentId,
+        /// Task portion of the root label. `None` means the parent id is
+        /// dangling because the root has already left the live scene.
+        root_task: Option<String>,
+        /// One for a direct child, two for a grandchild, and so on.
+        depth: usize,
+    },
+}
+
 /// Resolve a `LabelTone` to its theme color role — the SINGLE authority every
 /// label painter shares, so the tui (`to_color`), floating (`pack_xrgb`), and
 /// wasm (`#hex`) surfaces can't disagree on which role a tone maps to; only the
@@ -76,6 +97,7 @@ pub struct LabelElement {
     pub text: String,
     pub tone: LabelTone,
     pub hovered: bool,
+    pub relation: Option<AgentRelation>,
 }
 
 /// Build one `LabelElement` per VISIBLE agent (those `character_anchor` places on this
@@ -123,6 +145,7 @@ pub fn build_overlay(
             text,
             tone,
             hovered: hovered == Some(agent.agent_id),
+            relation: crate::maple_world::agent_relation(scene, agent.agent_id),
         });
     }
     out

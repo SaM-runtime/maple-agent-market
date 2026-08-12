@@ -1,5 +1,5 @@
-//! Hit-test functions for mouse interaction: agent hover, coffee machine
-//! click-to-open, and furniture tooltip detection.
+//! Hit-test functions for mouse interaction: agent hover, the coffee-machine
+//! decorative target, and furniture tooltip detection.
 
 use std::time::SystemTime;
 
@@ -133,8 +133,8 @@ pub fn hit_test_coffee_machine(layout: &Layout, mx: u16, my: u16) -> bool {
 
 /// Hit-test all furniture items in the office. Returns a short label
 /// if `(mx, my)` (terminal cell coords) falls on any known item.
-/// The coffee machine is handled separately for its click-to-open
-/// behavior — this function covers the remaining decorations.
+/// The coffee machine is handled separately for its dedicated tooltip and
+/// decorative click target; this function covers the remaining decorations.
 pub fn hit_test_furniture(layout: &Layout, mx: u16, my: u16) -> Option<&'static str> {
     use pixtuoid_scene::layout::{
         furniture_def, Furniture, PlantItem, PlantKind, PodDecor, PodDecorItem, WallDecor,

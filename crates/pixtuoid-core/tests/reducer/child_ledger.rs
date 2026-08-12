@@ -256,7 +256,7 @@ fn apply_hook_payload(
 #[test]
 fn late_parented_restart_of_an_ended_child_is_gated_by_the_child_ledger() {
     // #244-w2: Start→Stop on a KNOWN slot mints NO #242 tombstone (the Stop
-    // had a slot to mark exiting), so after the 4.5s GC a late transcript
+    // had a slot to mark exiting), so after the 9.5s GC a late transcript
     // first-sight (notify outage → the 60s poll backstop) used to re-register
     // the dead child as a phantom — no future SessionEnd would ever remove
     // it. The ledger's `ended_at` (stamped by the as_child Stop) must gate it

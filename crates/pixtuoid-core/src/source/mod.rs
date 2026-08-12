@@ -136,6 +136,16 @@ pub enum AgentEvent {
         /// The completing tool call's id (pairs with its `ActivityStart`).
         tool_use_id: Option<String>,
     },
+    /// A model turn completed normally.
+    ///
+    /// This is deliberately distinct from [`AgentEvent::ActivityEnd`]: Codex
+    /// serializes successful `task_complete` / `turn_complete` records, while
+    /// `turn_aborted` is only an activity end. Renderers may use this edge for
+    /// one-shot completion feedback without celebrating a tool end or abort.
+    TurnComplete {
+        /// The agent whose turn completed.
+        agent_id: AgentId,
+    },
     /// The agent is blocked on a permission/input prompt — the slot goes Waiting.
     Waiting {
         /// The waiting agent.
@@ -322,6 +332,7 @@ impl AgentEvent {
             AgentEvent::SessionStart { agent_id, .. } => *agent_id,
             AgentEvent::ActivityStart { agent_id, .. } => *agent_id,
             AgentEvent::ActivityEnd { agent_id, .. } => *agent_id,
+            AgentEvent::TurnComplete { agent_id, .. } => *agent_id,
             AgentEvent::Waiting { agent_id, .. } => *agent_id,
             AgentEvent::Rename { agent_id, .. } => *agent_id,
             AgentEvent::SessionEnd { agent_id, .. } => *agent_id,

@@ -596,7 +596,7 @@ fn late_jsonl_dispatch_copy_inside_grace_cancels_premature_cascade() {
     // copy. If the FIRST Task's END drains the set while that copy is still
     // in watcher latency, an immediate b1 cascade evicts the second Task's
     // LIVE subtree — unrecoverable: exiting_at has no clearer, and after the
-    // 4.5s GC the child's JSONL events no-op forever. The b1 cascade must
+    // 9.5s GC the child's JSONL events no-op forever. The b1 cascade must
     // therefore be grace-deferred, and a Task insert inside the grace must
     // cancel it.
     let mut scene = SceneState::uniform(8);

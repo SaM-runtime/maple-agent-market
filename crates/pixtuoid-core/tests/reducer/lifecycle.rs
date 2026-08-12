@@ -154,7 +154,7 @@ fn session_start_dropped_when_all_desks_occupied() {
 // Reasonix `/new` fires SessionEnd + SessionStart back-to-back on the SAME
 // cwd-keyed AgentId. The SessionStart must resurrect the exiting slot in place
 // — otherwise it is swallowed by the exists-branch, the corpse is GC'd at
-// 4.5s, and the new session's entire first turn renders nothing.
+// 9.5s, and the new session's entire first turn renders nothing.
 #[test]
 fn session_start_on_exiting_slot_resurrects_in_place() {
     use pixtuoid_core::state::reducer::EXIT_GRACE_WINDOW;

@@ -35,5 +35,11 @@
     "name": "Gruvbox",
     "accent": "#fabd2f",
     "accent2": "#fe8019"
+  },
+  {
+    "id": "maple",
+    "name": "Maple Adventure",
+    "accent": "#6be486",
+    "accent2": "#ffbe48"
   }
 ]

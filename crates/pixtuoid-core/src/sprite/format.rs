@@ -397,12 +397,33 @@ pub const REQUIRED_CHARACTER_ANIMATIONS: &[&str] = &[
 // `seated` pose when a pack lacks it (seat_sprite_in_pack), never invisible.
 /// Character animation names a pack MAY omit; the renderer degrades gracefully
 /// when absent (e.g. `side_seated` falls back to the front `seated` pose).
-pub const OPTIONAL_CHARACTER_ANIMATIONS: &[&str] = &["walking_coffee", "side_seated"];
+pub const OPTIONAL_CHARACTER_ANIMATIONS: &[&str] = &[
+    "walking_coffee",
+    "side_seated",
+    "market_avatar",
+    "market_avatar_hires",
+    "market_avatar_stand_hires",
+    "market_avatar_walk_hires",
+    "market_avatar_climb_hires",
+    "market_avatar_stand2_hires",
+    "market_avatar_sit_hires",
+    "market_avatar_alert_hires",
+    "training_avatar_attack_hires",
+];
 
 /// Environment/furniture animation names a pack MAY provide; `Pack::merge_from`
 /// inherits any of these that are missing from the base pack (character
 /// animations are never inherited).
 pub const OPTIONAL_FURNITURE_ANIMATIONS: &[&str] = &[
+    "scene_background",
+    "training_background",
+    "training_skill_magic_claw",
+    "training_monster_slime",
+    "training_monster_slime_die",
+    "training_monster_green_mushroom",
+    "training_monster_green_mushroom_die",
+    "training_portal",
+    "market_stall",
     "desk",
     "filing_cabinet",
     "plant",
@@ -438,6 +459,21 @@ const MULTI_FRAME_REQUIREMENTS: &[(&str, usize)] = &[
     ("typing", 2),
     ("walking", 2),
     ("walking_back", 2),
+    ("market_avatar", 8),
+    ("market_avatar_hires", 8),
+    ("market_avatar_stand_hires", 24),
+    ("market_avatar_walk_hires", 32),
+    ("market_avatar_climb_hires", 16),
+    ("market_avatar_stand2_hires", 24),
+    ("market_avatar_sit_hires", 8),
+    ("market_avatar_alert_hires", 24),
+    ("training_avatar_attack_hires", 24),
+    ("training_skill_magic_claw", 4),
+    ("training_monster_slime", 7),
+    ("training_monster_slime_die", 4),
+    ("training_monster_green_mushroom", 4),
+    ("training_monster_green_mushroom_die", 4),
+    ("training_portal", 8),
     ("door", 3),
     ("cat_walk", 2),
     ("dog_walk", 2),
@@ -596,6 +632,148 @@ mod validation_floor_tests {
             "a 1-frame seated must not be flagged; got {:?}",
             report.insufficient_frames
         );
+    }
+
+    #[test]
+    fn market_avatar_sets_are_known_and_require_one_frame_per_market_slot() {
+        for name in ["market_avatar", "market_avatar_hires"] {
+            let pack = pack_with_animation(
+                name,
+                "[\"f.sprite\",\"f.sprite\",\"f.sprite\",\"f.sprite\",\"f.sprite\",\"f.sprite\",\"f.sprite\"]",
+            );
+            let report = validate_pack_animations(&pack);
+            assert!(
+                !report.unknown.contains(&name.to_string()),
+                "the {name} paperdoll set is a supported optional character animation"
+            );
+            assert!(
+                report
+                    .insufficient_frames
+                    .contains(&(name.to_string(), 8, 7)),
+                "a present {name} set must cover all eight Free Market slots; got {:?}",
+                report.insufficient_frames
+            );
+        }
+    }
+
+    #[test]
+    fn market_walk_cycle_is_known_and_requires_four_frames_per_market_slot() {
+        let name = "market_avatar_walk_hires";
+        let frames = std::iter::repeat_n("\"f.sprite\"", 31)
+            .collect::<Vec<_>>()
+            .join(",");
+        let pack = pack_with_animation(name, &format!("[{frames}]"));
+        let report = validate_pack_animations(&pack);
+        assert!(
+            !report.unknown.contains(&name.to_string()),
+            "the high-resolution market walk cycle is a supported optional character animation"
+        );
+        assert!(
+            report
+                .insufficient_frames
+                .contains(&(name.to_string(), 32, 31)),
+            "eight merchants need four walk1 frames each; got {:?}",
+            report.insufficient_frames
+        );
+    }
+
+    #[test]
+    fn market_stand_and_ladder_cycles_cover_every_paperdoll() {
+        for (name, need, have) in [
+            ("market_avatar_stand_hires", 24, 23),
+            ("market_avatar_climb_hires", 16, 15),
+        ] {
+            let frames = std::iter::repeat_n("\"f.sprite\"", have)
+                .collect::<Vec<_>>()
+                .join(",");
+            let pack = pack_with_animation(name, &format!("[{frames}]"));
+            let report = validate_pack_animations(&pack);
+            assert!(
+                !report.unknown.contains(&name.to_string()),
+                "{name} must be a supported optional market animation"
+            );
+            assert!(
+                report
+                    .insufficient_frames
+                    .contains(&(name.to_string(), need, have)),
+                "{name} must contain one complete cycle per merchant; got {:?}",
+                report.insufficient_frames
+            );
+        }
+    }
+
+    #[test]
+    fn market_status_cycles_are_known_and_cover_every_paperdoll() {
+        for (name, need, have) in [
+            ("market_avatar_stand2_hires", 24, 23),
+            ("market_avatar_sit_hires", 8, 7),
+            ("market_avatar_alert_hires", 24, 23),
+        ] {
+            let frames = std::iter::repeat_n("\"f.sprite\"", have)
+                .collect::<Vec<_>>()
+                .join(",");
+            let pack = pack_with_animation(name, &format!("[{frames}]"));
+            let report = validate_pack_animations(&pack);
+            assert!(
+                !report.unknown.contains(&name.to_string()),
+                "{name} must be a supported optional NEXON status action"
+            );
+            assert!(
+                report
+                    .insufficient_frames
+                    .contains(&(name.to_string(), need, have)),
+                "{name} must contain one complete action per merchant; got {:?}",
+                report.insufficient_frames
+            );
+        }
+    }
+
+    #[test]
+    fn training_attack_cycle_is_optional_but_requires_three_frames_per_paperdoll() {
+        let name = "training_avatar_attack_hires";
+        let frames = std::iter::repeat_n("\"f.sprite\"", 23)
+            .collect::<Vec<_>>()
+            .join(",");
+        let pack = pack_with_animation(name, &format!("[{frames}]"));
+        let report = validate_pack_animations(&pack);
+
+        assert!(
+            !report.unknown.contains(&name.to_string()),
+            "the local training attack cycle must be a known optional animation"
+        );
+        assert!(
+            report
+                .insufficient_frames
+                .contains(&(name.to_string(), 24, 23)),
+            "eight paperdolls need three attack frames each; got {:?}",
+            report.insufficient_frames
+        );
+    }
+
+    #[test]
+    fn training_map_assets_are_known_and_require_complete_classic_cycles() {
+        for (name, need) in [
+            ("training_skill_magic_claw", 4),
+            ("training_monster_slime", 7),
+            ("training_monster_slime_die", 4),
+            ("training_monster_green_mushroom", 4),
+            ("training_monster_green_mushroom_die", 4),
+            ("training_portal", 8),
+        ] {
+            let frames = std::iter::repeat_n("\"f.sprite\"", need - 1)
+                .collect::<Vec<_>>()
+                .join(",");
+            let pack = pack_with_animation(name, &format!("[{frames}]"));
+            let report = validate_pack_animations(&pack);
+            assert!(!report.unknown.contains(&name.to_string()));
+            assert!(report
+                .insufficient_frames
+                .contains(&(name.to_string(), need, need - 1)));
+        }
+        let background = pack_with_animation("training_background", "[\"f.sprite\"]");
+        assert!(!validate_pack_animations(&background)
+            .unknown
+            .contains(&"training_background".to_string()));
     }
 
     #[test]

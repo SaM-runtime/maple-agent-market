@@ -1,6 +1,7 @@
 [package]
 name                   = "pixtuoid-hook"
 description            = "Lightweight hook shim for pixtuoid"
+publish                = false
 version.workspace      = true
 edition.workspace      = true
 rust-version.workspace = true

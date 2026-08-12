@@ -19,6 +19,11 @@ pub mod tui;
 pub mod validate;
 pub(crate) mod version;
 
+/// Public side-project brand. Internal crate, config and wire identifiers keep
+/// their Pixtuoid names as an explicit upstream-compatibility layer.
+pub const PRODUCT_NAME: &str = "Maple Agent Market";
+pub const PRODUCT_SLUG: &str = "maple-agent-market";
+
 /// Strip ASCII/Unicode control characters from an untrusted string before it
 /// reaches a terminal sink (the headless `println!` summary, the `doctor`
 /// stdout report, the Sources-panel path, the `connect`/`disconnect` outcome

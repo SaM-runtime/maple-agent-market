@@ -2051,7 +2051,6 @@ test('plate and chip text clears WCAG AA in every theme (day + night + dracula)'
       '.osd__chip',
       '.stage__caption',
       '.vibing__ticks span',
-      '.footer__line a.footer__coffee',
       '.footer__sep',
       '.nav__version',
     ],

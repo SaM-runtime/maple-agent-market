@@ -371,6 +371,7 @@ async fn walk_once_with(
         id_derive: default_id_from_path,
         path_filter: accept_all_paths,
         cwd_derive: no_cwd_from_path,
+        session_reentry: None,
     };
     let live = Arc::new(Mutex::new(HashSet::new()));
     let ctx = WatchCtx {
@@ -412,6 +413,7 @@ async fn first_sight_cwd_falls_back_to_the_path_deriver_when_content_has_none() 
             id_derive: default_id_from_path,
             path_filter: accept_all_paths,
             cwd_derive: derived_cwd,
+            session_reentry: None,
         };
         let cursors = Arc::new(Mutex::new(HashMap::new()));
         let seen = Arc::new(Mutex::new(HashMap::new()));
@@ -468,6 +470,7 @@ async fn walk_once_live(
         id_derive: crate::source::claude_code::cc_id_from_path,
         path_filter: accept_all_paths,
         cwd_derive: no_cwd_from_path,
+        session_reentry: None,
     };
     let ctx = WatchCtx {
         source: &source,
@@ -580,6 +583,7 @@ async fn walk_jsonl_honors_the_path_filter() {
         id_derive: default_id_from_path,
         path_filter: skip_full,
         cwd_derive: no_cwd_from_path,
+        session_reentry: None,
     };
     let ctx = WatchCtx {
         source: &source,
@@ -635,6 +639,117 @@ async fn gated_file_registers_on_oversized_first_append() {
         cursors.lock().await.get(&path).copied(),
         Some(full.len() as u64),
         "cursor must advance to EOF"
+    );
+}
+
+#[tokio::test]
+async fn known_oversized_reentry_re_registers_and_replays_activity_start() {
+    // A long-lived Codex rollout can outlive the reducer's stale slot while
+    // the watcher's first-sight claim remains held. If the next prompt writes
+    // > MAX_PENDING_BYTES before the watcher catches up, the oversized skip
+    // must still observe the structural new-turn marker: release the stale
+    // claim, re-register the slot, and replay that marker's ActivityStart.
+    fn detects_turn_start(line: &[u8]) -> bool {
+        serde_json::from_slice::<serde_json::Value>(line).is_ok_and(|v| {
+            v.get("type").and_then(|x| x.as_str()) == Some("event_msg")
+                && v.get("payload")
+                    .and_then(|p| p.get("type"))
+                    .and_then(|x| x.as_str())
+                    == Some("task_started")
+        })
+    }
+
+    fn decode_turn_start(
+        transcript_path: &str,
+        source: &str,
+        v: serde_json::Value,
+    ) -> Result<Vec<AgentEvent>> {
+        if v.get("type").and_then(|x| x.as_str()) == Some("event_msg")
+            && v.get("payload")
+                .and_then(|p| p.get("type"))
+                .and_then(|x| x.as_str())
+                == Some("task_started")
+        {
+            return Ok(vec![AgentEvent::ActivityStart {
+                agent_id: AgentId::from_parts(source, transcript_path),
+                tool_use_id: None,
+                detail: None,
+            }]);
+        }
+        Ok(vec![])
+    }
+
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("resumed-large-turn.jsonl");
+    let initial = "{\"type\":\"session_meta\",\"cwd\":\"/repo\"}\n";
+    tokio::fs::write(&path, initial).await.unwrap();
+
+    let cursors = Arc::new(Mutex::new(HashMap::from([(
+        path.clone(),
+        initial.len() as u64,
+    )])));
+    let seen = Arc::new(Mutex::new(HashMap::from([(path.clone(), true)])));
+
+    let turn_start = "{\"type\":\"event_msg\",\"payload\":{\"type\":\"task_started\"}}\n";
+    let mut full = String::from(initial);
+    // Mirror a real resumed rollout: a few KiB of user/context envelopes can
+    // precede task_started, so the recovery must scan the bounded prefix rather
+    // than inspect only its first line.
+    full.push_str(&"{\"type\":\"user_message\"}\n".repeat(256));
+    full.push_str(turn_start);
+    full.push_str(&"{\"type\":\"ignored\"}\n".repeat(60_000));
+    tokio::fs::write(&path, &full).await.unwrap();
+    assert!(
+        (full.len() - initial.len()) as u64 > super::walk::MAX_PENDING_BYTES,
+        "the resumed turn must take the oversized-skip path"
+    );
+
+    let (tx, mut rx) = tokio::sync::mpsc::channel::<(Transport, AgentEvent)>(32);
+    let source: Arc<str> = Arc::from("test");
+    let live = Arc::new(Mutex::new(HashSet::new()));
+    let decoders = SourceDecoders {
+        decode_line: decode_turn_start,
+        derive_label: t_label,
+        check_ended: t_ended,
+        id_derive: default_id_from_path,
+        path_filter: accept_all_paths,
+        cwd_derive: no_cwd_from_path,
+        session_reentry: Some(detects_turn_start),
+    };
+    let ctx = WatchCtx {
+        source: &source,
+        cursors: &cursors,
+        seen: &seen,
+        tx: &tx,
+        window: Duration::from_secs(3600),
+        live: &live,
+    };
+    walk_jsonl(&path, decoders, &ctx).await;
+    drop(tx);
+    let mut events = Vec::new();
+    while let Ok(event) = rx.try_recv() {
+        events.push(event);
+    }
+
+    let expected = AgentId::from_parts("test", &default_id_from_path(&path));
+    assert!(
+        events.iter().any(|(_, event)| matches!(
+            event,
+            AgentEvent::SessionStart { agent_id, .. } if *agent_id == expected
+        )),
+        "an oversized new turn must re-register the stale slot, got {events:?}"
+    );
+    assert!(
+        events.iter().any(|(_, event)| matches!(
+            event,
+            AgentEvent::ActivityStart { agent_id, .. } if *agent_id == expected
+        )),
+        "the recovered task_started must make the task active, got {events:?}"
+    );
+    assert_eq!(
+        cursors.lock().await.get(&path).copied(),
+        Some(full.len() as u64),
+        "the oversized span still parks at EOF after recovery"
     );
 }
 
@@ -786,6 +901,7 @@ async fn session_exit_drains_pending_bytes_so_a_straggler_walk_cannot_resurrect(
         id_derive: default_id_from_path,
         path_filter: accept_all_paths,
         cwd_derive: no_cwd_from_path,
+        session_reentry: None,
     };
     let live = Arc::new(Mutex::new(HashSet::new()));
     let ctx = WatchCtx {
@@ -872,6 +988,7 @@ async fn session_exit_purges_live_so_a_probe_failure_pass_cannot_revouch() {
         id_derive: default_id_from_path,
         path_filter: accept_all_paths,
         cwd_derive: no_cwd_from_path,
+        session_reentry: None,
     };
     let ctx = WatchCtx {
         source: &source,
@@ -933,6 +1050,7 @@ fn t_decoders() -> SourceDecoders {
         id_derive: default_id_from_path,
         path_filter: accept_all_paths,
         cwd_derive: no_cwd_from_path,
+        session_reentry: None,
     }
 }
 
@@ -1161,6 +1279,7 @@ async fn decoded_terminator_release_is_not_revouched_into_a_full_replay() {
         id_derive: default_id_from_path,
         path_filter: accept_all_paths,
         cwd_derive: no_cwd_from_path,
+        session_reentry: None,
     };
     let ctx = WatchCtx {
         source: &source,
@@ -1438,6 +1557,7 @@ async fn known_oversized_tail_emits_session_end_if_the_skipped_span_ended() {
         id_derive: default_id_from_path,
         path_filter: accept_all_paths,
         cwd_derive: no_cwd_from_path,
+        session_reentry: None,
     };
     let live = Arc::new(Mutex::new(HashSet::new()));
     let ctx = WatchCtx {
@@ -1736,6 +1856,7 @@ async fn scan_pass_re_vouches_a_transiently_gated_live_file() {
         id_derive: crate::source::claude_code::cc_id_from_path,
         path_filter: accept_all_paths,
         cwd_derive: no_cwd_from_path,
+        session_reentry: None,
     };
     let ctx = WatchCtx {
         source: &source,
@@ -1859,6 +1980,7 @@ async fn revouch_does_not_replay_a_probe_vouched_ended_transcript() {
         id_derive: crate::source::claude_code::cc_id_from_path,
         path_filter: accept_all_paths,
         cwd_derive: no_cwd_from_path,
+        session_reentry: None,
     };
     let ctx = WatchCtx {
         source: &source,
@@ -3064,6 +3186,7 @@ async fn revouch_pass_prunes_deleted_files_from_cursors() {
         id_derive: default_id_from_path,
         path_filter: accept_all_paths,
         cwd_derive: no_cwd_from_path,
+        session_reentry: None,
     };
     let ctx = WatchCtx {
         source: &source,

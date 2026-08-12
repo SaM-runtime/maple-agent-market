@@ -13,9 +13,8 @@ expression: events
     agent_id: 6841382808792371786
     tool_use_id: ~
     detail: ~
-- ActivityEnd:
+- TurnComplete:
     agent_id: 6841382808792371786
-    tool_use_id: ~
 - SessionStart:
     agent_id: 6841382808792371786
     source: codex

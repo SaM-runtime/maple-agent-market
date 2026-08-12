@@ -26,7 +26,6 @@
 use std::collections::HashMap;
 use std::time::SystemTime;
 
-use pixtuoid_core::sprite::blit::blit_frame;
 use pixtuoid_core::sprite::format::Pack;
 use pixtuoid_core::sprite::{Frame, Rgb, RgbBuffer, Sprite};
 use pixtuoid_core::state::{ActivityState, FloorLocalDeskIndex};
@@ -36,8 +35,8 @@ use crate::chitchat::{ActiveChitchat, ChitchatBubble};
 use crate::floor::LightingState;
 use crate::frame_cache::FrameCache;
 use crate::layout::{
-    z_sort_row, Anchor, Layout, PlantItem, PodDecorItem, Point, Size, WallDecorItem, DESK_W,
-    ELEVATOR_H, ELEVATOR_W,
+    z_sort_row, Anchor, Bounds, Layout, PlantItem, PodDecorItem, Point, Size, WallDecorItem,
+    DESK_W, ELEVATOR_H, ELEVATOR_W,
 };
 use crate::motion::MotionState;
 use crate::pet::PetFrame;
@@ -192,7 +191,7 @@ use background::{
 };
 use drawable::{paint_drawable, Drawable, DrawableKind};
 use palette::{agent_palette, outfit_seed_for, recolor_frame};
-use seat::paint_character_at;
+use seat::{paint_character_at, paint_character_at_scaled};
 use wall::{
     enqueue_room_walls_h, enqueue_room_walls_v, paint_door_jamb_h, paint_door_jamb_v,
     paint_glass_wall_h, paint_glass_wall_v, DOOR_JAMB_PX,
@@ -357,6 +356,24 @@ struct PaintCtx<'a> {
 /// pass consumes it, mutating only the buffer + recolor cache. Returns the frame's
 /// [`PixelPassResult`] (pet/mascot frames, chitchat bubbles, coffee carriers, occupancy).
 pub fn render_to_rgb_buffer(ctx: &mut PixelCtx<'_>) -> PixelPassResult {
+    render_to_rgb_buffer_for_map(ctx, None)
+}
+
+/// Render one explicitly selected Maple-world map through the same sim/paint
+/// seam as the normal office.  Kept doc-hidden because map routing is an
+/// in-workspace floating-painter feature, not part of the published engine API.
+#[doc(hidden)]
+pub fn render_maple_to_rgb_buffer(
+    ctx: &mut PixelCtx<'_>,
+    map: crate::maple_world::MapleMapId,
+) -> PixelPassResult {
+    render_to_rgb_buffer_for_map(ctx, Some(map))
+}
+
+fn render_to_rgb_buffer_for_map(
+    ctx: &mut PixelCtx<'_>,
+    maple_map: Option<crate::maple_world::MapleMapId>,
+) -> PixelPassResult {
     // Phase 1 — SIM: advance the world (motion/poses/lighting/chitchat),
     // producing no pixels. See `sim::sim_step`.
     let frame = sim_step(
@@ -378,7 +395,7 @@ pub fn render_to_rgb_buffer(ctx: &mut PixelCtx<'_>) -> PixelPassResult {
     // Phase 2 — PAINT: an immutable read of the SimFrame that mutates only
     // the buffer + the recolor cache. Painting the same frame twice is
     // byte-identical (pinned by `paint_frame_is_pure_and_byte_identical`).
-    let (pet_pos, mascots) = paint_frame(
+    let (pet_pos, mascots) = paint_frame_for_map(
         &mut PaintCtx {
             scene: ctx.scene,
             layout: ctx.layout,
@@ -396,6 +413,7 @@ pub fn render_to_rgb_buffer(ctx: &mut PixelCtx<'_>) -> PixelPassResult {
             debug_walkable: ctx.debug_walkable,
         },
         &frame,
+        maple_map,
     );
     PixelPassResult {
         pet_pos,
@@ -558,12 +576,904 @@ fn floor_shadow_ellipses(layout: &Layout) -> impl Iterator<Item = Ellipse> + '_ 
         .chain(lamp)
 }
 
+/// Scale a local scene plate over the entire render target with integer
+/// nearest-neighbour sampling. Background frames are expected to be opaque,
+/// but a transparent custom-pack pixel resolves to `fallback` instead of
+/// leaking the office frame that used to live beneath it.
+fn paint_market_backdrop(buf: &mut RgbBuffer, backdrop: &Frame, fallback: Rgb) {
+    let (src_w, src_h) = (backdrop.width(), backdrop.height());
+    let (dst_w, dst_h) = (buf.width(), buf.height());
+    if src_w == 0 || src_h == 0 || dst_w == 0 || dst_h == 0 {
+        return;
+    }
+    for y in 0..dst_h {
+        let src_y = ((y as u32 * src_h as u32) / dst_h as u32) as u16;
+        for x in 0..dst_w {
+            let src_x = ((x as u32 * src_w as u32) / dst_w as u32) as u16;
+            let rgb = backdrop
+                .get(src_x, src_y)
+                .copied()
+                .flatten()
+                .unwrap_or(fallback);
+            buf.put(x, y, rgb);
+        }
+    }
+}
+
+const MARKET_PORTAL_LOOP_MS: u64 = 1_280;
+
+fn market_portal_bounds(width: u16, height: u16) -> Bounds {
+    Bounds {
+        x: (u32::from(width) * 892 / 1_000) as u16,
+        y: (u32::from(height) * 735 / 1_000) as u16,
+        width: ((u32::from(width) * 56 / 1_000) as u16).max(1),
+        height: ((u32::from(height) * 150 / 1_000) as u16).max(1),
+    }
+}
+
+fn training_portal_bounds(width: u16, height: u16) -> Bounds {
+    Bounds {
+        x: (u32::from(width) * 909 / 1_000) as u16,
+        y: (u32::from(height) * 617 / 1_000) as u16,
+        width: ((u32::from(width) * 62 / 1_000) as u16).max(1),
+        height: ((u32::from(height) * 250 / 1_000) as u16).max(1),
+    }
+}
+
+/// Add a procedural blue-white shimmer inside the authored right-hand portal.
+/// The epoch is reduced before conversion to float so animation remains live
+/// after long uptimes, while every pixel outside the doorway stays untouched.
+fn paint_market_portal(buf: &mut RgbBuffer, now: SystemTime) {
+    let bounds = market_portal_bounds(buf.width(), buf.height());
+    paint_portal_shimmer(buf, now, bounds);
+}
+
+fn paint_training_portal(buf: &mut RgbBuffer, pack: &Pack, now: SystemTime) {
+    let bounds = training_portal_bounds(buf.width(), buf.height());
+    let Some(animation) = pack
+        .animation("training_portal")
+        .filter(|animation| !animation.frames.is_empty())
+    else {
+        return;
+    };
+    let frame_ms = u64::from(animation.frame_ms.max(1));
+    let frame = &animation.frames[(epoch_ms(now) / frame_ms) as usize % animation.frames.len()];
+    blit_frame_nearest_to_size(
+        frame,
+        Point {
+            x: bounds.x,
+            y: bounds.y,
+        },
+        Size {
+            w: bounds.width,
+            h: bounds.height,
+        },
+        buf,
+    );
+}
+
+fn paint_portal_shimmer(buf: &mut RgbBuffer, now: SystemTime, bounds: Bounds) {
+    let phase = (epoch_ms(now) % MARKET_PORTAL_LOOP_MS) as f32 / MARKET_PORTAL_LOOP_MS as f32;
+    let tau = std::f32::consts::TAU;
+    for local_y in 0..bounds.height {
+        let y = bounds.y.saturating_add(local_y);
+        if y >= buf.height() {
+            continue;
+        }
+        let ny = local_y as f32 / bounds.height.max(1) as f32;
+        for local_x in 0..bounds.width {
+            let x = bounds.x.saturating_add(local_x);
+            if x >= buf.width() {
+                continue;
+            }
+            let nx = local_x as f32 / bounds.width.max(1) as f32;
+            let oval = (1.0 - ((nx - 0.5) / 0.52).powi(2)).max(0.0);
+            let vertical_fade = (ny / 0.12).clamp(0.0, 1.0) * ((1.0 - ny) / 0.10).clamp(0.0, 1.0);
+            let ribbon_a = 0.50 + 0.17 * (ny * 10.0 + phase * tau).sin();
+            let ribbon_b = 0.50 + 0.23 * (ny * 7.0 - phase * tau * 1.35).sin();
+            let beam = (1.0 - (nx - ribbon_a).abs() / 0.16).clamp(0.0, 1.0);
+            let beam2 = (1.0 - (nx - ribbon_b).abs() / 0.10).clamp(0.0, 1.0);
+            let pulse = 0.72 + 0.28 * (phase * tau + ny * tau * 2.0).sin().abs();
+            let strength = (0.14 + beam * 0.46 + beam2 * 0.28) * oval * vertical_fade * pulse;
+            if strength <= 0.01 {
+                continue;
+            }
+            let current = buf.get(x, y);
+            let glow = Rgb {
+                r: (118.0 + 125.0 * beam2) as u8,
+                g: (194.0 + 61.0 * beam2) as u8,
+                b: 255,
+            };
+            let mix = |from: u8, to: u8| {
+                (from as f32 + (to as f32 - from as f32) * strength.clamp(0.0, 0.82))
+                    .round()
+                    .clamp(0.0, 255.0) as u8
+            };
+            buf.put(
+                x,
+                y,
+                Rgb {
+                    r: mix(current.r, glow.r),
+                    g: mix(current.g, glow.g),
+                    b: mix(current.b, glow.b),
+                },
+            );
+        }
+    }
+}
+
+fn blit_frame_scaled(frame: &Frame, x: u16, y: u16, scale: u16, buf: &mut RgbBuffer) {
+    let scale = scale.max(1);
+    for src_y in 0..frame.height() {
+        for src_x in 0..frame.width() {
+            let Some(rgb) = frame.get(src_x, src_y).copied().flatten() else {
+                continue;
+            };
+            let dst_x = x.saturating_add(src_x.saturating_mul(scale));
+            let dst_y = y.saturating_add(src_y.saturating_mul(scale));
+            for offset_y in 0..scale {
+                for offset_x in 0..scale {
+                    let out_x = dst_x.saturating_add(offset_x);
+                    let out_y = dst_y.saturating_add(offset_y);
+                    if out_x < buf.width() && out_y < buf.height() {
+                        buf.put(out_x, out_y, rgb);
+                    }
+                }
+            }
+        }
+    }
+}
+
+/// Sample an authored frame directly into a requested display rectangle using
+/// nearest-neighbour coordinates. A 96x72 paperdoll therefore maps one-to-one
+/// into the default 720x480 market instead of first collapsing through 32x24.
+fn blit_frame_nearest_to_size(frame: &Frame, origin: Point, target: Size, buf: &mut RgbBuffer) {
+    blit_frame_nearest_to_size_clipped(
+        frame,
+        i32::from(origin.x),
+        i32::from(origin.y),
+        target,
+        buf,
+    );
+}
+
+/// Nearest-neighbour blit with a signed origin. Large effect canvases may begin
+/// above the top platform; clipping their off-screen rows must not move the
+/// paperdoll's fixed foot baseline down into the map.
+fn blit_frame_nearest_to_size_clipped(
+    frame: &Frame,
+    origin_x: i32,
+    origin_y: i32,
+    target: Size,
+    buf: &mut RgbBuffer,
+) {
+    let (src_w, src_h) = (frame.width(), frame.height());
+    if src_w == 0 || src_h == 0 || target.w == 0 || target.h == 0 {
+        return;
+    }
+    for dst_y in 0..target.h {
+        let src_y = ((u32::from(dst_y) * u32::from(src_h)) / u32::from(target.h)) as u16;
+        for dst_x in 0..target.w {
+            let src_x = ((u32::from(dst_x) * u32::from(src_w)) / u32::from(target.w)) as u16;
+            let Some(rgb) = frame.get(src_x, src_y).copied().flatten() else {
+                continue;
+            };
+            let out_x = origin_x + i32::from(dst_x);
+            let out_y = origin_y + i32::from(dst_y);
+            if out_x >= 0
+                && out_y >= 0
+                && out_x < i32::from(buf.width())
+                && out_y < i32::from(buf.height())
+            {
+                buf.put(out_x as u16, out_y as u16, rgb);
+            }
+        }
+    }
+}
+
+const TRAINING_SKILL_LOGICAL_SIZE: u16 = 32;
+const TRAINING_SKILL_LOGICAL_ORIGIN_X: u16 = 16;
+const TRAINING_SKILL_LOGICAL_ORIGIN_Y: u16 = 27;
+
+fn paint_training_skill_effect(
+    buf: &mut RgbBuffer,
+    pack: &Pack,
+    actor: crate::training::TrainingActorFrame,
+    scale: u16,
+) {
+    let Some(effect) = actor.skill_effect else {
+        return;
+    };
+    let animation_key = match effect.kind {
+        crate::training::TrainingSkillKind::MagicClaw => "training_skill_magic_claw",
+        crate::training::TrainingSkillKind::HolyLight => "training_skill_holy_light",
+        crate::training::TrainingSkillKind::DragonPulse => "training_skill_dragon_pulse",
+    };
+    // Always keep the original zero-asset silhouette as a readability halo.
+    // The installed local pack may add a licensed/custom frame on top, but a
+    // sparse first frame must not make the whole 960 ms cast disappear.
+    effects::paint_public_training_skill(
+        buf,
+        actor.foot_px,
+        effect.kind,
+        effect.frame_index,
+        scale,
+    );
+
+    if let Some(frame) = pack
+        .animation(animation_key)
+        .and_then(|animation| animation.frames.get(effect.frame_index))
+    {
+        let size = TRAINING_SKILL_LOGICAL_SIZE.saturating_mul(scale);
+        blit_frame_nearest_to_size_clipped(
+            frame,
+            i32::from(actor.foot_px.x)
+                - i32::from(TRAINING_SKILL_LOGICAL_ORIGIN_X.saturating_mul(scale)),
+            i32::from(actor.foot_px.y)
+                - i32::from(TRAINING_SKILL_LOGICAL_ORIGIN_Y.saturating_mul(scale)),
+            Size { w: size, h: size },
+            buf,
+        );
+    }
+}
+
+/// Paint the bright forest training scene.  Background, monsters, paperdolls
+/// and task labels all share `training`'s elapsed-time placement authority.
+fn paint_training_frame(
+    ctx: &mut PaintCtx<'_>,
+    _frame: &SimFrame,
+) -> (Option<PetFrame>, Vec<MascotFrame>) {
+    if let Some(backdrop) = ctx
+        .pack
+        .animation("training_background")
+        .and_then(|animation| animation.frames.first())
+    {
+        paint_market_backdrop(ctx.buf, backdrop, ctx.theme.surface.bg_fallback);
+    } else {
+        paint_training_fallback_backdrop(ctx.buf);
+    }
+    paint_training_portal(ctx.buf, ctx.pack, ctx.now);
+
+    let viewport = Bounds {
+        x: 0,
+        y: 0,
+        width: ctx.buf.width(),
+        height: ctx.buf.height(),
+    };
+    let frame_ctx = crate::training::TrainingFrameContext {
+        viewport,
+        now: ctx.now,
+    };
+    let placements = crate::training::build_training_placements(ctx.scene, viewport);
+    let paperdolls = crate::market::market_avatar_animation(ctx.pack);
+    let standing = crate::market::market_avatar_stand_animation(ctx.pack);
+    let walking = crate::market::market_avatar_walk_animation(ctx.pack);
+    let climbing = crate::market::market_avatar_climb_animation(ctx.pack);
+    let sitting = crate::market::market_avatar_sit_animation(ctx.pack);
+    let alert = crate::market::market_avatar_alert_animation(ctx.pack);
+    let attacking = crate::market::market_avatar_attack_animation(ctx.pack);
+    let scale = crate::market::market_sprite_scale(viewport.height);
+
+    let mut actors = placements
+        .iter()
+        .filter_map(|placement| {
+            let agent = ctx.scene.agents.get(&placement.agent_id)?;
+            let actor = crate::training::resolve_training_actor(agent, *placement, frame_ctx)?;
+            let monster = crate::training::resolve_training_monster(agent, *placement, frame_ctx);
+            Some((*placement, agent, actor, monster))
+        })
+        .collect::<Vec<_>>();
+    actors.sort_by_key(|(_, _, actor, _)| actor.foot_px.y);
+
+    for (_, _, _, monster) in &actors {
+        if let Some(monster) = monster {
+            paint_training_monster(ctx.buf, ctx.pack, *monster, scale);
+        }
+    }
+
+    for (placement, agent, actor, _monster) in actors {
+        if let Some(elapsed) =
+            crate::market::market_turn_completion_elapsed(ctx.scene, agent.agent_id, ctx.now)
+        {
+            effects::paint_maple_level_up_pillar(ctx.buf, actor.foot_px, elapsed, scale);
+        }
+        if let Some(elapsed) = crate::market::market_command_success_elapsed(agent, ctx.now) {
+            effects::paint_market_scroll_success(
+                ctx.buf,
+                Point {
+                    x: actor.foot_px.x.saturating_sub(6u16.saturating_mul(scale)),
+                    y: actor.sprite_anchor_px.y,
+                },
+                elapsed,
+                scale,
+            );
+        }
+        // Keep the paperdoll identity readable through the source's opaque
+        // first flash: the skill is a separate back layer, never a body swap.
+        paint_training_skill_effect(ctx.buf, ctx.pack, actor, scale);
+        if let Some(animation) = paperdolls {
+            let idle = &animation.frames[placement.appearance_index % animation.frames.len()];
+            let (avatar, mirror, attack_canvas) = match actor.pose {
+                crate::training::TrainingActorPose::Stand { frame_index } => standing
+                    .map(|animation| {
+                        let index = placement.appearance_index * crate::market::MARKET_STAND_FRAMES
+                            + frame_index % crate::market::MARKET_STAND_FRAMES;
+                        (&animation.frames[index], false, false)
+                    })
+                    .unwrap_or((idle, false, false)),
+                crate::training::TrainingActorPose::Walk {
+                    frame_index,
+                    facing,
+                } => walking
+                    .map(|animation| {
+                        let index = placement.appearance_index * crate::market::MARKET_WALK_FRAMES
+                            + frame_index % crate::market::MARKET_WALK_FRAMES;
+                        (
+                            &animation.frames[index],
+                            facing == crate::training::TrainingFacing::Right,
+                            false,
+                        )
+                    })
+                    .unwrap_or((idle, false, false)),
+                crate::training::TrainingActorPose::Climb { frame_index } => climbing
+                    .map(|animation| {
+                        let index = placement.appearance_index * crate::market::MARKET_CLIMB_FRAMES
+                            + frame_index % crate::market::MARKET_CLIMB_FRAMES;
+                        (&animation.frames[index], false, false)
+                    })
+                    .unwrap_or((idle, false, false)),
+                crate::training::TrainingActorPose::Attack { frame_index } => attacking
+                    .map(|animation| {
+                        let index = placement.appearance_index
+                            * crate::market::MARKET_ATTACK_FRAMES
+                            + frame_index % crate::market::MARKET_ATTACK_FRAMES;
+                        (&animation.frames[index], true, true)
+                    })
+                    .or_else(|| {
+                        alert.map(|animation| {
+                            let index = placement.appearance_index
+                                * crate::market::MARKET_ALERT_FRAMES
+                                + frame_index % crate::market::MARKET_ALERT_FRAMES;
+                            (&animation.frames[index], true, false)
+                        })
+                    })
+                    .unwrap_or((idle, false, false)),
+                crate::training::TrainingActorPose::Sit => sitting
+                    .map(|animation| {
+                        let index = placement.appearance_index * crate::market::MARKET_SIT_FRAMES;
+                        (&animation.frames[index], false, false)
+                    })
+                    .unwrap_or((idle, false, false)),
+            };
+            let mirrored = mirror.then(|| avatar.mirror_horizontal());
+            let avatar = mirrored.as_ref().unwrap_or(avatar);
+            if attack_canvas {
+                let target_size = Size {
+                    w: crate::market::MARKET_AVATAR_ATTACK_WIDTH.saturating_mul(scale),
+                    h: crate::market::MARKET_AVATAR_ATTACK_HEIGHT.saturating_mul(scale),
+                };
+                blit_frame_nearest_to_size_clipped(
+                    avatar,
+                    i32::from(actor.foot_px.x) - i32::from(target_size.w / 2),
+                    i32::from(actor.foot_px.y) - i32::from(target_size.h),
+                    target_size,
+                    ctx.buf,
+                );
+            } else {
+                blit_frame_nearest_to_size(
+                    avatar,
+                    actor.sprite_anchor_px,
+                    Size {
+                        w: crate::market::MARKET_AVATAR_WIDTH.saturating_mul(scale),
+                        h: crate::market::MARKET_AVATAR_HEIGHT.saturating_mul(scale),
+                    },
+                    ctx.buf,
+                );
+            }
+        } else {
+            paint_training_fallback_adventurer(ctx.buf, actor, scale);
+        }
+        if actor.question_bubble {
+            paint_training_question_bubble(ctx.buf, actor.sprite_anchor_px, scale);
+        }
+    }
+
+    (None, Vec::new())
+}
+
+fn paint_training_fallback_backdrop(buf: &mut RgbBuffer) {
+    let h = buf.height().max(1);
+    let w = buf.width().max(1);
+    for y in 0..h {
+        let t = f32::from(y) / f32::from(h);
+        let sky = Rgb {
+            r: (70.0 + 82.0 * t) as u8,
+            g: (142.0 + 72.0 * t) as u8,
+            b: (224.0 + 24.0 * t) as u8,
+        };
+        for x in 0..w {
+            buf.put(x, y, sky);
+        }
+    }
+    let ridge_y = h * 38 / 100;
+    for x in 0..w {
+        let wave = ((u32::from(x) * 17 + 23) % 41) as u16;
+        let top = ridge_y.saturating_sub(wave / 8);
+        for y in top..h * 72 / 100 {
+            buf.put(
+                x,
+                y,
+                Rgb {
+                    r: 48,
+                    g: 126,
+                    b: 91,
+                },
+            );
+        }
+    }
+    for &(line_y, left, right) in &[
+        (h * 26 / 100, w * 3 / 100, w * 89 / 100),
+        (h * 56 / 100, w * 3 / 100, w * 89 / 100),
+        (h * 86 / 100, 0, w),
+    ] {
+        paint_training_platform(buf, left, right, line_y);
+    }
+}
+
+fn paint_training_platform(buf: &mut RgbBuffer, left: u16, right: u16, top: u16) {
+    let right = right.min(buf.width());
+    let grass_h = (buf.height() / 80).max(2);
+    let soil_h = (buf.height() / 20).max(5);
+    for y in top.saturating_sub(grass_h)..top {
+        for x in left..right {
+            let color = if (x + y) % 5 == 0 {
+                Rgb {
+                    r: 164,
+                    g: 221,
+                    b: 75,
+                }
+            } else {
+                Rgb {
+                    r: 78,
+                    g: 164,
+                    b: 58,
+                }
+            };
+            buf.put(x, y, color);
+        }
+    }
+    for y in top..top.saturating_add(soil_h).min(buf.height()) {
+        for x in left..right {
+            let color = if (x / 4 + y / 3) % 3 == 0 {
+                Rgb {
+                    r: 111,
+                    g: 66,
+                    b: 33,
+                }
+            } else {
+                Rgb {
+                    r: 75,
+                    g: 43,
+                    b: 30,
+                }
+            };
+            buf.put(x, y, color);
+        }
+    }
+}
+
+fn paint_training_monster(
+    buf: &mut RgbBuffer,
+    pack: &Pack,
+    monster: crate::training::TrainingMonsterFrame,
+    scale: u16,
+) {
+    let (animation_name, death_animation_name, base_size) = match monster.kind {
+        crate::training::TrainingMonsterKind::Slime => (
+            "training_monster_slime",
+            "training_monster_slime_die",
+            Size { w: 19, h: 22 },
+        ),
+        crate::training::TrainingMonsterKind::GreenMushroom => (
+            "training_monster_green_mushroom",
+            "training_monster_green_mushroom_die",
+            Size { w: 14, h: 13 },
+        ),
+    };
+    let frame_and_size = match monster.pose {
+        crate::training::TrainingMonsterPose::Alive { frame_index }
+        | crate::training::TrainingMonsterPose::Respawning { frame_index } => pack
+            .animation(animation_name)
+            .filter(|animation| !animation.frames.is_empty())
+            .map(|animation| {
+                (
+                    &animation.frames[frame_index % animation.frames.len()],
+                    Size {
+                        w: base_size.w.saturating_mul(scale),
+                        h: base_size.h.saturating_mul(scale),
+                    },
+                )
+            }),
+        crate::training::TrainingMonsterPose::Dying { frame_index } => pack
+            .animation(death_animation_name)
+            .filter(|animation| !animation.frames.is_empty())
+            .map(|animation| {
+                (
+                    &animation.frames[frame_index % animation.frames.len()],
+                    Size {
+                        w: base_size.w.saturating_mul(scale),
+                        h: base_size.h.saturating_mul(scale),
+                    },
+                )
+            }),
+        crate::training::TrainingMonsterPose::Hidden => None,
+    };
+    if let Some((frame, size)) = frame_and_size {
+        let mirrored = (monster.facing == crate::training::TrainingFacing::Right)
+            .then(|| frame.mirror_horizontal());
+        let frame = mirrored.as_ref().unwrap_or(frame);
+        let origin = Point {
+            x: monster.foot_px.x.saturating_sub(size.w / 2),
+            y: monster.foot_px.y.saturating_sub(size.h),
+        };
+        blit_frame_nearest_to_size(frame, origin, size, buf);
+    } else if !matches!(monster.pose, crate::training::TrainingMonsterPose::Hidden) {
+        paint_training_fallback_monster(buf, monster, scale);
+    }
+}
+
+fn paint_training_fallback_adventurer(
+    buf: &mut RgbBuffer,
+    actor: crate::training::TrainingActorFrame,
+    scale: u16,
+) {
+    let body = Rgb {
+        r: 52,
+        g: 111,
+        b: 176,
+    };
+    let skin = Rgb {
+        r: 244,
+        g: 199,
+        b: 154,
+    };
+    let x = actor.foot_px.x.saturating_sub(3u16.saturating_mul(scale));
+    let y = actor.foot_px.y.saturating_sub(10u16.saturating_mul(scale));
+    fill_rect(
+        buf,
+        x,
+        y,
+        6u16.saturating_mul(scale),
+        7u16.saturating_mul(scale),
+        body,
+    );
+    fill_rect(
+        buf,
+        x.saturating_add(scale),
+        y.saturating_sub(4u16.saturating_mul(scale)),
+        4u16.saturating_mul(scale),
+        4u16.saturating_mul(scale),
+        skin,
+    );
+}
+
+fn paint_training_fallback_monster(
+    buf: &mut RgbBuffer,
+    monster: crate::training::TrainingMonsterFrame,
+    scale: u16,
+) {
+    let color = match monster.kind {
+        crate::training::TrainingMonsterKind::Slime => Rgb {
+            r: 92,
+            g: 214,
+            b: 50,
+        },
+        crate::training::TrainingMonsterKind::GreenMushroom => Rgb {
+            r: 91,
+            g: 125,
+            b: 67,
+        },
+    };
+    let w = 9u16.saturating_mul(scale);
+    let h = 5u16.saturating_mul(scale);
+    fill_rect(
+        buf,
+        monster.foot_px.x.saturating_sub(w / 2),
+        monster.foot_px.y.saturating_sub(h),
+        w,
+        h,
+        color,
+    );
+}
+
+fn paint_training_question_bubble(buf: &mut RgbBuffer, head: Point, scale: u16) {
+    let w = 8u16.saturating_mul(scale);
+    let h = 7u16.saturating_mul(scale);
+    let x = head.x.saturating_add(20u16.saturating_mul(scale));
+    let y = head.y.saturating_sub(4u16.saturating_mul(scale));
+    fill_rect(
+        buf,
+        x,
+        y,
+        w,
+        h,
+        Rgb {
+            r: 251,
+            g: 248,
+            b: 224,
+        },
+    );
+    fill_rect(
+        buf,
+        x,
+        y,
+        w,
+        scale,
+        Rgb {
+            r: 73,
+            g: 60,
+            b: 45,
+        },
+    );
+    fill_rect(
+        buf,
+        x,
+        y,
+        scale,
+        h,
+        Rgb {
+            r: 73,
+            g: 60,
+            b: 45,
+        },
+    );
+    let ink = Rgb {
+        r: 59,
+        g: 85,
+        b: 128,
+    };
+    let qx = x.saturating_add(3u16.saturating_mul(scale));
+    fill_rect(buf, qx, y.saturating_add(2 * scale), 2 * scale, scale, ink);
+    fill_rect(
+        buf,
+        qx.saturating_add(scale),
+        y.saturating_add(3 * scale),
+        scale,
+        2 * scale,
+        ink,
+    );
+    fill_rect(
+        buf,
+        qx.saturating_add(scale),
+        y.saturating_add(6 * scale),
+        scale,
+        scale,
+        ink,
+    );
+}
+
+fn fill_rect(buf: &mut RgbBuffer, x: u16, y: u16, w: u16, h: u16, color: Rgb) {
+    for py in y..y.saturating_add(h).min(buf.height()) {
+        for px in x..x.saturating_add(w).min(buf.width()) {
+            buf.put(px, py, color);
+        }
+    }
+}
+
+/// Paint the isolated Free Market scene. This path deliberately bypasses the
+/// entire office furniture/wall pipeline: the scene plate already contains the
+/// three platform layers. Each live merchant and its floating label consume the
+/// same time-resolved entry/exit position authority.
+fn paint_market_frame(
+    ctx: &mut PaintCtx<'_>,
+    frame: &SimFrame,
+) -> (Option<PetFrame>, Vec<MascotFrame>) {
+    let Some(backdrop) = ctx
+        .pack
+        .animation("scene_background")
+        .and_then(|animation| animation.frames.first())
+    else {
+        return (None, Vec::new());
+    };
+    paint_market_backdrop(ctx.buf, backdrop, ctx.theme.surface.bg_fallback);
+    paint_market_portal(ctx.buf, ctx.now);
+
+    let viewport = Bounds {
+        x: 0,
+        y: 0,
+        width: ctx.buf.width(),
+        height: ctx.buf.height(),
+    };
+    let placements = crate::market::build_market_placements(ctx.scene, viewport);
+    let sprite_scale = crate::market::market_sprite_scale(viewport.height);
+    let market_frame = crate::market::MarketFrameContext {
+        viewport,
+        now: ctx.now,
+    };
+    let paperdolls = crate::market::market_avatar_animation(ctx.pack);
+    let standing_paperdolls = crate::market::market_avatar_stand_animation(ctx.pack);
+    let walking_paperdolls = crate::market::market_avatar_walk_animation(ctx.pack);
+    let climbing_paperdolls = crate::market::market_avatar_climb_animation(ctx.pack);
+    let stand2_paperdolls = crate::market::market_avatar_stand2_animation(ctx.pack);
+    let sitting_paperdolls = crate::market::market_avatar_sit_animation(ctx.pack);
+    let alert_paperdolls = crate::market::market_avatar_alert_animation(ctx.pack);
+
+    let actors = placements
+        .iter()
+        .filter_map(|placement| {
+            let agent = frame
+                .agents
+                .iter()
+                .find(|agent| agent.agent_id == placement.agent_id)?;
+            let actor = if paperdolls.is_some() {
+                crate::market::resolve_market_paperdoll(agent, *placement, market_frame)
+            } else {
+                crate::market::resolve_market_merchant(agent, *placement, market_frame)
+            }?;
+            Some((*placement, agent, actor))
+        })
+        .collect::<Vec<_>>();
+
+    // A shop exists only after its merchant reaches the assigned platform and
+    // closes immediately on SessionEnd. Paint open stalls before actors so the
+    // paperdoll remains readable in front of the counter.
+    if let Some(stall_anim) = ctx.pack.animation("market_stall") {
+        if !stall_anim.frames.is_empty() {
+            let frame_ms = u64::from(stall_anim.frame_ms.max(1));
+            let stall_idx = (epoch_ms(ctx.now) / frame_ms) as usize % stall_anim.frames.len();
+            let stall = &stall_anim.frames[stall_idx];
+            for (_, _, actor) in actors.iter().filter(|(_, _, actor)| actor.stall_open) {
+                let scaled_stall_w = stall.width().saturating_mul(sprite_scale);
+                let centre_x = actor.foot_px().x;
+                let stall_x = centre_x.saturating_sub(scaled_stall_w / 2);
+                let stall_y = actor
+                    .foot_px()
+                    .y
+                    .saturating_sub(crate::market::MARKET_STALL_FOOT_OVERLAP * sprite_scale);
+                blit_frame_scaled(stall, stall_x, stall_y, sprite_scale, ctx.buf);
+            }
+        }
+    }
+
+    for (placement, agent, actor) in actors {
+        if let Some(elapsed_ms) =
+            crate::market::market_turn_completion_elapsed(ctx.scene, agent.agent_id, ctx.now)
+        {
+            effects::paint_maple_level_up_pillar(
+                ctx.buf,
+                actor.foot_px(),
+                elapsed_ms,
+                sprite_scale,
+            );
+        }
+        if let Some(elapsed_ms) = crate::market::market_command_success_elapsed(agent, ctx.now) {
+            effects::paint_market_scroll_success(
+                ctx.buf,
+                actor.command_effect_anchor(paperdolls.is_some(), sprite_scale),
+                elapsed_ms,
+                sprite_scale,
+            );
+        }
+        let actor_anchor = if let Some(animation) = paperdolls {
+            let idle = &animation.frames[placement.appearance_index % animation.frames.len()];
+            let (avatar, mirror) = match actor.pose {
+                crate::market::MarketActorPose::Stand { frame_index } => standing_paperdolls
+                    .map(|standing| {
+                        let index = placement.appearance_index * crate::market::MARKET_STAND_FRAMES
+                            + frame_index % crate::market::MARKET_STAND_FRAMES;
+                        (&standing.frames[index], false)
+                    })
+                    .unwrap_or((idle, false)),
+                crate::market::MarketActorPose::Stand2 { frame_index } => stand2_paperdolls
+                    .map(|standing| {
+                        let index = placement.appearance_index
+                            * crate::market::MARKET_STAND2_FRAMES
+                            + frame_index % crate::market::MARKET_STAND2_FRAMES;
+                        (&standing.frames[index], false)
+                    })
+                    .unwrap_or((idle, false)),
+                crate::market::MarketActorPose::Sit => sitting_paperdolls
+                    .map(|sitting| {
+                        let index = placement.appearance_index * crate::market::MARKET_SIT_FRAMES;
+                        (&sitting.frames[index], false)
+                    })
+                    .unwrap_or((idle, false)),
+                crate::market::MarketActorPose::Alert { frame_index } => alert_paperdolls
+                    .map(|alert| {
+                        let index = placement.appearance_index * crate::market::MARKET_ALERT_FRAMES
+                            + frame_index % crate::market::MARKET_ALERT_FRAMES;
+                        (&alert.frames[index], false)
+                    })
+                    .unwrap_or((idle, false)),
+                crate::market::MarketActorPose::Walk(walk) => walking_paperdolls
+                    .map(|walking| {
+                        let index = placement.appearance_index * crate::market::MARKET_WALK_FRAMES
+                            + walk.frame_index % crate::market::MARKET_WALK_FRAMES;
+                        (
+                            &walking.frames[index],
+                            walk.facing == crate::market::MarketFacing::Right,
+                        )
+                    })
+                    .unwrap_or((idle, false)),
+                crate::market::MarketActorPose::Climb { frame_index } => climbing_paperdolls
+                    .map(|climbing| {
+                        let index = placement.appearance_index * crate::market::MARKET_CLIMB_FRAMES
+                            + frame_index % crate::market::MARKET_CLIMB_FRAMES;
+                        (&climbing.frames[index], false)
+                    })
+                    .unwrap_or((idle, false)),
+            };
+            let mirrored = mirror.then(|| avatar.mirror_horizontal());
+            let avatar = mirrored.as_ref().unwrap_or(avatar);
+            blit_frame_nearest_to_size(
+                avatar,
+                actor.sprite_anchor_px,
+                Size {
+                    w: crate::market::MARKET_AVATAR_WIDTH.saturating_mul(sprite_scale),
+                    h: crate::market::MARKET_AVATAR_HEIGHT.saturating_mul(sprite_scale),
+                },
+                ctx.buf,
+            );
+            actor.sprite_anchor_px
+        } else {
+            let glow_tint = matches!(&agent.state, ActivityState::Active { .. })
+                .then(|| palette::tool_glow_tint(agent, &ctx.theme.tool_glow))
+                .flatten();
+            paint_character_at_scaled(
+                ctx.buf,
+                "standing",
+                0,
+                actor.sprite_anchor_px,
+                agent,
+                ctx.pack,
+                false,
+                glow_tint,
+                ctx.cache,
+                ctx.now,
+                sprite_scale,
+            );
+            actor.sprite_anchor_px
+        };
+        if matches!(actor.pose, crate::market::MarketActorPose::Sit) {
+            effects::paint_waiting_bubble_scaled(ctx.buf, actor_anchor, ctx.theme, sprite_scale);
+        }
+    }
+
+    (None, Vec::new())
+}
+
 /// The PAINT half of the frame: blit the world the sim already advanced.
 /// Reads the [`SimFrame`] immutably; every positional/lifecycle decision was
 /// made in `sim_step` — this pass only resolves presentation (theme colors,
 /// sprite pixels) and composites. Returns the resolved pet frame + every mascot
 /// frame for the caller's hit-testing.
+#[cfg(test)]
 fn paint_frame(ctx: &mut PaintCtx<'_>, frame: &SimFrame) -> (Option<PetFrame>, Vec<MascotFrame>) {
+    paint_frame_for_map(ctx, frame, None)
+}
+
+fn paint_frame_for_map(
+    ctx: &mut PaintCtx<'_>,
+    frame: &SimFrame,
+    maple_map: Option<crate::maple_world::MapleMapId>,
+) -> (Option<PetFrame>, Vec<MascotFrame>) {
+    if ctx.theme.name == "maple" {
+        match maple_map {
+            Some(crate::maple_world::MapleMapId::FreeMarket) => {
+                return paint_market_frame(ctx, frame);
+            }
+            Some(crate::maple_world::MapleMapId::ForestTraining) => {
+                return paint_training_frame(ctx, frame);
+            }
+            None if ctx.pack.animation("scene_background").is_some() => {
+                // Compatibility for the existing TUI/snapshot paths that select
+                // the Maple theme but do not own a multi-map world session.
+                return paint_market_frame(ctx, frame);
+            }
+            None => {}
+        }
+    }
+
     let agents: &[AgentSlot] = &frame.agents;
     let buf_w = ctx.layout.buf_w;
     let buf_h = ctx.layout.buf_h;

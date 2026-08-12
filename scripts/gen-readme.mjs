@@ -2,9 +2,10 @@
 // Keep the README in sync with the site's single-source data files:
 //   • Features table          ← site/src/features.json  (GENERATED between markers)
 //   • Supported-tools glimpse ← site/src/sources.json   (GENERATED between markers)
-//   • Install block           ← site/src/install.json   (GENERATED — `readme:true` methods only)
-// The site (Showcase.astro / SupportedTools.astro / Install.astro) reads the same
-// JSON, so the README and the site can't drift. The supported-tools glimpse shows
+// The fork's source-only setup is maintained directly in README.md until it has
+// fork-owned package channels; site/src/install.json still describes upstream
+// Pixtuoid and must not regenerate misleading install commands into this README.
+// The supported-tools glimpse shows
 // only the FEATURED tools + a link to the full tool × OS matrix on the site, so the
 // README stays short as more agent CLIs are added. Run `just gen-readme` (or
 // `node scripts/gen-readme.mjs`) after editing any JSON. `--check` writes
@@ -25,7 +26,6 @@ const root = join(dirname(fileURLToPath(import.meta.url)), '..');
 const readmePath = join(root, 'README.md');
 const features = JSON.parse(readFileSync(join(root, 'site', 'src', 'features.json'), 'utf8'));
 const sources = JSON.parse(readFileSync(join(root, 'site', 'src', 'sources.json'), 'utf8'));
-const install = JSON.parse(readFileSync(join(root, 'site', 'src', 'install.json'), 'utf8'));
 
 // MUST match `site` in site/astro.config.mjs. A repo-root Node script can't
 // cheaply import the astro config (it pulls @astrojs/*), so this is a
@@ -174,32 +174,14 @@ regenSection(
   ].join('\n')
 );
 
-// --- Install block (GENERATED, like features/sources). The README shows only
-// the `readme: true` methods (brew, npm); the rest (Cargo, GitHub Releases) live
-// on the site's install tab. Single source: site/src/install.json — the same
-// file Install.astro renders, so the two can't drift. ---
-const installBody = install
-  .filter((m) => m.readme)
-  .map(
-    (m) =>
-      `**${cell(m.label)}**${m.blurb ? ` (${cell(m.blurb)})` : ''}:\n\n\`\`\`bash\n${m.cmds.join('\n')}\n\`\`\``
-  )
-  .join('\n\n');
-regenSection(
-  'Install block',
-  '<!-- install:start · generated from site/src/install.json by `just gen-readme` — edit the JSON, not this block -->',
-  '<!-- install:end -->',
-  installBody
-);
-
 if (errors.length) {
   console.error(errors.map((e) => `✗ ${e}`).join('\n'));
   process.exit(1);
 }
 console.log(
   check
-    ? 'README is in sync with features.json + sources.json + install.json ✓'
-    : 'README regenerated from features.json + sources.json + install.json ✓'
+    ? 'README is in sync with features.json + sources.json ✓'
+    : 'README regenerated from features.json + sources.json ✓'
 );
 
 function escapeRe(s) {

@@ -901,7 +901,7 @@ fn health_summary(n: usize, broken: &[String], any_drift: bool) -> String {
     if any_drift {
         out.push_str(
             " · ⚠ decode drift recorded — may predate a CLI's wire format; report: \
-             https://github.com/IvanWng97/pixtuoid/issues\n",
+             https://github.com/SaM-runtime/maple-agent-market/issues\n",
         );
     } else {
         out.push_str(" · ✓ no decode drift\n");

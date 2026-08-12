@@ -57,7 +57,7 @@ pub const HOOK_SESSION_END_TOMBSTONE_TTL: Duration = Duration::from_secs(5);
 /// can't: a child that ended on a KNOWN slot (no tombstone minted) whose
 /// transcript first-sight arrives LATE — a notify outage defers discovery to
 /// the watcher's 60s poll backstop, well past both the 5s tombstone and the
-/// 4.5s [`EXIT_GRACE_WINDOW`] GC. Sized like
+/// 9.5s [`EXIT_GRACE_WINDOW`] GC. Sized like
 /// [`DRAINED_TASK_TOMBSTONE_TTL`]: past the 60s poll plus slack, and
 /// generosity costs nothing — child ids are per-spawn unique, so a parented
 /// Start inside the window is never a legitimate new child, only the dead

@@ -13,7 +13,8 @@ permissions: {}
 jobs:
   review:
     if: >
-      (github.event_name == 'pull_request_target' &&
+      vars.MAPLE_AGENT_MARKET_CLAUDE_WORKFLOWS_ENABLED == 'true' &&
+      ((github.event_name == 'pull_request_target' &&
         github.actor != 'dependabot[bot]' &&
         github.event.pull_request.draft == false &&
         github.event.pull_request.head.repo.full_name == github.repository &&
@@ -21,7 +22,7 @@ jobs:
       (github.event_name == 'issue_comment' &&
         github.event.issue.pull_request &&
         startsWith(github.event.comment.body, '/claude-review') &&
-        contains(fromJSON('["OWNER","MEMBER","COLLABORATOR"]'), github.event.comment.author_association))
+        contains(fromJSON('["OWNER","MEMBER","COLLABORATOR"]'), github.event.comment.author_association)))
     permissions:
       contents: read
       id-token: write

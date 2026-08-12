@@ -282,7 +282,7 @@ lint:
     # Fail fast with an actionable message when a lint tool is missing, instead
     # of a bare `command not found` (exit 127) buried in a parallel job's log.
     missing=()
-    for t in shfmt shellcheck actionlint zizmor conftest opa regal check-jsonschema yq jq iconv cargo-machete cargo-deny lychee; do
+    for t in python3 shfmt shellcheck actionlint zizmor conftest opa regal check-jsonschema yq jq iconv cargo-machete cargo-deny lychee; do
         command -v "$t" &>/dev/null || missing+=("$t")
     done
     if (( ${#missing[@]} )); then
@@ -306,6 +306,7 @@ lint:
     run schemas just json-schemas         & pids+=($!)
     run links   just links               & pids+=($!)
     run drift   just drift-selftest       & pids+=($!)
+    run public-release just public-release-audit & pids+=($!)
     for p in "${pids[@]}"; do wait "$p" || fail=1; done
     [[ $fail -eq 0 ]]
 
@@ -718,9 +719,10 @@ site-e2e:
 [doc('Regenerate ALL committed artifacts (README sections + docs images + site demos)')]
 gen: gen-icons gen-media gen-readme
 
-# Sync the README's install/features/tools sections from site/src/*.json.
+# Sync the README's features/tools sections from site/src/*.json. The fork's
+# source-only installation text stays hand-authored until package channels exist.
 [group('gen')]
-[doc('Sync README install/features/tools sections from site/src/*.json')]
+[doc('Sync README features/tools sections from site/src/*.json')]
 gen-readme:
     node scripts/gen-readme.mjs
 
@@ -736,11 +738,11 @@ gen-contract:
     UPDATE_CONTRACT_SCHEMA=1 cargo test -p pixtuoid --lib schema_matches_the_committed_contract
     npm --prefix integrations/raycast run gen:contract
 
-# Fail if the committed README drifted from site/src/{features,sources,install}.json.
+# Fail if the committed README drifted from site/src/{features,sources}.json.
 # Pure node:builtins — no npm ci. ci-lint.yml runs this on every PR (the `readme` job),
 # and gen-check composes it.
 [group('gen')]
-[doc('Fail if the committed README drifted from site data (features/sources/install.json)')]
+[doc('Fail if the committed README drifted from site data (features/sources)')]
 gen-readme-check:
     node scripts/gen-readme.mjs --check
 
@@ -1019,6 +1021,28 @@ notes-curated:
     echo "release notes curated ✓"
 
 # ── meta ──────────────────────────────────────────────────────────
+
+# Fail closed before a public commit/release can include local Maple art,
+# private files, credentials, personal paths, or an unreviewed media change.
+# The self-test runs first because a broken scanner must never print a green
+# repository verdict. Pure Python, no network or third-party package.
+[group('meta')]
+[doc('Audit Git publication candidates and the approved redistributable media baseline')]
+public-release-audit:
+    python3 scripts/build-public-release.py --selftest
+    python3 scripts/public-release-audit.py --selftest
+    python3 scripts/stage-public-release.py --selftest
+    python3 scripts/public-release-audit.py
+
+[group('release')]
+[doc('Build and audit a host release binary with maintainer paths remapped')]
+public-release-build:
+    python3 scripts/build-public-release.py
+
+[group('release')]
+[doc('Build, audit, and stage a clean public-safe bundle outside the repository')]
+public-release-stage output:
+    python3 scripts/stage-public-release.py --output "{{ output }}"
 
 # Full pre-push gate: the Rust checks worth running locally before a push.
 # (semver, coverage, and the gen/smoke gates are CI-only — network baseline /

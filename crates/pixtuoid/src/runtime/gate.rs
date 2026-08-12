@@ -145,7 +145,7 @@ mod tests {
     // slot. The reconciler is the documented safety net that sweeps that blank
     // slot (its `""` source is not in the connected set). The residual is bounded
     // but NOT instant: the reconcile MARKS the slot exiting (`cascade_exit`), then
-    // it walks out over `EXIT_GRACE_WINDOW` (4.5s) before `sweep_exited` removes
+    // it walks out over `EXIT_GRACE_WINDOW` (9.5s) before `sweep_exited` removes
     // it — a few-second blank `#N`, not a one-tick disappearance. Bounded to at
     // most ONE such slot per session id AT A TIME: a later event for the same id
     // coalesces onto that one slot (AgentId identity) rather than adding another.

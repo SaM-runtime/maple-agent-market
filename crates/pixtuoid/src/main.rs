@@ -147,7 +147,7 @@ fn main() -> Result<()> {
             clap_complete::generate(
                 shell,
                 &mut Cli::command(),
-                "pixtuoid",
+                "maple-agent-market",
                 &mut std::io::stdout(),
             );
             Ok(())

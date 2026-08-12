@@ -4,9 +4,9 @@ use clap::{Parser, Subcommand, ValueEnum};
 
 #[derive(Debug, Parser)]
 #[command(
-    name = "pixtuoid",
+    name = "maple-agent-market",
     version,
-    about = "Terminal pixel-art office for AI coding agents"
+    about = "Maple-inspired agent orchestration market, based on Pixtuoid"
 )]
 pub struct Cli {
     #[command(subcommand)]
@@ -230,6 +230,17 @@ fn parse_nonempty_path(s: &str) -> Result<PathBuf, String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn public_command_uses_the_side_project_brand() {
+        use clap::CommandFactory;
+        let command = Cli::command();
+        assert_eq!(command.get_name(), "maple-agent-market");
+        assert_eq!(
+            command.get_about().map(ToString::to_string).as_deref(),
+            Some("Maple-inspired agent orchestration market, based on Pixtuoid")
+        );
+    }
 
     #[test]
     fn empty_socket_is_a_hard_parse_error() {
@@ -494,7 +505,7 @@ mod tests {
             clap_complete::Shell::Fish,
         ] {
             let mut buf = Vec::new();
-            clap_complete::generate(shell, &mut Cli::command(), "pixtuoid", &mut buf);
+            clap_complete::generate(shell, &mut Cli::command(), "maple-agent-market", &mut buf);
             let script = String::from_utf8(buf).expect("completion script is utf-8");
             assert!(!script.is_empty(), "{shell:?} completion script is empty");
             // A representative subcommand from across the tree must be present, so a
@@ -510,7 +521,10 @@ mod tests {
             .render(&mut man)
             .expect("man render");
         let man = String::from_utf8(man).expect("man page is utf-8");
-        assert!(man.contains("pixtuoid"), "man page missing program name");
+        assert!(
+            man.contains("maple-agent-market"),
+            "man page missing program name"
+        );
         // Same dropped-subcommand teeth as the completions loop: clap_mangen
         // renders a SUBCOMMANDS section, so a removed/renamed subcommand trips this
         // rather than shipping a man page that silently lost it.

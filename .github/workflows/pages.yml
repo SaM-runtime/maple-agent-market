@@ -24,6 +24,9 @@ concurrency:
 
 jobs:
   build:
+    # The inherited site still points at pixtuoid.dev and upstream package
+    # channels. A new public fork must opt in only after rebranding the site.
+    if: ${{ vars.MAPLE_AGENT_MARKET_PAGES_ENABLED == 'true' }}
     runs-on: ubuntu-latest
     timeout-minutes: 20
     steps:
@@ -111,6 +114,7 @@ jobs:
           # SAME generic check `verify`/site-check runs — see config/assert-docs-rendered.mjs.
           build-cmd: npm run build && npm run check:docs
   deploy:
+    if: ${{ vars.MAPLE_AGENT_MARKET_PAGES_ENABLED == 'true' }}
     needs: build
     runs-on: ubuntu-latest
     timeout-minutes: 10

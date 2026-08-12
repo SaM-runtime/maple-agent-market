@@ -456,15 +456,20 @@ src/
 │                       cadence.rs, and the redraw REQUEST is gated on the same deadline as the wait — see below);
 │                       restored [floating] position is validated against
 │                       the live monitors (off-every-screen → OS-default placement, not unrecoverable off-screen);
-│                       left-press drag / corner resize; m/+/- audio keys (the pure half in input.rs — see
+│                       left-press manual drag / corner resize (manual movement avoids Windows Snap/maximize);
+│                       Maple multi-map mode exposes native chips for the map and size: Tab/click cycles
+│                       dual→market→training, 1/2/3 selects one directly, and Z/size-chip cycles the
+│                       Small/Medium/Large logical presets from geometry.rs, aspect-fitted to at most 90% of
+│                       the current monitor without disabling arbitrary corner resize; m/+/- audio keys (the pure half in input.rs — see
 │                       the audio/ entry); persists [floating] geometry (+ any pending volume) on close;
 │                       floor_caps synced to the rendered layout's home-desk count so no agent is stranded
 │                       off-screen; macOS Accessory + shadow, #[cfg(windows)] skip-taskbar; opacity = honest v1
 │                       no-op, winit has none + softbuffer is opaque → wgpu/native deferred),
 │                       geometry.rs (the pure window/monitor rect math extracted OUT of window.rs so it's
-│                       unit-testable: window_visible_on_monitors = the off-screen-recovery AABB overlap +
-│                       empty-monitor-list guard; near_resize_corner = the drag-vs-resize hit-test),
-│                       input.rs (the PURE winit key → audio::AudioAction map; the mute/volume TRANSITION
+│                       unit-testable: FloatingSizePreset + fit_logical_size own the small/medium/large
+│                       single/dual-map dimensions and monitor-fit policy; window_visible_on_monitors = the
+│                       off-screen-recovery AABB overlap + empty-monitor-list guard; near_resize_corner = the drag-vs-resize hit-test),
+│                       input.rs (the PURE winit key → map/size/audio action maps; the mute/volume TRANSITION
 │                       itself is shared with the TUI in audio::apply_audio_action — see the audio/ entry),
 │                       cadence.rs (the PURE animation throttle + both FPS constants: `FrameClock::poll(now,
 │                       office_idle) -> (paint, deadline)`. `about_to_wait` runs on EVERY event-loop iteration,
@@ -477,7 +482,8 @@ src/
 │                       tokio glue, the floating twin of driver.rs — need a real display); the floating crate's
 │                       TESTED surface is offscreen.rs (render seam) + geometry.rs (rect math) + input.rs
 │                       (audio keys) + cadence.rs (the throttle). Visual check:
-│                       `examples/floating_snapshot.rs` (the floating twin of the `snapshot` example).
+│                       `examples/floating_snapshot.rs` (the floating twin of the `snapshot` example;
+│                       `--all-active` is the deterministic combat/skill QA fixture).
 └── tui/                ratatui App + TuiRenderer (inherent `render` flush) — the half-block flush + widgets +
                         event loop, a thin painter over the pixtuoid-scene crate (the engine is its own crate now) — see src/tui/CLAUDE.md
 

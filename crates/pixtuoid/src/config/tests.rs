@@ -12,6 +12,7 @@ fn audio_resolve_clamps_and_defaults() {
         audio: Some(AudioConfigRaw {
             muted: Some(false),
             volume: Some(-0.5),
+            ..Default::default()
         }),
         ..Default::default()
     };
@@ -21,12 +22,14 @@ fn audio_resolve_clamps_and_defaults() {
     cfg.audio = Some(AudioConfigRaw {
         muted: Some(false),
         volume: Some(1.5),
+        ..Default::default()
     });
     assert_eq!(resolve_audio(&cfg).volume, 1.0, "over-1 clamps down");
     // partial table: muted without volume keeps the default
     cfg.audio = Some(AudioConfigRaw {
         muted: Some(false),
         volume: None,
+        ..Default::default()
     });
     assert_eq!(resolve_audio(&cfg).volume, 1.0);
 }
@@ -46,6 +49,18 @@ fn audio_table_round_trips_through_toml() {
     assert!(
         resolve_audio(&cfg).muted,
         "a leftover enabled=true stays muted"
+    );
+}
+
+#[test]
+fn audio_local_bgm_path_round_trips_through_toml() {
+    let toml = "[audio]\nmuted = false\nvolume = 0.35\nbgm-path = 'C:/Music/market.mp3'\n";
+    let cfg: AppConfig = toml::from_str(toml).expect("parses");
+    let a = resolve_audio(&cfg);
+    assert_eq!(
+        a.bgm_path.as_deref(),
+        Some(Path::new("C:/Music/market.mp3")),
+        "the app must retain the user-selected local BGM path"
     );
 }
 

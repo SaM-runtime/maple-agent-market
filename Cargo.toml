@@ -13,10 +13,10 @@ version      = "0.16.0"
 edition      = "2021"
 rust-version = "1.89"
 license      = "MIT"
-repository   = "https://github.com/IvanWng97/pixtuoid"
-authors      = ["Ivan Wang <ivanwng97@icloud.com>"]
-description  = "Terminal pixel-art office for AI coding agents"
-homepage     = "https://github.com/IvanWng97/pixtuoid"
+repository   = "https://github.com/SaM-runtime/maple-agent-market"
+authors      = ["Ivan Wang <ivanwng97@icloud.com>", "SaM-runtime contributors"]
+description  = "Unofficial 2D multi-agent visualizer based on Pixtuoid"
+homepage     = "https://github.com/SaM-runtime/maple-agent-market"
 keywords     = ["terminal", "tui", "pixel-art", "ai-agents", "claude"]
 categories   = ["command-line-utilities", "visualization"]
 

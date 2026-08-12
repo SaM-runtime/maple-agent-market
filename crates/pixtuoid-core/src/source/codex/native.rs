@@ -4,18 +4,48 @@
 //! file sits behind the parent's ONE `#[cfg(feature = "native")] mod native;`
 //! gate and is re-exported there, so public paths don't move.
 
+use std::fs;
 use std::path::{Path, PathBuf};
 
 use anyhow::Result;
+use serde_json::Value;
 
 use super::{codex_home, codex_id_from_path, decode_codex_line, SOURCE_NAME};
+use crate::source::decoder::{derive_prefixed_label, display_safe, label_prefix_for};
 use crate::source::jsonl::{ChildEndUnclaims, JsonlWatcher, ProbeSnapshot};
 use crate::source::{Source, TaggedSender};
+
+const CODEX_SESSION_INDEX_ENV: &str = "PIXTUOID_CODEX_SESSION_INDEX";
+const TASK_TITLE_MAX_CHARS: usize = 11;
 
 /// Codex writes no session-end marker; the reducer's stale-sweep reaps dead
 /// sessions. Always false (defer to mtime window + stale-sweep).
 fn codex_session_ended(_tail: &[u8]) -> bool {
     false
+}
+
+/// A structural Codex new-turn marker. The exact outer/inner pair prevents a
+/// user message merely containing `task_started` from releasing the watcher's
+/// first-sight claim.
+fn codex_session_reentry(line: &[u8]) -> bool {
+    const START_MARKERS: [&[u8]; 2] = [b"task_started", b"turn_started"];
+    if !START_MARKERS
+        .iter()
+        .any(|marker| line.windows(marker.len()).any(|window| window == *marker))
+    {
+        return false;
+    }
+    let Ok(value) = serde_json::from_slice::<Value>(line) else {
+        return false;
+    };
+    value.get("type").and_then(Value::as_str) == Some("event_msg")
+        && matches!(
+            value
+                .get("payload")
+                .and_then(|payload| payload.get("type"))
+                .and_then(Value::as_str),
+            Some("task_started" | "turn_started")
+        )
 }
 
 /// Codex's liveness probe: the rollout UUIDs (in `codex_id_from_path`
@@ -49,6 +79,53 @@ fn is_rollout_filename(path: &Path) -> bool {
             .file_stem()
             .and_then(|s| s.to_str())
             .is_some_and(|s| s.starts_with("rollout-"))
+}
+
+fn task_title_from_index(index: &str, session_id: &str) -> Option<String> {
+    let mut latest = None;
+    for line in index.lines() {
+        let Ok(entry) = serde_json::from_str::<Value>(line) else {
+            continue;
+        };
+        if entry.get("id").and_then(Value::as_str) != Some(session_id) {
+            continue;
+        }
+        let Some(raw_title) = entry.get("thread_name").and_then(Value::as_str) else {
+            continue;
+        };
+        let collapsed = raw_title.split_whitespace().collect::<Vec<_>>().join(" ");
+        let safe = display_safe(&collapsed);
+        let title: String = safe.chars().take(TASK_TITLE_MAX_CHARS).collect();
+        if !title.is_empty() {
+            latest = Some(title);
+        }
+    }
+    latest
+}
+
+fn codex_task_label_from_index(
+    rollout_path: &Path,
+    source: &str,
+    cwd: &Path,
+    index: &str,
+) -> String {
+    let fallback = || derive_prefixed_label(source, cwd);
+    let session_id = codex_id_from_path(rollout_path);
+    let Some(title) = task_title_from_index(index, &session_id) else {
+        return fallback();
+    };
+    format!("{}·{title}", label_prefix_for(source))
+}
+
+fn codex_task_label(rollout_path: &Path, source: &str, cwd: &Path) -> String {
+    let fallback = || derive_prefixed_label(source, cwd);
+    let Some(index_path) = std::env::var_os(CODEX_SESSION_INDEX_ENV) else {
+        return fallback();
+    };
+    let Ok(index) = fs::read_to_string(index_path) else {
+        return fallback();
+    };
+    codex_task_label_from_index(rollout_path, source, cwd, &index)
 }
 
 /// Attach the probe ONLY for codex's first-party layout: the standard
@@ -124,7 +201,9 @@ impl Source for CodexSource {
             decode_codex_line,
             codex_session_ended,
         )
-        .with_id_deriver(codex_id_from_path);
+        .with_id_deriver(codex_id_from_path)
+        .with_label_deriver(codex_task_label)
+        .with_session_reentry_detector(codex_session_reentry);
         if let Some(root) = codex_probe_root(&self.sessions_root) {
             watcher = watcher
                 .with_liveness_probe(std::sync::Arc::new(move || live_codex_rollout_ids(&root)));
@@ -139,6 +218,71 @@ impl Source for CodexSource {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn session_reentry_accepts_only_structural_codex_turn_starts() {
+        for event in ["task_started", "turn_started"] {
+            let line = serde_json::json!({
+                "type": "event_msg",
+                "payload": { "type": event, "turn_id": "t" }
+            });
+            assert!(
+                codex_session_reentry(line.to_string().as_bytes()),
+                "{event}"
+            );
+        }
+
+        let user_message = serde_json::json!({
+            "type": "event_msg",
+            "payload": {
+                "type": "user_message",
+                "message": "the literal task_started is not a lifecycle marker"
+            }
+        });
+        assert!(!codex_session_reentry(user_message.to_string().as_bytes()));
+        assert!(!codex_session_reentry(b"not json"));
+    }
+
+    #[test]
+    fn task_label_uses_the_latest_index_title_and_keeps_the_codex_prefix() {
+        const TASK_ID: &str = "019fb5c7-4701-7862-bfa9-f3f026cd7f90";
+        let rollout = PathBuf::from(format!(
+            "/home/u/.codex/sessions/2026/07/31/rollout-2026-07-31T09-26-03-{TASK_ID}.jsonl"
+        ));
+        let index = concat!(
+            r#"{"id":"019fb5c7-4701-7862-bfa9-f3f026cd7f90","thread_name":"舊名稱","updated_at":"2026-07-31T01:20:00Z"}"#,
+            "\n",
+            r#"{"id":"019fb5c7-4701-7862-bfa9-f3f026cd7f90","thread_name":"尋找 Agents Orchestration 視覺化 Repo","updated_at":"2026-07-31T01:26:41Z"}"#,
+            "\n",
+        );
+
+        assert_eq!(
+            codex_task_label_from_index(
+                &rollout,
+                SOURCE_NAME,
+                Path::new("/work/new-chat-2"),
+                index
+            ),
+            "cx·尋找 Agents O"
+        );
+    }
+
+    #[test]
+    fn task_label_falls_back_to_the_original_cwd_label_without_an_index_match() {
+        let rollout = Path::new(
+            "/home/u/.codex/sessions/2026/07/31/rollout-2026-07-31T09-26-03-019fb5c7-4701-7862-bfa9-f3f026cd7f90.jsonl",
+        );
+        let index = concat!(
+            "not json\n",
+            r#"{"id":"01900000-0000-0000-0000-000000000000","thread_name":"another task"}"#,
+            "\n",
+        );
+
+        assert_eq!(
+            codex_task_label_from_index(rollout, SOURCE_NAME, Path::new("/work/new-chat-2"), index),
+            "cx·new-chat-2"
+        );
+    }
 
     #[test]
     fn codex_session_ended_is_always_false() {

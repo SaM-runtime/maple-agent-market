@@ -8,12 +8,12 @@
 
 mod celestial;
 mod lighting;
+mod maple;
 mod sky;
 
 // Re-export everything the parent pixel_painter/mod.rs imports.
 pub(super) use lighting::{
-    paint_ceiling_pool, paint_clock, paint_corridor_runner, paint_floor_lamp_halo,
-    paint_neon_panel, paint_radial_falloff, paint_shadow, Ellipse, RadialFalloff,
+    paint_floor_lamp_halo, paint_radial_falloff, paint_shadow, Ellipse, RadialFalloff,
 };
 pub(super) use sky::{
     beam_strength, daylight_floor_overlay, dim_floor_overlay, hour_is_day, set_weather_override,
@@ -55,6 +55,66 @@ pub(in crate::pixel_painter) fn local_hour_frac(now: std::time::SystemTime) -> f
 
 use crate::layout::{Layout, ELEVATOR_W};
 use crate::theme::Theme;
+
+fn uses_forest_scene(theme: &Theme) -> bool {
+    theme.name == "maple"
+}
+
+/// Theme-aware gateway for office ceiling pools. A side-scrolling outdoor
+/// scene has no ceiling fixtures; keeping the switch here lets the shared
+/// renderer retain its existing paint order without learning theme details.
+pub(super) fn paint_ceiling_pool(
+    buf: &mut RgbBuffer,
+    ellipse: Ellipse,
+    strength: f32,
+    theme: &Theme,
+) {
+    if uses_forest_scene(theme) {
+        return;
+    }
+    lighting::paint_ceiling_pool(buf, ellipse, strength, theme);
+}
+
+/// Preserve the shared status-board text seam, but give it an adventure-scene
+/// backing instead of the office neon fixture.
+pub(super) fn paint_neon_panel(
+    buf: &mut RgbBuffer,
+    x: u16,
+    y: u16,
+    w: u16,
+    h: u16,
+    now: SystemTime,
+    theme: &Theme,
+) {
+    if uses_forest_scene(theme) {
+        maple::paint_quest_board(buf, x, y, w, h);
+        return;
+    }
+    lighting::paint_neon_panel(buf, x, y, w, h, now, theme);
+}
+
+/// The office clock becomes a small hanging wayfinder in the forest scene.
+pub(super) fn paint_clock(buf: &mut RgbBuffer, x: u16, y: u16, now: SystemTime, theme: &Theme) {
+    if uses_forest_scene(theme) {
+        maple::paint_wayfinder(buf, x, y, now);
+        return;
+    }
+    lighting::paint_clock(buf, x, y, now, theme);
+}
+
+/// The office runner is a top-down depth cue and conflicts with the horizontal
+/// forest platforms, so the Maple route intentionally leaves the forest shell
+/// untouched. Other themes retain the byte-identical lighting implementation.
+pub(super) fn paint_corridor_runner(
+    buf: &mut RgbBuffer,
+    rect: crate::layout::Bounds,
+    theme: &Theme,
+) {
+    if uses_forest_scene(theme) {
+        return;
+    }
+    lighting::paint_corridor_runner(buf, rect, theme);
+}
 
 /// Floor-to-ceiling window width + inter-pane gap. [`window_columns`] owns the
 /// tiling LAW (start / stride / edge-margin / door-skip) both the spill pass and
@@ -359,6 +419,11 @@ pub(super) fn paint_floor_and_walls(
     theme: &Theme,
     altitude: f32,
 ) {
+    if uses_forest_scene(theme) {
+        maple::paint_forest_scene(buf, buf_w, buf_h, now, look, top_wall_h, altitude);
+        return;
+    }
+
     let window_frame = theme.surface.window_frame;
     let carpet_base = theme.surface.carpet_base;
     let carpet_light = theme.surface.carpet_light;
@@ -1055,3 +1120,118 @@ fn paint_floor_to_ceiling_window(
 
 #[cfg(test)]
 mod tests;
+
+#[cfg(test)]
+mod maple_route_tests {
+    use super::*;
+    use crate::theme::MAPLE;
+
+    #[test]
+    fn maple_theme_routes_to_a_layered_forest_scene() {
+        let mut buf = RgbBuffer::filled(
+            96,
+            64,
+            Rgb {
+                r: 255,
+                g: 0,
+                b: 255,
+            },
+        );
+        let look = TimeOfDayLook {
+            glass_a: Rgb { r: 0, g: 0, b: 0 },
+            glass_b: Rgb { r: 0, g: 0, b: 0 },
+            spill_strength: 0.0,
+            spill_slant: 0.0,
+            darkness: 0.0,
+        };
+
+        paint_floor_and_walls(
+            &mut buf,
+            96,
+            64,
+            SystemTime::UNIX_EPOCH,
+            &look,
+            16,
+            None,
+            &MAPLE,
+            0.0,
+        );
+
+        // Independent visual landmarks for the side-scrolling composition:
+        // open sky at the top, a continuous grass lip near the bottom, and a
+        // warm treehouse window. The old office wall/window/carpet pass has
+        // none of these three pixels, so this exercises the real theme route.
+        assert_eq!(
+            buf.get(0, 0),
+            Rgb {
+                r: 102,
+                g: 184,
+                b: 214,
+            }
+        );
+        assert_eq!(
+            buf.get(0, 52),
+            Rgb {
+                r: 151,
+                g: 205,
+                b: 82,
+            }
+        );
+        assert!(
+            (0..buf.height()).any(|y| (0..buf.width()).any(|x| {
+                buf.get(x, y)
+                    == Rgb {
+                        r: 255,
+                        g: 218,
+                        b: 112,
+                    }
+            })),
+            "treehouse window glow should be present"
+        );
+        assert_ne!(buf.get(1, 1), MAPLE.surface.wall);
+        assert_ne!(buf.get(4, 4), MAPLE.surface.window_frame);
+    }
+
+    #[test]
+    fn maple_background_fixtures_read_as_adventure_scenery() {
+        let untouched = Rgb { r: 9, g: 11, b: 13 };
+        let mut buf = RgbBuffer::filled(48, 32, untouched);
+
+        paint_neon_panel(&mut buf, 2, 2, 30, 8, SystemTime::UNIX_EPOCH, &MAPLE);
+        assert_eq!(
+            buf.get(2, 2),
+            Rgb {
+                r: 184,
+                g: 124,
+                b: 65,
+            },
+            "the shared status board should become a wood-framed quest board"
+        );
+        assert_eq!(
+            buf.get(4, 4),
+            Rgb {
+                r: 34,
+                g: 49,
+                b: 39,
+            },
+            "the board interior stays dark enough for the existing text overlay"
+        );
+
+        let mut runner = RgbBuffer::filled(24, 16, untouched);
+        paint_corridor_runner(
+            &mut runner,
+            crate::layout::Bounds {
+                x: 2,
+                y: 3,
+                width: 18,
+                height: 6,
+            },
+            &MAPLE,
+        );
+        assert!(
+            (0..runner.height())
+                .all(|y| (0..runner.width()).all(|x| runner.get(x, y) == untouched)),
+            "the top-down office runner must not cross the side-scrolling forest"
+        );
+    }
+}

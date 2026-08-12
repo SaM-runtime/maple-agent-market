@@ -140,8 +140,7 @@ pub fn run(cfg: RunConfig) -> Result<()> {
         pets,
         scene_rx,
         floor_caps,
-        audio.muted,
-        audio.volume,
+        audio,
     );
     event_loop
         .run_app(&mut app)

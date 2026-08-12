@@ -27,7 +27,9 @@ use crate::layout::Size;
 use crate::motion::MotionState;
 use crate::pathfind::{AStarRouter, Router};
 use crate::pet::{Pet, PetState};
-use crate::pixel_painter::{render_to_rgb_buffer, sim_step, PixelCtx, SimFrame, SimStores};
+use crate::pixel_painter::{
+    render_maple_to_rgb_buffer, render_to_rgb_buffer, sim_step, PixelCtx, SimFrame, SimStores,
+};
 use crate::pose::PoseHistory;
 use crate::theme::Theme;
 
@@ -406,6 +408,33 @@ pub fn render_floor(
     chitchat: &mut HashMap<VenueKey, ActiveChitchat>,
     inputs: FrameInputs,
 ) -> Option<FloorFrame> {
+    render_floor_for_map(fctx, buf, coffee, chitchat, inputs, None)
+}
+
+/// Render one selected Maple-world map through the shared floor lifecycle.
+/// Each map-owning floating session passes its complete projected scene, so
+/// its eviction domain remains coherent and the other map keeps independent
+/// animation state.
+#[doc(hidden)]
+pub fn render_maple_floor(
+    fctx: &mut FloorCtx,
+    buf: &mut RgbBuffer,
+    coffee: &mut CoffeeState,
+    chitchat: &mut HashMap<VenueKey, ActiveChitchat>,
+    inputs: FrameInputs,
+    map: crate::maple_world::MapleMapId,
+) -> Option<FloorFrame> {
+    render_floor_for_map(fctx, buf, coffee, chitchat, inputs, Some(map))
+}
+
+fn render_floor_for_map(
+    fctx: &mut FloorCtx,
+    buf: &mut RgbBuffer,
+    coffee: &mut CoffeeState,
+    chitchat: &mut HashMap<VenueKey, ActiveChitchat>,
+    inputs: FrameInputs,
+    maple_map: Option<crate::maple_world::MapleMapId>,
+) -> Option<FloorFrame> {
     let FrameInputs {
         scene,
         pack,
@@ -419,7 +448,7 @@ pub fn render_floor(
     } = inputs;
     buf.resize_fill(size.w, size.h, theme.surface.bg_fallback);
     let layout = fctx.frame_layout(size.w, size.h, floor_meta.floor_seed)?;
-    let result = render_to_rgb_buffer(&mut PixelCtx {
+    let mut pixel_ctx = PixelCtx {
         // Reborrow: `frame_epilogue` uses `fctx` after this render.
         store: &mut *fctx,
         buf,
@@ -434,7 +463,11 @@ pub fn render_floor(
         coffee: coffee.map(),
         chitchat_state: chitchat,
         debug_walkable,
-    });
+    };
+    let result = match maple_map {
+        Some(map) => render_maple_to_rgb_buffer(&mut pixel_ctx, map),
+        None => render_to_rgb_buffer(&mut pixel_ctx),
+    };
     let occupied_waypoints = result.occupied_waypoints;
     // The shared epilogue (carrier stamping + the door-cosmetic clamp) — ONE
     // definition shared with observe().
@@ -668,6 +701,31 @@ impl FloorSession {
             &mut self.office.chitchat,
             inputs,
         );
+        self.finish_render(frame)
+    }
+
+    /// Render one explicitly selected Maple map.  The caller owns one session
+    /// per map and supplies that map's complete projected scene, keeping the
+    /// usual eviction invariant intact without widening `FrameInputs`.
+    #[doc(hidden)]
+    pub fn render_maple(
+        &mut self,
+        inputs: FrameInputs,
+        map: crate::maple_world::MapleMapId,
+    ) -> Option<Arc<crate::layout::Layout>> {
+        self.evict_missing(inputs.scene);
+        let frame = render_maple_floor(
+            &mut self.floor.ctx,
+            &mut self.floor.buf,
+            &mut self.office.coffee,
+            &mut self.office.chitchat,
+            inputs,
+            map,
+        );
+        self.finish_render(frame)
+    }
+
+    fn finish_render(&mut self, frame: Option<FloorFrame>) -> Option<Arc<crate::layout::Layout>> {
         match frame {
             Some(FloorFrame {
                 layout,
@@ -1026,7 +1084,9 @@ pub fn project_floor_scene(scene: &SceneState, floor_idx: usize) -> SceneState {
         // `GlobalDeskIndex::single_floor_local` identity the render path
         // reads back through.
         slot.desk_index = GlobalDeskIndex(p.desk.0);
-        s.agents.insert(slot.agent_id, slot);
+        let agent_id = slot.agent_id;
+        s.agents.insert(agent_id, slot);
+        s.clone_turn_completion_from(scene, agent_id);
     }
     // Daemon presences (the OpenClaw gateway mascot) are global, not per-desk —
     // carry them onto the GROUND floor only so the mascot renders exactly once.

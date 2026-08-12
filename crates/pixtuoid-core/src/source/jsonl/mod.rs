@@ -46,10 +46,9 @@ pub use crate::source::decoder::LineDecoder;
 
 /// Derives an agent's display label from its transcript `(path, source, cwd)`.
 /// The default (`default_prefixed_label`) is the source-prefixed cwd basename
-/// (`cx·dotfiles`) that EVERY transcript-bearing source except CC uses — it
-/// reads only `(source, cwd)`, ignoring the path. **CC** overrides it with
-/// `cc_derive_label` (which falls back to the project-dir name when a Rename's
-/// seed line has no cwd, so `cc·dotfiles` never degrades to a bare `cc`).
+/// (`cx·dotfiles`) that transcript-bearing sources use by default. **CC**
+/// overrides it for its project-dir fallback; Codex may override it with an
+/// opt-in task-index label while preserving the same cwd fallback.
 pub type LabelDeriver = fn(&Path, &str, &Path) -> String;
 
 fn default_prefixed_label(_path: &Path, source: &str, cwd: &Path) -> String {
@@ -102,6 +101,12 @@ fn no_cwd_from_path(_p: &Path) -> Option<PathBuf> {
     None
 }
 
+/// Recognizes a source-owned JSONL line that explicitly starts a new turn and
+/// can therefore re-run first-sight registration for an already-claimed path.
+/// Kept crate-private: only source wiring configures it; callers still consume
+/// the normal `SessionStart` + `Rename` event pair.
+pub(crate) type SessionReentryDetector = fn(&[u8]) -> bool;
+
 /// The per-source decode/label/end/id fn-pointers (the invariant-#3 seam)
 /// bundled so the seed/scan/walk helpers thread ONE Copy value, not four.
 #[derive(Clone, Copy)]
@@ -112,6 +117,7 @@ struct SourceDecoders {
     id_derive: IdDeriver,
     path_filter: PathFilter,
     cwd_derive: CwdDeriver,
+    session_reentry: Option<SessionReentryDetector>,
 }
 
 /// Shared per-run watch state, borrowed by the scan/walk helpers.
@@ -182,6 +188,7 @@ pub struct JsonlWatcher {
     id_derive: IdDeriver,
     path_filter: PathFilter,
     cwd_derive: CwdDeriver,
+    session_reentry: Option<SessionReentryDetector>,
     liveness_probe: Option<LivenessProbe>,
     poll_interval: Duration,
     negative_vouch_min_span: Duration,
@@ -226,6 +233,7 @@ impl JsonlWatcher {
             id_derive: default_id_from_path,
             path_filter: accept_all_paths,
             cwd_derive: no_cwd_from_path,
+            session_reentry: None,
             liveness_probe: None,
             poll_interval: DEFAULT_POLL_INTERVAL,
             negative_vouch_min_span: NEGATIVE_VOUCH_MIN_SPAN,
@@ -275,6 +283,17 @@ impl JsonlWatcher {
     /// rides the default.
     pub fn with_label_deriver(mut self, derive_label: LabelDeriver) -> Self {
         self.derive_label = derive_label;
+        self
+    }
+
+    /// Re-run the normal first-sight registration pair when a newly appended
+    /// source-owned line proves a fresh turn began. This is narrower than
+    /// allowing arbitrary JSONL activity to synthesize an unknown slot.
+    pub(crate) fn with_session_reentry_detector(
+        mut self,
+        detector: SessionReentryDetector,
+    ) -> Self {
+        self.session_reentry = Some(detector);
         self
     }
 
@@ -464,6 +483,7 @@ impl JsonlWatcher {
             id_derive: self.id_derive,
             path_filter: self.path_filter,
             cwd_derive: self.cwd_derive,
+            session_reentry: self.session_reentry,
         };
 
         // Initial seed: the same `scan_root` → `walk_jsonl` path every later scan

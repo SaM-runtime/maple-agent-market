@@ -21,6 +21,13 @@ use super::{SessionEndChecker, SourceDecoders, WatchCtx};
 /// const instead of a drifting second copy of the literal.
 pub(super) const MAX_PENDING_BYTES: u64 = 1 << 20;
 
+/// How far into an oversized *new* span to look for a structural session
+/// re-entry marker. The cursor is newline-aligned, and a Codex turn start is a
+/// small line near the beginning of the resumed append (after the user-message
+/// envelope). Keep this bounded so the >1 MiB protection never turns back into
+/// an unbounded backlog replay.
+const REENTRY_SCAN_BYTES: u64 = 64 * 1024;
+
 /// The path form EVERY id derivation runs on: the same `normalize_path_key`
 /// fold the per-line decoders receive (`transcript_path_str` below), so the
 /// first-sight / session-end / park lanes and the decoder lane mint ONE id
@@ -238,8 +245,8 @@ pub(super) async fn walk_jsonl(path: &Path, decoders: SourceDecoders, ctx: &Watc
         // Scan reads the file tail and is independent of the cursor, so compute
         // it before seeding.
         let ended_in_skip = check_session_ended(path, check_ended).await;
-        // Seed the cursor to EOF FIRST — before the awaited head-read +
-        // registration below — so a concurrent walk_jsonl on this path (250ms
+        // Seed the cursor to EOF FIRST — before the awaited re-entry/head reads
+        // + registration below — so a concurrent walk_jsonl on this path (250ms
         // rescan / notify) sees `known` on its next read and won't re-enter this
         // branch. Mirrors the normal tail-read path, which also advances the
         // cursor before emitting. (`emit_first_sight` is idempotent via `seen`, so
@@ -271,6 +278,25 @@ pub(super) async fn walk_jsonl(path: &Path, decoders: SourceDecoders, ctx: &Watc
             seen.lock().await.remove(path);
             return;
         }
+        // A reducer slot may already have gone stale while this path's
+        // first-sight claim remains held. A new Codex prompt normally releases
+        // that claim through `session_reentry`, but an append larger than the
+        // skip threshold never reaches the normal decode loop below. Inspect
+        // only the bounded PREFIX of this newly pending span (never historical
+        // bytes from a first sight): task_started lives near the turn boundary,
+        // and finding it means the path must re-register before its decoded
+        // ActivityStart is replayed. This is the long-running/resumed-task seam.
+        let recovered_reentry = if known {
+            match decoders.session_reentry {
+                Some(detect) => read_pending_reentry(path, cursor_now, file_len, detect).await,
+                None => None,
+            }
+        } else {
+            None
+        };
+        if recovered_reentry.is_some() {
+            seen.lock().await.insert(path.to_path_buf(), false);
+        }
         // #204: on the first oversized sight of a recent, live session, still
         // REGISTER the agent. Otherwise a >1 MB transcript stays invisible
         // until its next small append (a long session, or a delegating parent
@@ -289,6 +315,27 @@ pub(super) async fn walk_jsonl(path: &Path, decoders: SourceDecoders, ctx: &Watc
         if !registered {
             let head_cwd = read_head_cwd(path, MAX_PENDING_BYTES, cwd_extractor_for(source)).await;
             emit_first_sight(path, source, decoders, seen, tx, head_cwd).await;
+        }
+        // Preserve the ordinary re-entry ordering: SessionStart + Rename first,
+        // then the exact structural line's decoded ActivityStart. Decode only
+        // this one independently detected line — never replay the giant span.
+        if seen.lock().await.get(path) == Some(&true) {
+            if let Some(line) = recovered_reentry {
+                let transcript_path = crate::id::normalize_path_key(&path.to_string_lossy());
+                match serde_json::from_slice::<serde_json::Value>(&line) {
+                    Ok(value) => match decode_line(&transcript_path, source, value) {
+                        Ok(events) => {
+                            for event in events {
+                                if tx.send((Transport::Jsonl, event)).await.is_err() {
+                                    return;
+                                }
+                            }
+                        }
+                        Err(e) => warn!("decode re-entry in {} failed: {e}", path.display()),
+                    },
+                    Err(e) => debug!("skip non-json re-entry in {}: {e}", path.display()),
+                }
+            }
         }
         // #222: the skipped span may bury an IN-FLIGHT Agent/Task dispatch —
         // tail-scan the last TASK_SCAN_BYTES for unmatched Task starts and
@@ -343,6 +390,17 @@ pub(super) async fn walk_jsonl(path: &Path, decoders: SourceDecoders, ctx: &Watc
     // per-line key agree — an un-normalized path here would land every JSONL
     // event on a phantom id (caught by the PR #160 security review).
     let transcript_path_str = crate::id::normalize_path_key(&path.to_string_lossy());
+
+    // A source-owned new-turn marker outranks a held claim after the reducer may
+    // have reaped its slot; only NEW bytes are eligible, never history.
+    if decoders.session_reentry.is_some_and(|detect| {
+        new_bytes
+            .split(|byte| *byte == b'\n')
+            .filter(|line| !line.is_empty())
+            .any(detect)
+    }) {
+        seen.lock().await.insert(path.to_path_buf(), false);
+    }
 
     // The first-sight cwd normally comes from the read span, but a GATED file
     // revived by an append only reads the tail — and Codex rollouts carry cwd
@@ -532,6 +590,31 @@ async fn read_head_cwd(path: &Path, limit: u64, extract: CwdExtractor) -> Option
     let n = file.read(&mut head).await.ok()?;
     head.truncate(n);
     extract_cwd(&head, extract)
+}
+
+/// Read only the newline-complete prefix of a newly pending oversized span and
+/// return its first structural re-entry line. `start` is the walker's previous
+/// cursor (therefore newline-aligned); `end` is the metadata length captured by
+/// the same pass. A partial final line is ignored exactly like the normal walk.
+async fn read_pending_reentry(
+    path: &Path,
+    start: u64,
+    end: u64,
+    detect: fn(&[u8]) -> bool,
+) -> Option<Vec<u8>> {
+    let bytes = end.saturating_sub(start).min(REENTRY_SCAN_BYTES);
+    if bytes == 0 {
+        return None;
+    }
+    let mut file = tokio::fs::File::open(path).await.ok()?;
+    file.seek(SeekFrom::Start(start)).await.ok()?;
+    let mut prefix = Vec::with_capacity(bytes as usize);
+    file.take(bytes).read_to_end(&mut prefix).await.ok()?;
+    let safe_end = prefix.iter().rposition(|byte| *byte == b'\n')? + 1;
+    prefix[..safe_end]
+        .split(|byte| *byte == b'\n')
+        .find(|line| !line.is_empty() && detect(line))
+        .map(<[u8]>::to_vec)
 }
 
 /// Read at most `bytes` from the END of a file (clamped to file size).

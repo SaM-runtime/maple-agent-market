@@ -269,9 +269,14 @@ fn coffee_machine_tooltip_on_hover() {
     let hover = hover.expect("coffee machine should be hit-testable");
     r.set_mouse_pos(Some(hover));
     r.render(&scene, &pack(), t0()).unwrap();
+    let text = frame_text(r.frame_buffer());
     assert!(
-        frame_text(r.frame_buffer()).contains("Ivan"),
-        "hovering the coffee machine shows the Buy-Ivan-a-coffee tooltip"
+        text.contains("Coffee machine"),
+        "hovering the coffee machine shows a neutral decorative tooltip"
+    );
+    assert!(
+        !text.contains("Ivan"),
+        "fork-facing coffee tooltip must not advertise an upstream sponsor"
     );
 }
 

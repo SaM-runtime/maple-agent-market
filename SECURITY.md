@@ -2,9 +2,9 @@
 
 ## Supported Versions
 
-Fixes land on the latest released version; there are no maintained back-branches.
-Upgrade to the newest release (`cargo install pixtuoid`, `brew upgrade`, or
-`npm i -g pixtuoid`) to receive security fixes.
+Maple Agent Market is currently a public source prototype. There is no
+supported binary or package channel yet. Until the first release, build and
+test the current source revision.
 
 | Version        | Supported |
 |----------------|-----------|
@@ -13,16 +13,19 @@ Upgrade to the newest release (`cargo install pixtuoid`, `brew upgrade`, or
 
 ## Privacy posture
 
-pixtuoid is **local-only and telemetry-free by design**:
+Maple Agent Market retains Pixtuoid's **local-only and telemetry-free** design:
 
-- **No network egress.** The binary makes no outbound network connections — no
-  analytics, crash-reporting upload, update check, or "phone home". (The crash
-  hook writes a backtrace to a *local* file and only ever offers a pre-filled
-  GitHub URL for you to open manually.) The dependency set is audited daily for
-  advisories via `cargo-deny` (see `.github/workflows/audit.yml`).
+- **No automatic network egress.** The process makes no outbound network
+  connections for analytics, crash-reporting upload, update checks, or "phone
+  home". Clicking an explicitly displayed project link can ask the operating
+  system to open the user's browser. The crash hook writes a backtrace to a
+  *local* file. Optional BGM and sprite packs are also local files. The
+  repository includes a `cargo-deny` workflow (see `.github/workflows/audit.yml`).
 - **Your session data stays on your machine.** pixtuoid reads your agent CLIs'
   transcripts (e.g. `~/.claude/projects`, `~/.codex/sessions`) **read-only**, to
-  derive what each sprite is doing; nothing is transmitted anywhere.
+  derive what each sprite is doing; nothing is transmitted anywhere. The local
+  Maple asset workshop is outside the public source/release boundary described
+  in `FORK_NOTICE.md`.
 
 ## Trust boundaries / attack surface
 
@@ -70,10 +73,12 @@ traversal, or any network egress), please report it.
 
 ## Reporting a Vulnerability
 
-Report privately via
-[GitHub private vulnerability reporting](https://github.com/IvanWng97/pixtuoid/security/advisories/new).
+Use this repository's [private vulnerability reporting
+form](https://github.com/SaM-runtime/maple-agent-market/security/advisories/new).
+Do not send fork-only reports to the upstream Pixtuoid tracker. If the issue
+also reproduces in unmodified upstream Pixtuoid, coordinate a separate upstream
+report without disclosing an unpatched vulnerability publicly.
 
-You will receive acknowledgement within 48 hours, and a fix or mitigation plan
-within 7 days for confirmed vulnerabilities.
+No response-time SLA is promised during the prototype phase.
 
 **Do not** open a public issue for security vulnerabilities.

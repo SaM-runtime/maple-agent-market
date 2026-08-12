@@ -25,6 +25,25 @@ pub(super) fn paint_character_at(
     cache: &mut FrameCache,
     now: SystemTime,
 ) {
+    paint_character_at_scaled(
+        buf, anim_name, frame_idx, anchor, agent, pack, flip_x, glow_tint, cache, now, 1,
+    );
+}
+
+#[allow(clippy::too_many_arguments)]
+pub(super) fn paint_character_at_scaled(
+    buf: &mut RgbBuffer,
+    anim_name: &'static str,
+    frame_idx: usize,
+    anchor: Point,
+    agent: &AgentSlot,
+    pack: &Pack,
+    flip_x: bool,
+    glow_tint: Option<Rgb>,
+    cache: &mut FrameCache,
+    now: SystemTime,
+    scale: u16,
+) {
     let Some(anim) = pack.animation(anim_name) else {
         return;
     };
@@ -58,9 +77,9 @@ pub(super) fn paint_character_at(
         },
     );
     let sprite_w = cached.width();
-    blit_frame(cached, anchor.x, anchor.y, buf);
+    super::blit_frame_scaled(cached, anchor.x, anchor.y, scale, buf);
     if burn == crate::burn::BurnTier::Top {
-        super::effects::paint_flame_crown(buf, anchor, sprite_w, now);
+        super::effects::paint_flame_crown(buf, anchor, sprite_w.saturating_mul(scale), now);
     }
 }
 

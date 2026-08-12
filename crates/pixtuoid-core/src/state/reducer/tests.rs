@@ -98,6 +98,108 @@ fn stale_timeout_constants_have_their_intended_durations() {
     assert_eq!(PROOF_OF_LIFE_TTL, Duration::from_secs(150)); // 2.5× the 60s poll
 }
 
+#[test]
+fn normal_turn_completion_records_a_presentation_edge_but_abort_does_not() {
+    use crate::source::{AgentEvent, Transport};
+    use crate::{AgentId, Reducer, SceneState};
+    use std::time::{Duration, SystemTime};
+
+    let mut scene = SceneState::uniform(2);
+    let mut reducer = Reducer::new();
+    let id = AgentId::from_parts("codex", "completion-edge");
+    let started = SystemTime::UNIX_EPOCH + Duration::from_secs(10_000);
+    reducer.apply(
+        &mut scene,
+        AgentEvent::SessionStart {
+            agent_id: id,
+            source: "codex".into(),
+            session_id: "completion-edge".into(),
+            cwd: "/repo".into(),
+            parent_id: None,
+        },
+        started,
+        Transport::Jsonl,
+    );
+    reducer.apply(
+        &mut scene,
+        AgentEvent::ActivityStart {
+            agent_id: id,
+            tool_use_id: None,
+            detail: None,
+        },
+        started + Duration::from_secs(1),
+        Transport::Jsonl,
+    );
+
+    let completed = started + Duration::from_secs(2);
+    reducer.apply(
+        &mut scene,
+        AgentEvent::TurnComplete { agent_id: id },
+        completed,
+        Transport::Jsonl,
+    );
+    assert_eq!(scene.last_turn_completed_at(id), Some(completed));
+    assert!(
+        scene.agents[&id].pending_idle_at.is_some(),
+        "completion retains the existing debounced Active-to-Idle behavior"
+    );
+
+    let next_turn = started + Duration::from_secs(3);
+    reducer.apply(
+        &mut scene,
+        AgentEvent::ActivityStart {
+            agent_id: id,
+            tool_use_id: None,
+            detail: None,
+        },
+        next_turn,
+        Transport::Jsonl,
+    );
+    assert_eq!(
+        scene.last_turn_completed_at(id),
+        None,
+        "fresh work cancels a still-visible completion pulse"
+    );
+
+    let completed_before_delegation = next_turn + Duration::from_secs(1);
+    reducer.apply(
+        &mut scene,
+        AgentEvent::TurnComplete { agent_id: id },
+        completed_before_delegation,
+        Transport::Jsonl,
+    );
+    reducer.apply(
+        &mut scene,
+        AgentEvent::ActivityStart {
+            agent_id: id,
+            tool_use_id: Some("task-1".into()),
+            detail: Some(crate::source::ToolDetail::Task),
+        },
+        completed_before_delegation + Duration::from_millis(100),
+        Transport::Jsonl,
+    );
+    assert_eq!(
+        scene.last_turn_completed_at(id),
+        None,
+        "delegating fresh work cancels the pulse through its task-tracking path"
+    );
+
+    reducer.apply(
+        &mut scene,
+        AgentEvent::ActivityEnd {
+            agent_id: id,
+            tool_use_id: None,
+        },
+        next_turn + Duration::from_secs(2),
+        Transport::Jsonl,
+    );
+    assert_eq!(
+        scene.last_turn_completed_at(id),
+        None,
+        "ordinary tool ends and aborted-turn ActivityEnd records never celebrate"
+    );
+}
+
 // The Delegating stale carve-out is caps-driven; pin the POLICY half with
 // a synthetic caps value so caps combinations beyond the registered rows
 // stay covered — that's what the lookup/policy split exists for. (The
@@ -568,7 +670,7 @@ fn correlation_maps_stay_bounded_across_a_long_stream() {
 
     let mut r = super::Reducer::new();
     // Cap comfortably exceeds the un-swept working set: a slot lives from its
-    // SessionStart until `sweep_exited` removes it ~EXIT_GRACE_WINDOW (4.5s) after
+    // SessionStart until `sweep_exited` removes it ~EXIT_GRACE_WINDOW (9.5s) after
     // its end — a handful of concurrent slots at ~1s/iter.
     let mut scene = SceneState::uniform(32);
     let t0 = SystemTime::UNIX_EPOCH + Duration::from_secs(1_000_000);

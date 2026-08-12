@@ -70,6 +70,14 @@ pub(crate) struct FloatingApp {
     last_caps_size: Option<(u16, u16)>,
     /// Latest cursor position (physical px) — for the corner resize hit-test on click.
     cursor: PhysicalPosition<f64>,
+    /// Cursor point captured by a manual frameless-window drag. Programmatic
+    /// movement deliberately avoids Windows' title-bar Snap/maximize gesture.
+    drag_grab: Option<PhysicalPosition<f64>>,
+    /// Logical task-label preference from the child-only launcher environment.
+    /// The redraw multiplies this by winit's live DPI scale factor.
+    label_scale: f32,
+    /// User-selectable compact/medium/large logical window target.
+    size_preset: super::geometry::FloatingSizePreset,
     /// The animation-tick deadline — see [`super::cadence`] for why the redraw
     /// REQUEST (not just the wait) has to be gated on it.
     clock: super::cadence::FrameClock,
@@ -92,15 +100,17 @@ impl FloatingApp {
         pets: Vec<pixtuoid_scene::pet::Pet>,
         scene_rx: watch::Receiver<Arc<SceneState>>,
         floor_caps: Arc<[AtomicUsize; MAX_FLOORS]>,
-        audio_muted: bool,
-        audio_volume: f32,
+        audio: crate::config::AudioConfig,
     ) -> Self {
         // The controller OWNS the device thread (boot-spawn here, Drop-teardown)
         // — see AudioController. Built here, after floating::run's fallible boot
         // steps (pack / runtime / event-loop `?`), so a boot failure means no
         // thread ever existed, and every later exit drops `app` → the join runs.
-        let audio_ctl =
-            crate::audio::AudioController::new(audio_muted, audio_volume, config_path.clone());
+        let audio_ctl = crate::audio::AudioController::new(audio, config_path.clone());
+        let label_scale_value = std::env::var(super::offscreen::LABEL_SCALE_ENV).ok();
+        let label_scale = super::offscreen::parse_label_scale(label_scale_value.as_deref());
+        let size_preset =
+            super::geometry::FloatingSizePreset::from_logical_size(cfg.width, cfg.height);
         let mut renderer = OfficeRenderer::new();
         renderer.set_audio(audio_ctl.handle().clone());
         Self {
@@ -115,6 +125,9 @@ impl FloatingApp {
             floor_caps,
             last_caps_size: None,
             cursor: PhysicalPosition::new(0.0, 0.0),
+            drag_grab: None,
+            label_scale,
+            size_preset,
             clock: super::cadence::FrameClock::new(Instant::now()),
             window: None,
             context: None,
@@ -138,6 +151,72 @@ impl FloatingApp {
             pos.map(|p| p.y),
         ) {
             tracing::warn!("pixtuoid floating: could not persist window geometry: {e}");
+        }
+    }
+
+    /// Exit through the same persistence path for both the OS close request and
+    /// the frameless window's hidden Escape gesture.
+    fn request_close(&self, event_loop: &ActiveEventLoop) {
+        self.persist_geometry();
+        event_loop.exit();
+    }
+
+    fn size_selector_text(&self) -> Option<String> {
+        self.renderer.map_selector_text()?;
+        Some(format!("大小：{} [Z]", self.size_preset.title_zh_tw()))
+    }
+
+    fn request_preset_size(&self, window: &Window) {
+        let target = self
+            .size_preset
+            .logical_size(self.renderer.prefers_dual_map());
+        let fitted = window.current_monitor().map_or(target, |monitor| {
+            let logical = monitor.size().to_logical::<f64>(window.scale_factor());
+            super::geometry::fit_logical_size(
+                target,
+                (
+                    logical.width.round().max(1.0) as u32,
+                    logical.height.round().max(1.0) as u32,
+                ),
+                0.9,
+            )
+        });
+        let _ =
+            window.request_inner_size(LogicalSize::new(f64::from(fitted.0), f64::from(fitted.1)));
+    }
+
+    fn cycle_size_preset(&mut self) -> bool {
+        if self.renderer.map_selector_text().is_none() {
+            return false;
+        }
+        self.size_preset = self.size_preset.next();
+        if let Some(window) = self.window.clone() {
+            self.request_preset_size(&window);
+            window.request_redraw();
+        }
+        true
+    }
+
+    fn cycle_map_view(&mut self) {
+        let was_dual = self.renderer.prefers_dual_map();
+        if !self.renderer.cycle_map() {
+            return;
+        }
+        if let Some(window) = self.window.clone() {
+            if was_dual != self.renderer.prefers_dual_map() {
+                self.request_preset_size(&window);
+            }
+            window.request_redraw();
+        }
+    }
+
+    fn choose_map_view(&mut self, selection: super::input::MapViewSelection) {
+        if !self.renderer.select_map_view(selection) {
+            return;
+        }
+        if let Some(window) = self.window.clone() {
+            self.request_preset_size(&window);
+            window.request_redraw();
         }
     }
 
@@ -197,6 +276,10 @@ impl FloatingApp {
             .iter()
             .map(|p| super::offscreen::pack_xrgb(*p))
             .collect();
+        let map_selector = self.renderer.map_selector_text();
+        let size_selector = map_selector
+            .as_ref()
+            .map(|_| format!("大小：{} [Z]", self.size_preset.title_zh_tw()));
 
         let Some(surface) = self.surface.as_mut() else {
             return;
@@ -223,16 +306,60 @@ impl FloatingApp {
         // Name badges + the neon wall board, drawn POST-upscale at native surface res
         // (crisp anti-aliased Monaspace Neon) using the same layout/route state the office
         // pass just used. Badges are a fixed caption height; the board scales with the panel.
-        let labels = self.renderer.labels(&scene, SystemTime::now());
-        super::offscreen::paint_labels_into_surface(
-            &mut sb,
-            win_w,
-            win_h,
-            &labels,
-            scale as i32,
-            self.theme,
-        );
-        let board = self.renderer.board(&scene, SystemTime::now());
+        let overlay_now = SystemTime::now();
+        let label_font_px =
+            super::offscreen::label_font_px(window.scale_factor(), self.label_scale);
+        let map_batches = self.renderer.maple_overlay_batches(&scene, overlay_now);
+        if map_batches.is_empty() {
+            let labels = self.renderer.labels(&scene, overlay_now);
+            super::offscreen::paint_map_labels_into_surface_with_font_px(
+                &mut sb,
+                win_w,
+                win_h,
+                &labels,
+                scale as i32,
+                label_font_px,
+                self.theme,
+                self.renderer.current_map(),
+            );
+        } else {
+            for batch in map_batches {
+                let panel_left = usize::from(batch.viewport.x).saturating_mul(scale);
+                let buffer_right =
+                    usize::from(batch.viewport.x.saturating_add(batch.viewport.width));
+                let panel_width = if buffer_right >= ow {
+                    win_w.saturating_sub(panel_left)
+                } else {
+                    usize::from(batch.viewport.width).saturating_mul(scale)
+                };
+                super::offscreen::paint_map_labels_into_surface_with_font_px_in_panel(
+                    &mut sb,
+                    win_w,
+                    win_h,
+                    &batch.labels,
+                    scale as i32,
+                    label_font_px,
+                    self.theme,
+                    batch.map,
+                    panel_left,
+                    panel_width,
+                );
+                if batch.map == pixtuoid_scene::maple_world::MapleMapId::FreeMarket {
+                    super::offscreen::paint_market_player_ids_into_surface_with_font_px_in_panel(
+                        &mut sb,
+                        win_w,
+                        win_h,
+                        &batch.player_ids,
+                        scale as i32,
+                        label_font_px,
+                        self.theme,
+                        panel_left,
+                        panel_width,
+                    );
+                }
+            }
+        }
+        let board = self.renderer.board(&scene, overlay_now);
         super::offscreen::paint_wall_board_into_surface(
             &mut sb,
             win_w,
@@ -241,6 +368,24 @@ impl FloatingApp {
             scale as i32,
             self.theme,
         );
+        if let Some(selector) = map_selector {
+            super::offscreen::paint_map_selector_into_surface(
+                &mut sb,
+                win_w,
+                win_h,
+                &selector,
+                label_font_px,
+            );
+            if let Some(size_selector) = size_selector {
+                super::offscreen::paint_size_selector_into_surface(
+                    &mut sb,
+                    win_w,
+                    win_h,
+                    &size_selector,
+                    label_font_px,
+                );
+            }
+        }
         // The status footer (full TUI parity) as a bottom-overlay band — carries
         // the ♩/♩N% audio suffix the standalone volume flash used to, plus the
         // office stats/rungs/tools/gateway. `win_w`/`win_h` are usize surface dims.
@@ -285,7 +430,7 @@ impl ApplicationHandler<FloatingEvent> for FloatingApp {
             return; // already created — a re-resume must not spawn a second window
         }
         let mut attrs = Window::default_attributes()
-            .with_title("pixtuoid")
+            .with_title(crate::PRODUCT_NAME)
             .with_decorations(false)
             .with_resizable(true)
             .with_window_level(WindowLevel::AlwaysOnTop)
@@ -371,8 +516,7 @@ impl ApplicationHandler<FloatingEvent> for FloatingApp {
                 // Geometry MUST persist HERE — the window is gone once `run_app`
                 // returns. The audio persist + device stop instead ride
                 // `AudioController::drop` when `app` drops post-`run_app` (#752).
-                self.persist_geometry();
-                event_loop.exit();
+                self.request_close(event_loop);
             }
             // `is_synthetic: false`: winit fabricates a Pressed for every key
             // physically held when the window GAINS FOCUS (X11 + Windows). A
@@ -385,6 +529,24 @@ impl ApplicationHandler<FloatingEvent> for FloatingApp {
                 is_synthetic: false,
                 ..
             } if event.state == ElementState::Pressed => {
+                if super::input::close_requested(&event.logical_key, event.repeat) {
+                    self.request_close(event_loop);
+                    return;
+                }
+                if super::input::map_switch_requested(&event.logical_key, event.repeat) {
+                    self.cycle_map_view();
+                    return;
+                }
+                if super::input::size_switch_requested(&event.logical_key, event.repeat) {
+                    self.cycle_size_preset();
+                    return;
+                }
+                if let Some(selection) =
+                    super::input::map_view_selection(&event.logical_key, event.repeat)
+                {
+                    self.choose_map_view(selection);
+                    return;
+                }
                 if let Some(action) = super::input::audio_action(&event.logical_key, event.repeat) {
                     // floating has no [p]ause; effective mute == muted. The
                     // controller persists mute NOW + debounces the volume + arms
@@ -402,29 +564,85 @@ impl ApplicationHandler<FloatingEvent> for FloatingApp {
                     window.request_redraw();
                 }
             }
-            WindowEvent::CursorMoved { position, .. } => self.cursor = position,
+            WindowEvent::CursorMoved { position, .. } => {
+                self.cursor = position;
+                if let (Some(grab), Some(window)) = (self.drag_grab, &self.window) {
+                    if let Ok(outer) = window.outer_position() {
+                        let target = super::geometry::manual_drag_position(
+                            (outer.x, outer.y),
+                            (position.x, position.y),
+                            (grab.x, grab.y),
+                        );
+                        window.set_outer_position(PhysicalPosition::new(target.0, target.1));
+                    }
+                }
+            }
             WindowEvent::MouseInput {
                 state: ElementState::Pressed,
                 button: MouseButton::Left,
                 ..
             } => {
-                // Frameless: a left-press drags the window, EXCEPT near the bottom-right
-                // corner, which resizes (the OS takes over until release). Errors are
-                // non-fatal (some platforms refuse outside a real press).
+                // Frameless: a left-press starts a programmatic move, EXCEPT near
+                // the bottom-right corner, which retains the native resize loop.
+                // Native move is intentionally avoided because Windows Snap can
+                // maximize the window while it crosses a monitor edge.
                 if let Some(window) = &self.window {
                     let size = window.inner_size();
+                    let selector_clicked = self.renderer.map_selector_text().is_some_and(|text| {
+                        let font_px = super::offscreen::label_font_px(
+                            window.scale_factor(),
+                            self.label_scale,
+                        );
+                        super::offscreen::map_selector_hit_test(
+                            (self.cursor.x, self.cursor.y),
+                            &text,
+                            font_px,
+                            size.width as usize,
+                            size.height as usize,
+                        )
+                    });
+                    let size_selector_clicked = self.size_selector_text().is_some_and(|text| {
+                        let font_px = super::offscreen::label_font_px(
+                            window.scale_factor(),
+                            self.label_scale,
+                        );
+                        super::offscreen::size_selector_hit_test(
+                            (self.cursor.x, self.cursor.y),
+                            &text,
+                            font_px,
+                            size.width as usize,
+                            size.height as usize,
+                        )
+                    });
+                    if size_selector_clicked {
+                        self.drag_grab = None;
+                        self.cycle_size_preset();
+                        return;
+                    }
+                    if selector_clicked {
+                        self.drag_grab = None;
+                        self.cycle_map_view();
+                        return;
+                    }
                     let near_corner = super::geometry::near_resize_corner(
                         (self.cursor.x, self.cursor.y),
                         (size.width, size.height),
                         RESIZE_CORNER_PX,
                     );
-                    let _ = if near_corner {
-                        window.drag_resize_window(ResizeDirection::SouthEast)
+                    if near_corner {
+                        self.drag_grab = None;
+                        let _ = window.drag_resize_window(ResizeDirection::SouthEast);
                     } else {
-                        window.drag_window()
-                    };
+                        self.drag_grab = Some(self.cursor);
+                    }
                 }
             }
+            WindowEvent::MouseInput {
+                state: ElementState::Released,
+                button: MouseButton::Left,
+                ..
+            }
+            | WindowEvent::Focused(false) => self.drag_grab = None,
             _ => {}
         }
     }

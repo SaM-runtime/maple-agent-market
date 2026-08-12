@@ -65,6 +65,14 @@ pub mod footer;
 #[doc(hidden)]
 pub mod frame_cache;
 pub mod layout;
+// Shared Maple-world map routing for the floating painter.  This presentation
+// state deliberately stays outside core's immutable desk/floor assignment.
+#[doc(hidden)]
+pub mod maple_world;
+// Shared free-market slot + overlay authority for in-workspace painters, not a
+// stable engine API (same boundary as overlay/board).
+#[doc(hidden)]
+pub mod market;
 pub mod motion;
 // The name-badge label MODEL the two in-workspace painters consume — their
 // shared single source of truth, not a stable engine API.
@@ -79,6 +87,9 @@ pub mod pose;
 /// The color-theme MODEL: the `Theme` role palette and the bundled themes.
 pub mod theme;
 pub mod token_meter;
+// Forest-training placement/motion authority shared by pixels and labels.
+#[doc(hidden)]
+pub mod training;
 
 /// Test-only mutex serializing tests that mutate process-global environment
 /// variables (`XDG_CONFIG_HOME`). The crate's unit tests share one test binary,

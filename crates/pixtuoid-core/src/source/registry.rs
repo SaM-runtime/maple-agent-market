@@ -106,7 +106,7 @@ pub struct SourceCaps {
     /// always-false; no hook transport).
     pub has_exit_signal: bool,
     /// Does a live-but-swept session WALK BACK IN on the user's next prompt
-    /// (a `UserPromptSubmit`-class event re-emitting `SessionStart`)? This is
+    /// through a source-owned carrier that re-emits `SessionStart`? This is
     /// the safety precondition for the short idle reaper: its only false
     /// positive (a live session idle past the window) must self-heal. Codex:
     /// true. Antigravity: false — its JSONL watcher emits the synthetic
@@ -445,6 +445,8 @@ const CODEX: SourceDescriptor = SourceDescriptor {
             // reaping from 5 to 30 minutes. The hook still ends clean exits
             // immediately; the reaper stays as the backstop.
             has_exit_signal: false,
+            // Structural task_started/turn_started JSONL reclaims first sight,
+            // so resurrection does not depend on Codex hooks being enabled.
             resurrects_on_prompt: true,
             delegations_are_hook_silent: false,
         },

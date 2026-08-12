@@ -277,7 +277,7 @@ mod tests {
             "bt",
             Path::new("/tmp/x"),
         );
-        assert!(url.starts_with("https://github.com/IvanWng97/pixtuoid/issues/new?"));
+        assert!(url.starts_with("https://github.com/SaM-runtime/maple-agent-market/issues/new?"));
         assert!(url.contains("labels=crash-report"));
         assert!(url.contains("title="));
         assert!(url.contains("body="));

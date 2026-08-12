@@ -892,6 +892,17 @@ fn night_hours() -> impl Iterator<Item = u32> {
     (0..24u32).filter(|h| !sky::hour_is_day(*h as f32))
 }
 
+/// Themes that actually render the office glass/weather pipeline these tests
+/// exercise. The local Maple Free Market route paints a full outdoor scene and
+/// intentionally has no window panes, so sampling its sky as "glass" would test
+/// a component that production never draws.
+fn office_glass_themes() -> impl Iterator<Item = &'static crate::theme::Theme> {
+    crate::theme::ALL_THEMES
+        .iter()
+        .copied()
+        .filter(|theme| theme.name != "maple")
+}
+
 /// The most of its OWN solar-noon brightness a pane may still show at any night
 /// hour. A bare `night < noon` has NO teeth against the veil defect: the
 /// absolute-grey veils left each weather's night pane just barely under its own
@@ -912,7 +923,7 @@ const MAX_NIGHT_PANE_FRACTION: f32 = 0.75;
 // a night-lit room sat behind daylight-white windows.
 #[test]
 fn no_weather_flattens_the_glass_day_night_contrast() {
-    for theme in crate::theme::ALL_THEMES {
+    for theme in office_glass_themes() {
         for w in Weather::ALL {
             let noon = pane(theme, NOON_HOUR, w);
             for hour in night_hours() {
@@ -938,7 +949,7 @@ fn no_weather_flattens_the_glass_day_night_contrast() {
 // the light model and is not asserted here.
 #[test]
 fn no_night_pane_outshines_the_clear_solar_noon_pane() {
-    for theme in crate::theme::ALL_THEMES {
+    for theme in office_glass_themes() {
         let clear_noon = pane(theme, NOON_HOUR, Weather::Clear);
         for w in Weather::ALL {
             for hour in night_hours() {
@@ -964,7 +975,7 @@ fn fog_still_glows_over_the_midnight_sky() {
     // Measured margin is 1.5x (normal) .. 2.2x (cyberpunk); this floor pins
     // "still clearly a fog" without pinning the exact tuning.
     const FOG_NIGHT_GLOW_MIN: f32 = 1.25;
-    for theme in crate::theme::ALL_THEMES {
+    for theme in office_glass_themes() {
         let clear = pane(theme, NIGHT_HOUR, Weather::Clear);
         let fog = pane(theme, NIGHT_HOUR, Weather::Fog);
         assert!(

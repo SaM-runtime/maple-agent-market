@@ -165,10 +165,20 @@ src/                (the pixtuoid-scene crate root; default pack at ../sprites/d
 │                       walk_arrived, speed_mult, pause_ms_for; constants: V_CRUISE_COMMUTE=0.36,
 │                       V_CRUISE_SNAPBACK=0.65, V_CRUISE_WANDER=0.25, WALK_ACCEL=6.5e-4,
 │                       WALK_ACCEL_SNAPBACK=2.0e-3, SPEED_MULT_MIN/MAX, PAUSE_MS_MIN/MAX
-├── overlay.rs      backend-agnostic UI overlay MODEL: LabelElement{anchor_px,text,tone,hovered} + build_overlay
+├── overlay.rs      backend-agnostic UI overlay MODEL: LabelElement{anchor_px,text,tone,hovered,relation} + build_overlay
 │                   (one name-badge per visible agent — text disambiguated/truncated, tone from activity, anchor
-│                   from character_anchor); owns truncate_label/disambig_suffix. The tui + floating painters
+│                   from character_anchor). AgentRelation carries explicit root/child lineage derived from
+│                   AgentSlot.parent_id; absent or malformed upstream lineage stays None rather than being guessed.
+│                   Owns truncate_label/disambig_suffix. The tui + floating painters
 │                   consume it identically (single source of truth so the two surfaces can't drift)
+├── maple_world.rs  two-map party router plus the cycle-safe lineage resolver. The root id is the stable party
+│                   key: a root and every descendant stay on one map, nested children retain their depth, dangling
+│                   parents resolve as child-of-an-unavailable-root, and malformed cycles fail quiet.
+├── market.rs       Free Market state/motion/card model. Shop cards carry AgentRelation so the native painter can
+│                   show root child counts, child→root task labels, and one deterministic family-color edge.
+├── training.rs     training-map actor/monster model. TrainingSkillEffect{kind,frame_index} is a typed environment
+│                   overlay (stable per paperdoll: MagicClaw/HolyLight/DragonPulse), never a replacement paperdoll
+│                   frame; actor cards preserve the same AgentRelation used in the market.
 ├── burn.rs         burn tier (model gate × effort split, USER-PINNED): TOP_MODELS prefix table
 │                   (claude-fable/claude-mythos/gpt-5.6-sol — source-verified slugs) × MAX_EFFORTS
 │                   ({ultra,ultrathink,xhigh,max}) → BurnTier{Normal,Premium,Top}; fresh_effort =
@@ -368,6 +378,11 @@ src/                (the pixtuoid-scene crate root; default pack at ../sprites/d
 
 ## Known sharp edges (don't be surprised by these)
 
+- **The Maple completion pillar consumes one transient reducer edge, not activity state.** `market_turn_completion_elapsed` reads the projected agent's `last_turn_completed_at` for exactly `MARKET_TURN_COMPLETE_MS = 2200`; both Free Market and training painters call `paint_maple_level_up_pillar` at that actor's current foot position before painting the paperdoll. The procedural blue shaft uses absolute elapsed time, so a throttled window skips forward and the effect never loops. Keep it behind the paperdoll/cards and do not replace it with bundled game media.
+
+- **Training skills are typed overlays with a zero-asset public fallback.** `training_skill_kind(appearance_index)` assigns `MagicClaw`, `HolyLight`, or `DragonPulse` stably; `paint_training_skill_effect` first looks for the matching `training_skill_*` pack animation, then calls `paint_public_training_skill` when that frame is absent. The fallback effects are original programmatic pixels, so a public build still casts without private game art. Keep this layer behind the unchanged paperdoll, and never make a bare frame index select or replace a character body.
+
+- **This isolated Maple fork uses a 9500 ms exit grace.** The inherited 4500 ms wording below is the upstream baseline; local exit compression and tests consume the current `EXIT_GRACE_WINDOW`, while Free Market walking separately preserves 125 reference px/s and up to a 9.2 s return route.
 - **Agent OUTFIT (shirt+pants) is keyed on the normalized `cwd`, not `agent_id`** (Team Palette): same working directory → same outfit, so the office reads as a color-coded org-chart. Hair/skin stay `agent_id`-seeded for individual distinctness; `unknown_cwd`/empty-cwd falls back to the `agent_id` seed. The old WARM/COOL personality split for outfit selection was intentionally dropped (it was an `agent_id` artifact) — the outfit now spans the full 16-preset pool. The `examples/snapshot` fixture deliberately assigns VARIED cwds so the gallery shows grouping; don't collapse it back to one cwd.
 - **`recolor_frame` substitutes by RGB equality.** Works because each recolor key maps to a unique RGB. The recolor key set is `pixtuoid_core::sprite::format::RECOLOR_KEYS` (`B/H/S/P`) — the SINGLE source of truth `recolor_frame` (`pixel_painter/palette.rs`) iterates AND `validate_recolor_palette` guards, so the substitution and the guard can't drift (add a 5th recolor key there, once). **The uniqueness invariant is ENFORCED at pack load** (`validate_recolor_palette` in `sprite/format.rs::build_pack` bails on a collision) for the embedded AND `--pack-dir` custom packs — it is no longer just "documented, be careful." If you genuinely need two recolor keys to share a color, swap to a palette-key-indexed approach instead. (Core validates / scene consumes — the dep direction is kept.)
 - **EXIT walks are time-compressed to fit the GC window; entry/wander/snap-back are not.** Walk duration is normally pure physics (`distance ÷ speed`), but an exiting slot races a removal deadline: the reducer GCs it after `EXIT_GRACE_WINDOW = 4500 ms`, so when the exit's physics duration exceeds the window `derive_with_routing` scales `elapsed` so `walk_progress` reaches 1000 by the window edge — without this the sprite would **vanish mid-corridor** when the deadline fires (a real regression, fixed with a test). Don't delete the exit compression as "redundant." **Snap-back is NO LONGER compressed** (it used to be, to fit a 900 ms window): it now runs by **pure physics** with a brisk SnapBack profile (`physics::V_CRUISE_SNAPBACK` faster cruise + `WALK_ACCEL_SNAPBACK` ≈ 3× accel — an "urgent rush back"), and `SNAP_BACK_MS = 900 ms` is now just the **ARM window** (only fire a snap-back for a recent flip), NOT a render cap — so a far snap-back renders to completion as a real ≈ 1.3 s walk instead of a hard-compressed 900 ms dash. Entry has no cap (nothing GCs an entering agent) and must stay uncompressed so far desks genuinely take longer.

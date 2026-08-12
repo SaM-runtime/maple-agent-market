@@ -132,6 +132,10 @@ pub struct AudioConfigRaw {
     pub muted: Option<bool>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub volume: Option<f32>,
+    /// Optional user-owned local music file. The project never downloads or
+    /// bundles media for this setting.
+    #[serde(rename = "bgm-path", default, skip_serializing_if = "Option::is_none")]
+    pub bgm_path: Option<PathBuf>,
 }
 
 /// Resolved ambient-audio settings: the ONE sound switch is `muted`,
@@ -141,10 +145,13 @@ pub struct AudioConfigRaw {
 /// keypress instead of a config edit. (`enabled` never shipped in a
 /// release; a leftover key is silently ignored like any unknown key.)
 /// Volume clamped to `[0.0, 1.0]`.
-#[derive(Debug, Clone, Copy, PartialEq)]
+#[derive(Debug, Clone, PartialEq)]
 pub struct AudioConfig {
     pub muted: bool,
     pub volume: f32,
+    /// User-selected local MP3/WAV/OGG/FLAC. `None` preserves the upstream
+    /// procedural soundtrack for non-themed installs.
+    pub bgm_path: Option<PathBuf>,
 }
 
 pub fn resolve_audio(config: &AppConfig) -> AudioConfig {
@@ -152,6 +159,7 @@ pub fn resolve_audio(config: &AppConfig) -> AudioConfig {
     AudioConfig {
         muted: raw.muted.unwrap_or(true),
         volume: raw.volume.unwrap_or(1.0).clamp(0.0, 1.0),
+        bgm_path: raw.bgm_path,
     }
 }
 

@@ -19,7 +19,9 @@ pub use crate::state::correlation::{
 
 /// How long to keep an exiting agent's slot alive after `SessionEnd` so the
 /// walkout-to-door animation has time to play before the slot is removed.
-pub const EXIT_GRACE_WINDOW: Duration = Duration::from_millis(4500);
+/// The isolated Maple presentation needs enough time for the farthest upper
+/// stall to retrace its 125 px/s route through both ladders and the portal.
+pub const EXIT_GRACE_WINDOW: Duration = Duration::from_millis(9500);
 
 /// How long a drained parent's b1 completion cascade is deferred before the
 /// delegated subtree is marked exiting (#151). A parallel SECOND Task
@@ -89,8 +91,9 @@ pub const STALE_UNKNOWN_CWD_TIMEOUT: Duration = Duration::from_secs(3 * 60);
 ///
 /// The shorter window is safe specifically for this capability pair: the only
 /// false-positive is a *live* session that sits idle between turns past the
-/// threshold, and that is **self-healing** — its next `UserPromptSubmit`
-/// re-emits `SessionStart` and the sprite walks back in. CC keeps the long
+/// threshold, and that is **self-healing** — its next prompt carries a
+/// source-owned re-entry signal that re-emits `SessionStart` and the sprite
+/// walks back in. CC keeps the long
 /// [`STALE_IDLE_TIMEOUT`]: it has a real `SessionEnd` signal (the
 /// best-effort hook) for the common clean exit, so a short reaper there
 /// would only evict genuinely live-but-idle sessions (lunch-break idle)
@@ -105,7 +108,8 @@ pub const STALE_SHORT_IDLE_TIMEOUT: Duration = Duration::from_secs(5 * 60);
 /// a short reaper could rely on (Codex's #710 SessionEnd hook is teardown-only
 /// best-effort), so the sweep is the abrupt-exit reaper, AND the lone false
 /// positive — a live-but-idle session past the window — self-heals on its next
-/// `UserPromptSubmit`) uses [`STALE_SHORT_IDLE_TIMEOUT`] instead of the long
+/// prompt-time registration carrier) uses [`STALE_SHORT_IDLE_TIMEOUT`] instead
+/// of the long
 /// [`STALE_IDLE_TIMEOUT`]. CC keeps the long window — its real `SessionEnd`
 /// signals make a short reaper all cost, no benefit; Antigravity also lacks an
 /// exit signal but CANNOT resurrect on a prompt, so a short reap would vanish
@@ -376,6 +380,7 @@ impl Reducer {
             &event,
             AgentEvent::ActivityStart { .. }
                 | AgentEvent::ActivityEnd { .. }
+                | AgentEvent::TurnComplete { .. }
                 | AgentEvent::Waiting { .. }
         ) {
             scope::refresh_lineage(scene, id, now);
@@ -453,22 +458,26 @@ impl Reducer {
                 session_id,
                 cwd,
                 parent_id,
-            } => self.apply_session_start(
-                scene,
-                agent_id,
-                IdentityCtx {
-                    source: &source,
-                    session_id: &session_id,
-                    cwd: &cwd,
-                },
-                parent_id,
-                now,
-            ),
+            } => {
+                scene.last_turn_completed.remove(&agent_id);
+                self.apply_session_start(
+                    scene,
+                    agent_id,
+                    IdentityCtx {
+                        source: &source,
+                        session_id: &session_id,
+                        cwd: &cwd,
+                    },
+                    parent_id,
+                    now,
+                )
+            }
             AgentEvent::ActivityStart {
                 agent_id,
                 tool_use_id,
                 detail,
             } => {
+                scene.last_turn_completed.remove(&agent_id);
                 if !handled_by_task_start {
                     // Resuming to Active (next tool / Codex function_call_output)
                     // makes any pending gated-permission correlation moot.
@@ -496,72 +505,22 @@ impl Reducer {
             AgentEvent::ActivityEnd {
                 agent_id,
                 ref tool_use_id,
-            } => {
-                // Skip if this end was already processed by task tracking above.
-                if !handled_by_task_tracking {
-                    // A CC permission's *gated* tool finishing resolves the
-                    // Wait: its tool_use_id matches the one that was Active when
-                    // Waiting began. A parallel tool ending has a different id,
-                    // so it can't false-clear a still-pending permission.
-                    //
-                    // A None-id ActivityEnd ON THE HOOK TRANSPORT is a turn-end
-                    // signal (Codex/Reasonix `Stop`; CC hook ends always carry
-                    // ids), and a pending approval BLOCKS those CLIs' turns —
-                    // so a slot still Waiting when Stop arrives can only be a
-                    // stale (denied/abandoned) prompt. Resolve it rather than
-                    // ghosting "waiting" until the 60-min sweep; Reasonix has
-                    // no second transport to self-heal this. The Hook gate is
-                    // load-bearing: Codex's JSONL emits None-id ends per tool
-                    // (it opts out of dedup), and one can race in AFTER a fresh
-                    // PermissionRequest — a JSONL None-id end must keep the
-                    // prompt up, same as the parallel-tool protection above.
-                    let is_waiting = matches!(
-                        scene.agents.get(&agent_id).map(|s| &s.state),
-                        Some(ActivityState::Waiting { .. })
-                    );
-                    let resolves_wait = is_waiting
-                        && match tool_use_id.as_deref() {
-                            Some(tuid) => {
-                                self.corr.gated_before_waiting.get(&agent_id).map(|g| &**g)
-                                    == Some(tuid)
-                            }
-                            None => from == Transport::Hook,
-                        };
-                    if resolves_wait {
-                        self.corr.gated_before_waiting.remove(&agent_id);
-                    }
-                    // While the agent is still DELEGATING (a non-empty
-                    // active_tasks entry), its own parallel tool ending must
-                    // not settle it to Idle — nothing would restore the
-                    // Delegating display for the rest of the delegation (the
-                    // suppress-restore fires only from Waiting; the eventual
-                    // Task drain only arms idle / fires b1), so the parent
-                    // would render asleep while its subagents do the visible
-                    // work — exactly what `track_active_tasks`' Delegating
-                    // marking exists to prevent. Re-enter Delegating instead.
-                    let delegating_tuid = self
-                        .corr
-                        .active_tasks
-                        .get(&agent_id)
-                        .and_then(|s| s.iter().next())
-                        .map(|t| Arc::<str>::from(t.as_str()));
-                    if let Some(slot) = scene.agents.get_mut(&agent_id) {
-                        // Arm the idle debounce when Active (normal tool end) or
-                        // when a gated permission just resolved — in both cases
-                        // the slot settles to Idle after ACTIVE_GRACE_WINDOW. A
-                        // stale ActivityEnd while Idle, or a parallel tool ending
-                        // while Waiting, leaves the timer alone.
-                        if matches!(slot.state, ActivityState::Active { .. }) || resolves_wait {
-                            match delegating_tuid {
-                                Some(tuid) => fsm::enter_delegating(slot, Some(tuid), now),
-                                None => fsm::arm_pending_idle(slot, now),
-                            }
-                        }
-                        slot.last_event_at = now;
-                    }
+            } => self.apply_activity_end(
+                scene,
+                agent_id,
+                tool_use_id.as_deref(),
+                handled_by_task_tracking,
+                now,
+                from,
+            ),
+            AgentEvent::TurnComplete { agent_id } => {
+                if scene.agents.contains_key(&agent_id) {
+                    scene.last_turn_completed.insert(agent_id, now);
                 }
+                self.apply_activity_end(scene, agent_id, None, handled_by_task_tracking, now, from);
             }
             AgentEvent::Waiting { agent_id, reason } => {
+                scene.last_turn_completed.remove(&agent_id);
                 if let Some(slot) = scene.agents.get_mut(&agent_id) {
                     // Remember the mid-flight tool so its later PostToolUse
                     // (same tool_use_id) can resolve this permission Wait.
@@ -591,7 +550,7 @@ impl Reducer {
                 // reorder has no slot, yet its ended_at must arm the parented
                 // gate (entry defaults parentless — the blocked Start never
                 // applies a link). For a KNOWN slot this is the stamp that
-                // outlives the 4.5s GC, covering the late-first-sight window
+                // outlives the 9.5s GC, covering the late-first-sight window
                 // the #242 unknown-id tombstone structurally can't.
                 if as_child {
                     self.corr.child_ledger.entry(agent_id).or_default().ended_at = Some(now);
@@ -738,6 +697,68 @@ impl Reducer {
         }
     }
 
+    /// Apply the shared state-machine half of an ordinary tool end and a
+    /// successful turn completion. The caller owns the semantic distinction:
+    /// only `TurnComplete` stamps the scene's one-shot presentation edge.
+    fn apply_activity_end(
+        &mut self,
+        scene: &mut SceneState,
+        agent_id: AgentId,
+        tool_use_id: Option<&str>,
+        handled_by_task_tracking: bool,
+        now: SystemTime,
+        from: Transport,
+    ) {
+        // Skip if this end was already processed by task tracking above.
+        if handled_by_task_tracking {
+            return;
+        }
+
+        // A CC permission's *gated* tool finishing resolves the Wait: its
+        // tool_use_id matches the one that was Active when Waiting began. A
+        // parallel tool ending has a different id, so it cannot false-clear a
+        // still-pending permission.
+        //
+        // A None-id ActivityEnd ON THE HOOK TRANSPORT is a turn-end signal
+        // (Codex/Reasonix `Stop`; CC hook ends always carry ids), and a pending
+        // approval blocks those CLIs' turns. A JSONL None-id end deliberately
+        // does not clear Waiting. `TurnComplete` preserves that exact historic
+        // behavior by entering here with `from == Jsonl` and no tool id.
+        let is_waiting = matches!(
+            scene.agents.get(&agent_id).map(|slot| &slot.state),
+            Some(ActivityState::Waiting { .. })
+        );
+        let resolves_wait = is_waiting
+            && match tool_use_id {
+                Some(tuid) => {
+                    self.corr.gated_before_waiting.get(&agent_id).map(|g| &**g) == Some(tuid)
+                }
+                None => from == Transport::Hook,
+            };
+        if resolves_wait {
+            self.corr.gated_before_waiting.remove(&agent_id);
+        }
+
+        // While an agent is still delegating, a parallel end returns it to the
+        // Delegating presentation. Otherwise arm the existing Active→Idle
+        // debounce; the completion edge does not change lifecycle timing.
+        let delegating_tuid = self
+            .corr
+            .active_tasks
+            .get(&agent_id)
+            .and_then(|tasks| tasks.iter().next())
+            .map(|task| Arc::<str>::from(task.as_str()));
+        if let Some(slot) = scene.agents.get_mut(&agent_id) {
+            if matches!(slot.state, ActivityState::Active { .. }) || resolves_wait {
+                match delegating_tuid {
+                    Some(tuid) => fsm::enter_delegating(slot, Some(tuid), now),
+                    None => fsm::arm_pending_idle(slot, now),
+                }
+            }
+            slot.last_event_at = now;
+        }
+    }
+
     /// The `SessionStart` arm of [`Reducer::apply`], lifted whole so the
     /// match stays a one-line dispatch. Handles the #242/#244 tombstone
     /// gates, ledger parent adoption/#240 cycle filter, duplicate-start
@@ -792,7 +813,7 @@ impl Reducer {
         }
         // #244-w2 — the ledger-keyed sibling of the #242 gate above,
         // for the windows the 5s tombstone can't cover: a child that
-        // ended on a KNOWN slot mints no tombstone, so once the 4.5s
+        // ended on a KNOWN slot mints no tombstone, so once the 9.5s
         // exit grace GC'd it, a LATE parented first-sight of its
         // transcript (notify outage → the watcher's 60s poll) would
         // re-register a dead child as a phantom no future SessionEnd
@@ -938,7 +959,7 @@ impl Reducer {
             // means the session lives — Reasonix's `/new` fires
             // SessionEnd+SessionStart back-to-back on the SAME
             // cwd-keyed id, and a Codex resurrect prompt can land
-            // inside the 4.5s walkout window. Without this the new
+            // inside the 9.5s walkout window. Without this the new
             // session's start is swallowed and the whole first turn is
             // invisible (every later arm is a no-op once the corpse is
             // GC'd). Gated to root agents on BOTH sides so a late
@@ -1526,6 +1547,7 @@ impl Reducer {
             .collect();
         for id in expired {
             scene.agents.remove(&id);
+            scene.last_turn_completed.remove(&id);
             // The per-id triple — sweep runs on the apply path too, where the
             // tick-time `retain` doesn't, so a mid-turn-swept Waiting slot's
             // gated tool_use_id must be reclaimed here, not left until next tick.

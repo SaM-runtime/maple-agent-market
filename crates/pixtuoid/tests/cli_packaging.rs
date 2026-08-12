@@ -59,7 +59,7 @@ fn completions_emit_a_clean_script_for_every_supported_shell() {
             String::from_utf8_lossy(&out.stderr)
         );
         assert!(
-            String::from_utf8_lossy(&out.stdout).contains("pixtuoid"),
+            String::from_utf8_lossy(&out.stdout).contains("maple-agent-market"),
             "completions {name} script omits the binary name"
         );
         assert!(

@@ -713,8 +713,7 @@ pub(crate) async fn run_tui(session: TuiSession) -> Result<()> {
     // run_tui local, so EVERY exit below (q / Ctrl-C / terminate / error) drops
     // it → the device thread is joined before the process exits (the "music
     // keeps playing after quit" fix, structural — no manual shutdown call).
-    let mut audio_ctl =
-        crate::audio::AudioController::new(audio_cfg.muted, audio_cfg.volume, config_path.clone());
+    let mut audio_ctl = crate::audio::AudioController::new(audio_cfg, config_path.clone());
     renderer.set_audio(audio_ctl.handle().clone());
     // First-run onboarding "move-in" overlay (TOP of the modal precedence chain).
     // The roster is built only on first run; if no agent CLIs are detected there's
@@ -1161,7 +1160,8 @@ pub(crate) async fn run_tui(session: TuiSession) -> Result<()> {
                             } else if renderer.cached_layout().is_some_and(|layout| {
                                 renderer::hit_test_coffee_machine(layout, m.column, m.row)
                             }) {
-                                let _ = open::that("https://buymeacoffee.com/IvanWng97");
+                                // Decorative interaction only. Fork-facing UI must not
+                                // route users to the upstream author's fundraising page.
                             } else if let Some(pixtuoid_scene::pet::PetFrame {
                                 pos: pet_pos,
                                 anim,

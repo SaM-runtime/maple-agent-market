@@ -277,7 +277,7 @@ pub fn derive_with_routing(
 
         // Compress the exit walk so it REACHES the door before the reducer's
         // EXIT_GRACE_WINDOW reaps the slot. Physics exit duration for far/slow
-        // desks can exceed 4500ms; without this the slot is GC'd mid-walk and
+        // desks can exceed 9500ms; without this the slot is GC'd mid-walk and
         // the sprite vanishes in the corridor instead of reaching the door.
         // (Entry has no such cap — nothing GCs an entering agent.)
         let exit_budget = (pixtuoid_core::state::reducer::EXIT_GRACE_WINDOW.as_millis() as u64)

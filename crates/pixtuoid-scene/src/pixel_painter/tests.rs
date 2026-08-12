@@ -378,6 +378,14 @@ fn make_slot(id: pixtuoid_core::AgentId, state: ActivityState) -> AgentSlot {
     }
 }
 
+fn active_state() -> ActivityState {
+    ActivityState::Active {
+        tool_use_id: None,
+        detail: Some(Arc::from("Working")),
+        kind: ToolKind::Other,
+    }
+}
+
 // Team Palette tests: build a slot with an explicit cwd + unknown_cwd flag.
 #[cfg(test)]
 fn make_slot_cwd(id_path: &str, cwd: &str, unknown_cwd: bool) -> AgentSlot {
@@ -1351,9 +1359,9 @@ fn door_frame_expired_entry_contributes_nothing() {
 }
 
 #[test]
-fn door_frame_exit_window_uses_4500ms_total() {
+fn door_frame_exit_window_uses_9500ms_total() {
     let now = SystemTime::UNIX_EPOCH + std::time::Duration::from_secs(1_700_000_000);
-    // 2 s into a 4.5 s exit window → mid-flight → fully open.
+    // 2 s into a 9.5 s exit window → mid-flight → fully open.
     let exiting = exit_slot(2_000, now);
     assert_eq!(compute_door_frame_idx(&[exiting], now, 0), 2);
 }
@@ -3623,6 +3631,1228 @@ fn paint_empty_office(buf_w: u16, buf_h: u16) -> (RgbBuffer, Layout, &'static cr
     (buf, layout, theme)
 }
 
+#[test]
+fn market_backdrop_nearest_neighbor_covers_the_entire_scene_buffer() {
+    let red = Rgb {
+        r: 210,
+        g: 30,
+        b: 30,
+    };
+    let green = Rgb {
+        r: 30,
+        g: 210,
+        b: 30,
+    };
+    let cream = Rgb {
+        r: 245,
+        g: 225,
+        b: 170,
+    };
+    let sentinel = Rgb { r: 1, g: 2, b: 3 };
+    let fallback = Rgb { r: 9, g: 8, b: 7 };
+    let backdrop = Frame::from_pixels(2, 2, vec![Some(red), Some(green), None, Some(cream)]);
+    let mut buf = RgbBuffer::filled(5, 3, sentinel);
+
+    paint_market_backdrop(&mut buf, &backdrop, fallback);
+
+    assert_eq!(
+        buf.as_slice(),
+        &[
+            red, red, red, green, green, red, red, red, green, green, fallback, fallback,
+            fallback, cream, cream,
+        ],
+        "the local Free Market plate must replace every office pixel with crisp nearest-neighbour sampling"
+    );
+    assert!(
+        buf.as_slice().iter().all(|pixel| *pixel != sentinel),
+        "no office/fallback pixel may survive beneath the market backdrop"
+    );
+}
+
+#[test]
+fn market_portal_animates_without_touching_the_surrounding_map() {
+    let base = Rgb {
+        r: 20,
+        g: 30,
+        b: 40,
+    };
+    let mut first = RgbBuffer::filled(720, 480, base);
+    let mut second = first.clone();
+    let start = SystemTime::UNIX_EPOCH + std::time::Duration::from_secs(1_700_000_000);
+
+    paint_market_portal(&mut first, start);
+    paint_market_portal(&mut second, start + std::time::Duration::from_millis(1_000));
+
+    let portal = market_portal_bounds(720, 480);
+    let mut changed_inside = 0usize;
+    for y in 0..480 {
+        for x in 0..720 {
+            let changed = first.get(x, y) != second.get(x, y);
+            let inside = x >= portal.x
+                && x < portal.x + portal.width
+                && y >= portal.y
+                && y < portal.y + portal.height;
+            if inside && changed {
+                changed_inside += 1;
+            } else if !inside {
+                assert!(!changed, "portal animation leaked to ({x}, {y})");
+            }
+        }
+    }
+    assert!(
+        changed_inside > 200,
+        "the portal needs visible internal motion"
+    );
+}
+
+#[test]
+fn training_portal_uses_the_pack_animation_at_the_classic_game_anchor() {
+    const PACK_TOML: &str = r##"
+[pack]
+name = "classic-portal-test"
+version = "0.0.0"
+
+[palette]
+"B" = "#101112"
+"R" = "#d21e1e"
+"G" = "#1ed21e"
+
+[animations.standing]
+frames = ["standing.sprite"]
+frame_ms = 1000
+
+[animations.training_portal]
+frames = [
+  "portal-0.sprite", "portal-1.sprite", "portal-2.sprite", "portal-3.sprite",
+  "portal-4.sprite", "portal-5.sprite", "portal-6.sprite", "portal-7.sprite",
+]
+frame_ms = 100
+"##;
+    let pack = pixtuoid_core::sprite::format::load_pack_from_strings(
+        PACK_TOML,
+        &[
+            ("standing.sprite", "@frame 0\nB\n"),
+            ("portal-0.sprite", "@frame 0\nR\n"),
+            ("portal-1.sprite", "@frame 0\nG\n"),
+            ("portal-2.sprite", "@frame 0\nR\n"),
+            ("portal-3.sprite", "@frame 0\nG\n"),
+            ("portal-4.sprite", "@frame 0\nR\n"),
+            ("portal-5.sprite", "@frame 0\nG\n"),
+            ("portal-6.sprite", "@frame 0\nR\n"),
+            ("portal-7.sprite", "@frame 0\nG\n"),
+        ],
+    )
+    .expect("minimal portal pack");
+    let base = Rgb {
+        r: 20,
+        g: 30,
+        b: 40,
+    };
+    let mut first = RgbBuffer::filled(720, 480, base);
+    let mut second = first.clone();
+    let start = SystemTime::UNIX_EPOCH + std::time::Duration::from_secs(1_700_000_000);
+
+    paint_training_portal(&mut first, &pack, start);
+    paint_training_portal(
+        &mut second,
+        &pack,
+        start + std::time::Duration::from_millis(100),
+    );
+
+    let portal = training_portal_bounds(720, 480);
+    assert_eq!(portal.x, 654);
+    assert_eq!(portal.y, 296);
+    assert_eq!(portal.width, 44);
+    assert_eq!(portal.height, 120);
+    let mut changed_inside = 0usize;
+    for y in 0..480 {
+        for x in 0..720 {
+            let changed = first.get(x, y) != second.get(x, y);
+            let inside = x >= portal.x
+                && x < portal.x + portal.width
+                && y >= portal.y
+                && y < portal.y + portal.height;
+            if inside && changed {
+                changed_inside += 1;
+            } else if !inside {
+                assert!(!changed, "training portal animation leaked to ({x}, {y})");
+            }
+        }
+    }
+    assert!(
+        changed_inside > 5_000,
+        "the eight-frame game portal needs visible internal motion"
+    );
+}
+
+#[test]
+fn training_skill_effect_is_painted_as_an_independent_body_anchored_layer() {
+    const PACK_TOML: &str = r##"
+[pack]
+name = "classic-skill-test"
+version = "0.0.0"
+
+[palette]
+"B" = "#101112"
+"M" = "#52cfff"
+
+[animations.standing]
+frames = ["standing.sprite"]
+frame_ms = 1000
+
+[animations.training_skill_magic_claw]
+frames = ["skill-0.sprite", "skill-1.sprite", "skill-2.sprite", "skill-3.sprite"]
+frame_ms = 80
+"##;
+    let pack = pixtuoid_core::sprite::format::load_pack_from_strings(
+        PACK_TOML,
+        &[
+            ("standing.sprite", "@frame 0\nB\n"),
+            ("skill-0.sprite", "@frame 0\nM\n"),
+            ("skill-1.sprite", "@frame 0\nM\n"),
+            ("skill-2.sprite", "@frame 0\nM\n"),
+            ("skill-3.sprite", "@frame 0\nM\n"),
+        ],
+    )
+    .expect("minimal skill pack");
+    let base = Rgb { r: 1, g: 2, b: 3 };
+    let mut buf = RgbBuffer::filled(100, 100, base);
+    let actor = crate::training::TrainingActorFrame {
+        sprite_anchor_px: Point { x: 34, y: 56 },
+        label_anchor_px: Point { x: 46, y: 56 },
+        foot_px: Point { x: 50, y: 80 },
+        pose: crate::training::TrainingActorPose::Attack { frame_index: 0 },
+        skill_effect: Some(crate::training::TrainingSkillEffect {
+            kind: crate::training::TrainingSkillKind::MagicClaw,
+            frame_index: 2,
+        }),
+        question_bubble: false,
+    };
+
+    paint_training_skill_effect(&mut buf, &pack, actor, 1);
+
+    assert_eq!(
+        buf.get(34, 53),
+        Rgb {
+            r: 0x52,
+            g: 0xcf,
+            b: 0xff
+        }
+    );
+    assert_eq!(
+        buf.get(65, 84),
+        Rgb {
+            r: 0x52,
+            g: 0xcf,
+            b: 0xff
+        }
+    );
+    assert_eq!(buf.get(33, 53), base);
+    assert_eq!(buf.get(34, 52), base);
+    let public_halo_pixels = (0..buf.height())
+        .flat_map(|y| (0..buf.width()).map(move |x| (x, y)))
+        .filter(|(x, y)| {
+            let outside_custom_frame = *x < 34 || *x >= 66 || *y < 53 || *y >= 85;
+            outside_custom_frame && buf.get(*x, *y) != base
+        })
+        .count();
+    assert!(
+        public_halo_pixels >= 12,
+        "a custom frame must retain the public readability halo; got {public_halo_pixels} pixels"
+    );
+}
+
+#[test]
+fn public_pack_renders_every_training_skill_without_external_art() {
+    const PACK_TOML: &str = r##"
+[pack]
+name = "public-skill-test"
+version = "0.0.0"
+
+[palette]
+"B" = "#101112"
+
+[animations.standing]
+frames = ["standing.sprite"]
+frame_ms = 1000
+"##;
+    let pack = pixtuoid_core::sprite::format::load_pack_from_strings(
+        PACK_TOML,
+        &[("standing.sprite", "@frame 0\nB\n")],
+    )
+    .expect("minimal public pack");
+    let base = Rgb { r: 1, g: 2, b: 3 };
+
+    for kind in [
+        crate::training::TrainingSkillKind::MagicClaw,
+        crate::training::TrainingSkillKind::HolyLight,
+        crate::training::TrainingSkillKind::DragonPulse,
+    ] {
+        let mut buf = RgbBuffer::filled(100, 100, base);
+        let actor = crate::training::TrainingActorFrame {
+            sprite_anchor_px: Point { x: 34, y: 56 },
+            label_anchor_px: Point { x: 46, y: 56 },
+            foot_px: Point { x: 50, y: 80 },
+            pose: crate::training::TrainingActorPose::Attack { frame_index: 0 },
+            skill_effect: Some(crate::training::TrainingSkillEffect {
+                kind,
+                frame_index: 2,
+            }),
+            question_bubble: false,
+        };
+
+        paint_training_skill_effect(&mut buf, &pack, actor, 1);
+
+        let changed = buf
+            .as_slice()
+            .iter()
+            .filter(|pixel| **pixel != base)
+            .count();
+        assert!(
+            changed >= 24,
+            "{kind:?} needs a readable programmatic fallback, got {changed} pixels"
+        );
+    }
+}
+
+#[test]
+fn maple_scene_background_bypasses_every_office_paint_pass() {
+    const PACK_TOML: &str = r##"
+[pack]
+name = "market-render-test"
+version = "0.0.0"
+
+[palette]
+"B" = "#101112"
+"H" = "#202122"
+"S" = "#303132"
+"P" = "#404142"
+"R" = "#d21e1e"
+"G" = "#1ed21e"
+"U" = "#1e1ed2"
+"C" = "#f5e1aa"
+
+[animations.standing]
+frames = ["standing.sprite"]
+frame_ms = 1000
+
+[animations.scene_background]
+frames = ["scene_background.sprite"]
+frame_ms = 1000
+"##;
+    const STANDING: &str = "@frame 0\nB\n";
+    const BACKDROP: &str = "@frame 0\nR G\nU C\n";
+    let pack = pixtuoid_core::sprite::format::load_pack_from_strings(
+        PACK_TOML,
+        &[
+            ("standing.sprite", STANDING),
+            ("scene_background.sprite", BACKDROP),
+        ],
+    )
+    .expect("minimal market pack");
+    let layout = Layout::compute_with_seed(160, 96, None, 0).expect("layout");
+    let theme = crate::theme::theme_by_name("maple").expect("maple theme");
+    let now = SystemTime::UNIX_EPOCH + std::time::Duration::from_secs(1_700_000_000);
+    let scene = SceneState::uniform(16);
+    let coffee = HashMap::new();
+    let mut owned = OwnedSimStores::new();
+    let frame = sim_step(&mut owned.stores(), &scene, &layout, &pack, &coffee, 0, now);
+    let sentinel = Rgb { r: 1, g: 2, b: 3 };
+    let mut buf = RgbBuffer::filled(layout.buf_w, layout.buf_h, sentinel);
+
+    paint_frame(
+        &mut PaintCtx {
+            scene: &scene,
+            layout: &layout,
+            pack: &pack,
+            now,
+            buf: &mut buf,
+            cache: &mut FrameCache::new(),
+            theme,
+            floor: crate::floor::FloorMeta::ground(),
+            active_pet: None,
+            floor_pet: None,
+            coffee: &coffee,
+            motion: &owned.motion,
+            door_anim_max_ms: 0,
+            debug_walkable: false,
+        },
+        &frame,
+    );
+
+    let backdrop_colors = [
+        Rgb {
+            r: 0xd2,
+            g: 0x1e,
+            b: 0x1e,
+        },
+        Rgb {
+            r: 0x1e,
+            g: 0xd2,
+            b: 0x1e,
+        },
+        Rgb {
+            r: 0x1e,
+            g: 0x1e,
+            b: 0xd2,
+        },
+        Rgb {
+            r: 0xf5,
+            g: 0xe1,
+            b: 0xaa,
+        },
+    ];
+    let portal = market_portal_bounds(layout.buf_w, layout.buf_h);
+    for y in 0..layout.buf_h {
+        for x in 0..layout.buf_w {
+            let inside_portal = x >= portal.x
+                && x < portal.x + portal.width
+                && y >= portal.y
+                && y < portal.y + portal.height;
+            if !inside_portal {
+                assert!(
+                    backdrop_colors.contains(&buf.get(x, y)),
+                    "office furniture leaked outside the isolated portal at ({x}, {y})"
+                );
+            }
+        }
+    }
+    assert_ne!(buf.get(0, 0), sentinel);
+    assert_eq!(
+        buf.get(layout.buf_w - 1, layout.buf_h - 1),
+        backdrop_colors[3]
+    );
+}
+
+#[test]
+fn high_resolution_market_scales_merchants_to_reference_pixel_density() {
+    const PACK_TOML: &str = r##"
+[pack]
+name = "market-hires-test"
+version = "0.0.0"
+
+[palette]
+"B" = "#101112"
+"H" = "#202122"
+"S" = "#303132"
+"P" = "#404142"
+"R" = "#d21e1e"
+
+[animations.standing]
+frames = ["standing.sprite"]
+frame_ms = 1000
+
+[animations.scene_background]
+frames = ["scene_background.sprite"]
+frame_ms = 1000
+"##;
+    let pack = pixtuoid_core::sprite::format::load_pack_from_strings(
+        PACK_TOML,
+        &[
+            ("standing.sprite", "@frame 0\nB\n"),
+            ("scene_background.sprite", "@frame 0\nR\n"),
+        ],
+    )
+    .expect("minimal high-resolution market pack");
+    let layout = Layout::compute_with_seed(720, 480, None, 0).expect("layout");
+    let theme = crate::theme::theme_by_name("maple").expect("maple theme");
+    let now = SystemTime::UNIX_EPOCH + std::time::Duration::from_secs(1_700_000_000);
+    let id = pixtuoid_core::AgentId::from_parts("codex", "merchant");
+    let mut scene = SceneState::uniform(16);
+    scene.agents.insert(id, make_slot(id, active_state()));
+    let coffee = HashMap::new();
+    let mut owned = OwnedSimStores::new();
+    let frame = sim_step(&mut owned.stores(), &scene, &layout, &pack, &coffee, 0, now);
+    let backdrop = Rgb {
+        r: 0xd2,
+        g: 0x1e,
+        b: 0x1e,
+    };
+    let mut buf = RgbBuffer::filled(layout.buf_w, layout.buf_h, backdrop);
+
+    paint_frame(
+        &mut PaintCtx {
+            scene: &scene,
+            layout: &layout,
+            pack: &pack,
+            now,
+            buf: &mut buf,
+            cache: &mut FrameCache::new(),
+            theme,
+            floor: crate::floor::FloorMeta::ground(),
+            active_pet: None,
+            floor_pet: None,
+            coffee: &coffee,
+            motion: &owned.motion,
+            door_anim_max_ms: 0,
+            debug_walkable: false,
+        },
+        &frame,
+    );
+
+    let anchor = crate::market::market_slots(
+        Bounds {
+            x: 0,
+            y: 0,
+            width: 720,
+            height: 480,
+        },
+        1,
+    )[0]
+    .anchor_px;
+    let merchant = buf.get(anchor.x, anchor.y);
+    assert_ne!(merchant, backdrop, "the merchant must paint over the plate");
+    for dy in 0..3 {
+        for dx in 0..3 {
+            assert_eq!(
+                buf.get(anchor.x + dx, anchor.y + dy),
+                merchant,
+                "a 720x480 market scales each authored character pixel to 3x3"
+            );
+        }
+    }
+    assert_eq!(
+        buf.get(anchor.x + 3, anchor.y),
+        backdrop,
+        "the one-pixel fixture expands exactly three pixels, not beyond"
+    );
+}
+
+#[test]
+fn maple_command_success_flash_follows_only_the_exec_agent() {
+    const PACK_TOML: &str = r##"
+[pack]
+name = "market-command-effect-test"
+version = "0.0.0"
+
+[palette]
+"B" = "#31583b"
+"H" = "#3a6143"
+"S" = "#436a4b"
+"P" = "#4c7353"
+"R" = "#090807"
+
+[animations.standing]
+frames = ["standing.sprite"]
+frame_ms = 1000
+
+[animations.scene_background]
+frames = ["scene_background.sprite"]
+frame_ms = 1000
+"##;
+    const STANDING: &str = "@frame 0\nB B B B B B B B\n";
+    const BACKDROP: &str = "@frame 0\nR\n";
+    const SUCCESS_CORE: Rgb = Rgb {
+        r: 0xff,
+        g: 0xfa,
+        b: 0xe0,
+    };
+    let pack = pixtuoid_core::sprite::format::load_pack_from_strings(
+        PACK_TOML,
+        &[
+            ("standing.sprite", STANDING),
+            ("scene_background.sprite", BACKDROP),
+        ],
+    )
+    .expect("minimal command-effect market pack");
+    let layout = Layout::compute_with_seed(240, 160, None, 0).expect("layout");
+    let theme = crate::theme::theme_by_name("maple").expect("maple theme");
+    let now = SystemTime::UNIX_EPOCH + std::time::Duration::from_secs(1_700_000_000);
+    let started_at = now - std::time::Duration::from_millis(360);
+    let created_at = now - std::time::Duration::from_secs(20);
+    let exec_id = pixtuoid_core::AgentId::from_parts("codex", "exec-merchant");
+    let edit_id = pixtuoid_core::AgentId::from_parts("codex", "edit-merchant");
+    let mut exec = make_slot(
+        exec_id,
+        ActivityState::Active {
+            tool_use_id: None,
+            detail: Some(Arc::from("exec")),
+            kind: ToolKind::Other,
+        },
+    );
+    exec.created_at = created_at;
+    exec.state_started_at = started_at;
+    exec.last_event_at = started_at;
+    exec.desk_index = GlobalDeskIndex(0);
+    let mut edit = make_slot(
+        edit_id,
+        ActivityState::Active {
+            tool_use_id: None,
+            detail: Some(Arc::from("Edit")),
+            kind: ToolKind::Edit,
+        },
+    );
+    edit.created_at = created_at;
+    edit.state_started_at = started_at;
+    edit.last_event_at = started_at;
+    edit.desk_index = GlobalDeskIndex(1);
+    let mut scene = SceneState::uniform(16);
+    scene.agents.insert(exec_id, exec);
+    scene.agents.insert(edit_id, edit);
+    let coffee = HashMap::new();
+    let mut owned = OwnedSimStores::new();
+    let frame = sim_step(&mut owned.stores(), &scene, &layout, &pack, &coffee, 0, now);
+    let mut buf = RgbBuffer::filled(layout.buf_w, layout.buf_h, Rgb { r: 9, g: 8, b: 7 });
+
+    paint_frame(
+        &mut PaintCtx {
+            scene: &scene,
+            layout: &layout,
+            pack: &pack,
+            now,
+            buf: &mut buf,
+            cache: &mut FrameCache::new(),
+            theme,
+            floor: crate::floor::FloorMeta::ground(),
+            active_pet: None,
+            floor_pet: None,
+            coffee: &coffee,
+            motion: &owned.motion,
+            door_anim_max_ms: 0,
+            debug_walkable: false,
+        },
+        &frame,
+    );
+
+    let viewport = Bounds {
+        x: 0,
+        y: 0,
+        width: layout.buf_w,
+        height: layout.buf_h,
+    };
+    let market_frame = crate::market::MarketFrameContext { viewport, now };
+    let placements = crate::market::build_market_placements(&scene, viewport);
+    let count_effect_pixels = |agent_id| {
+        let placement = placements
+            .iter()
+            .find(|placement| placement.agent_id == agent_id)
+            .expect("agent placement");
+        let agent = scene.agents.get(&agent_id).expect("agent");
+        let actor = crate::market::resolve_market_merchant(agent, *placement, market_frame)
+            .expect("settled market actor");
+        let x0 = actor.sprite_anchor_px.x.saturating_sub(10);
+        let y0 = actor.sprite_anchor_px.y.saturating_sub(14);
+        let x1 = actor.sprite_anchor_px.x.saturating_add(20).min(buf.width());
+        let y1 = actor
+            .sprite_anchor_px
+            .y
+            .saturating_add(18)
+            .min(buf.height());
+        (y0..y1)
+            .flat_map(|y| (x0..x1).map(move |x| (x, y)))
+            .filter(|(x, y)| buf.get(*x, *y) == SUCCESS_CORE)
+            .count()
+    };
+
+    assert!(
+        count_effect_pixels(exec_id) >= 4,
+        "the real Codex `exec` pulse must paint a visible success flash on its merchant"
+    );
+    assert_eq!(
+        count_effect_pixels(edit_id),
+        0,
+        "an unrelated Edit pulse must not receive the command-success flash"
+    );
+}
+
+#[test]
+fn maple_turn_completion_pillar_follows_only_the_completed_agent() {
+    const PACK_TOML: &str = r##"
+[pack]
+name = "market-turn-completion-effect-test"
+version = "0.0.0"
+
+[palette]
+"B" = "#31583b"
+"H" = "#3a6143"
+"S" = "#436a4b"
+"P" = "#4c7353"
+"R" = "#090807"
+
+[animations.standing]
+frames = ["standing.sprite"]
+frame_ms = 1000
+
+[animations.scene_background]
+frames = ["scene_background.sprite"]
+frame_ms = 1000
+"##;
+    const STANDING: &str = "@frame 0\nB B B B B B B B\n";
+    const BACKDROP: &str = "@frame 0\nR\n";
+    let pack = pixtuoid_core::sprite::format::load_pack_from_strings(
+        PACK_TOML,
+        &[
+            ("standing.sprite", STANDING),
+            ("scene_background.sprite", BACKDROP),
+        ],
+    )
+    .expect("minimal completion-effect market pack");
+    let layout = Layout::compute_with_seed(240, 160, None, 0).expect("layout");
+    let theme = crate::theme::theme_by_name("maple").expect("maple theme");
+    let now = SystemTime::UNIX_EPOCH + std::time::Duration::from_secs(1_700_000_000);
+    let completed_at = now - std::time::Duration::from_millis(760);
+    let created_at = now - std::time::Duration::from_secs(20);
+    let completed_id = pixtuoid_core::AgentId::from_parts("codex", "completed-merchant");
+    let other_id = pixtuoid_core::AgentId::from_parts("codex", "other-merchant");
+    let mut completed = make_slot(
+        completed_id,
+        ActivityState::Active {
+            tool_use_id: None,
+            detail: Some(Arc::from("working")),
+            kind: ToolKind::Other,
+        },
+    );
+    completed.created_at = created_at;
+    completed.state_started_at = created_at;
+    completed.last_event_at = created_at;
+    completed.desk_index = GlobalDeskIndex(0);
+    let mut other = make_slot(
+        other_id,
+        ActivityState::Active {
+            tool_use_id: None,
+            detail: Some(Arc::from("working")),
+            kind: ToolKind::Other,
+        },
+    );
+    other.created_at = created_at;
+    other.state_started_at = created_at;
+    other.last_event_at = created_at;
+    other.desk_index = GlobalDeskIndex(1);
+    let mut scene = SceneState::uniform(16);
+    scene.agents.insert(completed_id, completed);
+    scene.agents.insert(other_id, other);
+    pixtuoid_core::Reducer::new().apply(
+        &mut scene,
+        pixtuoid_core::source::AgentEvent::TurnComplete {
+            agent_id: completed_id,
+        },
+        completed_at,
+        pixtuoid_core::source::Transport::Jsonl,
+    );
+
+    let coffee = HashMap::new();
+    let mut owned = OwnedSimStores::new();
+    let frame = sim_step(&mut owned.stores(), &scene, &layout, &pack, &coffee, 0, now);
+    let backdrop = Rgb { r: 9, g: 8, b: 7 };
+    let mut buf = RgbBuffer::filled(layout.buf_w, layout.buf_h, backdrop);
+    paint_frame(
+        &mut PaintCtx {
+            scene: &scene,
+            layout: &layout,
+            pack: &pack,
+            now,
+            buf: &mut buf,
+            cache: &mut FrameCache::new(),
+            theme,
+            floor: crate::floor::FloorMeta::ground(),
+            active_pet: None,
+            floor_pet: None,
+            coffee: &coffee,
+            motion: &owned.motion,
+            door_anim_max_ms: 0,
+            debug_walkable: false,
+        },
+        &frame,
+    );
+
+    let viewport = Bounds {
+        x: 0,
+        y: 0,
+        width: layout.buf_w,
+        height: layout.buf_h,
+    };
+    let market_frame = crate::market::MarketFrameContext { viewport, now };
+    let placements = crate::market::build_market_placements(&scene, viewport);
+    let count_blue_effect_pixels = |agent_id| {
+        let placement = placements
+            .iter()
+            .find(|placement| placement.agent_id == agent_id)
+            .expect("agent placement");
+        let agent = scene.agents.get(&agent_id).expect("agent");
+        let actor = crate::market::resolve_market_merchant(agent, *placement, market_frame)
+            .expect("settled market actor");
+        let foot = actor.foot_px();
+        let x0 = foot.x.saturating_sub(12);
+        let y0 = foot.y.saturating_sub(50);
+        let x1 = foot.x.saturating_add(13).min(buf.width());
+        let y1 = foot.y.saturating_add(1).min(buf.height());
+        (y0..y1)
+            .flat_map(|y| (x0..x1).map(move |x| (x, y)))
+            .filter(|(x, y)| {
+                let pixel = buf.get(*x, *y);
+                pixel.b > pixel.r.saturating_add(20) && pixel.b > pixel.g
+            })
+            .count()
+    };
+
+    assert!(
+        count_blue_effect_pixels(completed_id) >= 70,
+        "a true turn completion must paint a tall blue pillar on its merchant"
+    );
+    assert_eq!(
+        count_blue_effect_pixels(other_id),
+        0,
+        "an unrelated active merchant must not inherit the completion pillar"
+    );
+}
+
+#[test]
+fn market_assigns_eight_distinct_paperdolls_by_stable_slot() {
+    const PACK_TOML: &str = r##"
+[pack]
+name = "market-paperdoll-test"
+version = "0.0.0"
+
+[palette]
+"B" = "#101112"
+"H" = "#202122"
+"S" = "#303132"
+"P" = "#404142"
+"R" = "#090807"
+"0" = "#ed4b4b"
+"1" = "#e58b39"
+"2" = "#f2d04f"
+"3" = "#58a64b"
+"4" = "#45b8ba"
+"5" = "#4e79bd"
+"6" = "#8a62c7"
+"7" = "#d65bd0"
+
+[animations.standing]
+frames = ["standing.sprite"]
+frame_ms = 1000
+
+[animations.market_avatar]
+frames = [
+  "avatar_0.sprite", "avatar_1.sprite", "avatar_2.sprite", "avatar_3.sprite",
+  "avatar_4.sprite", "avatar_5.sprite", "avatar_6.sprite", "avatar_7.sprite",
+]
+frame_ms = 1000
+
+[animations.scene_background]
+frames = ["scene_background.sprite"]
+frame_ms = 1000
+"##;
+
+    fn solid_sprite(key: char) -> String {
+        let row = std::iter::repeat_n(key.to_string(), crate::market::MARKET_AVATAR_WIDTH as usize)
+            .collect::<Vec<_>>()
+            .join(" ");
+        let rows = std::iter::repeat_n(row, crate::market::MARKET_AVATAR_HEIGHT as usize)
+            .collect::<Vec<_>>()
+            .join("\n");
+        format!("@frame 0\n{rows}\n")
+    }
+
+    let avatar_names = [
+        "avatar_0.sprite",
+        "avatar_1.sprite",
+        "avatar_2.sprite",
+        "avatar_3.sprite",
+        "avatar_4.sprite",
+        "avatar_5.sprite",
+        "avatar_6.sprite",
+        "avatar_7.sprite",
+    ];
+    let avatar_sources = ('0'..='7').map(solid_sprite).collect::<Vec<_>>();
+    let mut sources = vec![
+        ("standing.sprite", "@frame 0\nB\n"),
+        ("scene_background.sprite", "@frame 0\nR\n"),
+    ];
+    sources.extend(
+        avatar_names
+            .iter()
+            .zip(&avatar_sources)
+            .map(|(name, source)| (*name, source.as_str())),
+    );
+    let pack = pixtuoid_core::sprite::format::load_pack_from_strings(PACK_TOML, &sources)
+        .expect("paperdoll market pack");
+    let layout = Layout::compute_with_seed(240, 160, None, 0).expect("layout");
+    let theme = crate::theme::theme_by_name("maple").expect("maple theme");
+    let now = SystemTime::UNIX_EPOCH + std::time::Duration::from_secs(1_700_000_000);
+    let mut scene = SceneState::uniform(16);
+    for index in 0..crate::market::MARKET_MAX_AGENTS {
+        let id = pixtuoid_core::AgentId::from_parts("codex", &format!("merchant-{index}"));
+        let mut slot = make_slot(id, active_state());
+        slot.desk_index = GlobalDeskIndex(index);
+        scene.agents.insert(id, slot);
+    }
+    let coffee = HashMap::new();
+    let mut owned = OwnedSimStores::new();
+    let frame = sim_step(&mut owned.stores(), &scene, &layout, &pack, &coffee, 0, now);
+    let backdrop = Rgb { r: 9, g: 8, b: 7 };
+    let mut buf = RgbBuffer::filled(layout.buf_w, layout.buf_h, backdrop);
+
+    paint_frame(
+        &mut PaintCtx {
+            scene: &scene,
+            layout: &layout,
+            pack: &pack,
+            now,
+            buf: &mut buf,
+            cache: &mut FrameCache::new(),
+            theme,
+            floor: crate::floor::FloorMeta::ground(),
+            active_pet: None,
+            floor_pet: None,
+            coffee: &coffee,
+            motion: &owned.motion,
+            door_anim_max_ms: 0,
+            debug_walkable: false,
+        },
+        &frame,
+    );
+
+    let placements = crate::market::build_market_placements(
+        &scene,
+        Bounds {
+            x: 0,
+            y: 0,
+            width: 240,
+            height: 160,
+        },
+    );
+    let expected = [
+        Rgb {
+            r: 0xed,
+            g: 0x4b,
+            b: 0x4b,
+        },
+        Rgb {
+            r: 0xe5,
+            g: 0x8b,
+            b: 0x39,
+        },
+        Rgb {
+            r: 0xf2,
+            g: 0xd0,
+            b: 0x4f,
+        },
+        Rgb {
+            r: 0x58,
+            g: 0xa6,
+            b: 0x4b,
+        },
+        Rgb {
+            r: 0x45,
+            g: 0xb8,
+            b: 0xba,
+        },
+        Rgb {
+            r: 0x4e,
+            g: 0x79,
+            b: 0xbd,
+        },
+        Rgb {
+            r: 0x8a,
+            g: 0x62,
+            b: 0xc7,
+        },
+        Rgb {
+            r: 0xd6,
+            g: 0x5b,
+            b: 0xd0,
+        },
+    ];
+    assert_eq!(placements.len(), expected.len());
+    for (placement, color) in placements.iter().zip(expected) {
+        assert_eq!(
+            buf.get(placement.avatar_anchor_px.x, placement.avatar_anchor_px.y),
+            color,
+            "slot {} must select and preserve its own paperdoll frame",
+            placement.slot.index
+        );
+    }
+}
+
+#[test]
+fn high_resolution_paperdoll_preserves_adjacent_source_pixels_at_720x480() {
+    const PACK_TOML: &str = r##"
+[pack]
+name = "market-hires-paperdoll-test"
+version = "0.0.0"
+
+[palette]
+"." = "transparent"
+"B" = "#101112"
+"H" = "#202122"
+"S" = "#303132"
+"P" = "#404142"
+"R" = "#090807"
+"0" = "#ed4b4b"
+"1" = "#58a64b"
+"2" = "#4e79bd"
+
+[animations.standing]
+frames = ["standing.sprite"]
+frame_ms = 1000
+
+[animations.market_avatar_hires]
+frames = [
+  "avatar_0.sprite", "avatar_1.sprite", "avatar_2.sprite", "avatar_3.sprite",
+  "avatar_4.sprite", "avatar_5.sprite", "avatar_6.sprite", "avatar_7.sprite",
+]
+frame_ms = 1000
+
+[animations.scene_background]
+frames = ["scene_background.sprite"]
+frame_ms = 1000
+"##;
+
+    const SOURCE_W: usize = 96;
+    const SOURCE_H: usize = 72;
+    fn detailed_sprite() -> String {
+        let transparent_tail = std::iter::repeat_n(".", SOURCE_W - 3)
+            .collect::<Vec<_>>()
+            .join(" ");
+        let first_row = format!("0 1 2 {transparent_tail}");
+        let transparent_row = std::iter::repeat_n(".", SOURCE_W)
+            .collect::<Vec<_>>()
+            .join(" ");
+        let rows = std::iter::once(first_row)
+            .chain(std::iter::repeat_n(transparent_row, SOURCE_H - 1))
+            .collect::<Vec<_>>()
+            .join("\n");
+        format!("@frame 0\n{rows}\n")
+    }
+
+    let avatar_names = [
+        "avatar_0.sprite",
+        "avatar_1.sprite",
+        "avatar_2.sprite",
+        "avatar_3.sprite",
+        "avatar_4.sprite",
+        "avatar_5.sprite",
+        "avatar_6.sprite",
+        "avatar_7.sprite",
+    ];
+    let avatar_sources = std::iter::repeat_with(detailed_sprite)
+        .take(crate::market::MARKET_MAX_AGENTS)
+        .collect::<Vec<_>>();
+    let mut sources = vec![
+        ("standing.sprite", "@frame 0\nB\n"),
+        ("scene_background.sprite", "@frame 0\nR\n"),
+    ];
+    sources.extend(
+        avatar_names
+            .iter()
+            .zip(&avatar_sources)
+            .map(|(name, source)| (*name, source.as_str())),
+    );
+    let pack = pixtuoid_core::sprite::format::load_pack_from_strings(PACK_TOML, &sources)
+        .expect("high-resolution paperdoll pack");
+    let layout = Layout::compute_with_seed(720, 480, None, 0).expect("layout");
+    let theme = crate::theme::theme_by_name("maple").expect("maple theme");
+    let now = SystemTime::UNIX_EPOCH + std::time::Duration::from_secs(1_700_000_000);
+    let id = pixtuoid_core::AgentId::from_parts("codex", "detailed-merchant");
+    let mut scene = SceneState::uniform(16);
+    scene.agents.insert(id, make_slot(id, active_state()));
+    let coffee = HashMap::new();
+    let mut owned = OwnedSimStores::new();
+    let frame = sim_step(&mut owned.stores(), &scene, &layout, &pack, &coffee, 0, now);
+    let backdrop = Rgb { r: 9, g: 8, b: 7 };
+    let mut buf = RgbBuffer::filled(layout.buf_w, layout.buf_h, backdrop);
+
+    paint_frame(
+        &mut PaintCtx {
+            scene: &scene,
+            layout: &layout,
+            pack: &pack,
+            now,
+            buf: &mut buf,
+            cache: &mut FrameCache::new(),
+            theme,
+            floor: crate::floor::FloorMeta::ground(),
+            active_pet: None,
+            floor_pet: None,
+            coffee: &coffee,
+            motion: &owned.motion,
+            door_anim_max_ms: 0,
+            debug_walkable: false,
+        },
+        &frame,
+    );
+
+    let anchor = crate::market::build_market_placements(
+        &scene,
+        Bounds {
+            x: 0,
+            y: 0,
+            width: 720,
+            height: 480,
+        },
+    )[0]
+    .avatar_anchor_px;
+    assert_eq!(
+        [
+            buf.get(anchor.x, anchor.y),
+            buf.get(anchor.x + 1, anchor.y),
+            buf.get(anchor.x + 2, anchor.y),
+            buf.get(anchor.x + 3, anchor.y),
+        ],
+        [
+            Rgb {
+                r: 0xed,
+                g: 0x4b,
+                b: 0x4b,
+            },
+            Rgb {
+                r: 0x58,
+                g: 0xa6,
+                b: 0x4b,
+            },
+            Rgb {
+                r: 0x4e,
+                g: 0x79,
+                b: 0xbd,
+            },
+            backdrop,
+        ],
+        "a 96x72 paperdoll must render one-to-one at 720x480 instead of being replaced by a 3x block sprite"
+    );
+}
+
+#[test]
+fn market_paperdoll_walks_in_from_the_edge_and_back_out() {
+    const PACK_TOML: &str = r##"
+[pack]
+name = "market-motion-test"
+version = "0.0.0"
+
+[palette]
+"." = "transparent"
+"B" = "#101112"
+"H" = "#202122"
+"S" = "#303132"
+"P" = "#404142"
+"R" = "#090807"
+"A" = "#58a64b"
+
+[animations.standing]
+frames = ["standing.sprite"]
+frame_ms = 1000
+
+[animations.market_avatar]
+frames = [
+  "avatar_0.sprite", "avatar_1.sprite", "avatar_2.sprite", "avatar_3.sprite",
+  "avatar_4.sprite", "avatar_5.sprite", "avatar_6.sprite", "avatar_7.sprite",
+]
+frame_ms = 1000
+
+[animations.scene_background]
+frames = ["scene_background.sprite"]
+frame_ms = 1000
+"##;
+
+    let row = std::iter::repeat_n("A", crate::market::MARKET_AVATAR_WIDTH as usize)
+        .collect::<Vec<_>>()
+        .join(" ");
+    let avatar = format!(
+        "@frame 0\n{}\n",
+        std::iter::repeat_n(row, crate::market::MARKET_AVATAR_HEIGHT as usize)
+            .collect::<Vec<_>>()
+            .join("\n")
+    );
+    let avatar_names = [
+        "avatar_0.sprite",
+        "avatar_1.sprite",
+        "avatar_2.sprite",
+        "avatar_3.sprite",
+        "avatar_4.sprite",
+        "avatar_5.sprite",
+        "avatar_6.sprite",
+        "avatar_7.sprite",
+    ];
+    let mut sources = vec![
+        ("standing.sprite", "@frame 0\nB\n"),
+        ("scene_background.sprite", "@frame 0\nR\n"),
+    ];
+    sources.extend(avatar_names.map(|name| (name, avatar.as_str())));
+    let pack = pixtuoid_core::sprite::format::load_pack_from_strings(PACK_TOML, &sources)
+        .expect("market motion pack");
+    let theme = crate::theme::theme_by_name("maple").expect("maple theme");
+    let boot = SystemTime::UNIX_EPOCH + std::time::Duration::from_secs(1_700_000_000);
+    let id = pixtuoid_core::AgentId::from_parts("codex", "moving-merchant");
+    let avatar_color = Rgb {
+        r: 0x58,
+        g: 0xa6,
+        b: 0x4b,
+    };
+
+    let render_x_span = |now: SystemTime, exiting_at: Option<SystemTime>| {
+        let layout = Layout::compute_with_seed(240, 160, None, 0).expect("layout");
+        let mut slot = make_slot(id, ActivityState::Idle);
+        slot.created_at = boot;
+        slot.exiting_at = exiting_at;
+        let mut scene = SceneState::uniform(16);
+        scene.agents.insert(id, slot);
+        let coffee = HashMap::new();
+        let mut owned = OwnedSimStores::new();
+        let frame = sim_step(&mut owned.stores(), &scene, &layout, &pack, &coffee, 0, now);
+        let mut buf = RgbBuffer::filled(layout.buf_w, layout.buf_h, Rgb { r: 9, g: 8, b: 7 });
+        paint_frame(
+            &mut PaintCtx {
+                scene: &scene,
+                layout: &layout,
+                pack: &pack,
+                now,
+                buf: &mut buf,
+                cache: &mut FrameCache::new(),
+                theme,
+                floor: crate::floor::FloorMeta::ground(),
+                active_pet: None,
+                floor_pet: None,
+                coffee: &coffee,
+                motion: &owned.motion,
+                door_anim_max_ms: 0,
+                debug_walkable: false,
+            },
+            &frame,
+        );
+        let xs = (0..layout.buf_h)
+            .flat_map(|y| (0..layout.buf_w).map(move |x| (x, y)))
+            .filter_map(|(x, y)| (buf.get(x, y) == avatar_color).then_some(x))
+            .collect::<Vec<_>>();
+        (
+            *xs.iter().min().expect("paperdoll is visible"),
+            *xs.iter().max().expect("paperdoll is visible"),
+        )
+    };
+
+    let entry_start = render_x_span(boot, None);
+    let entry_mid = render_x_span(boot + std::time::Duration::from_millis(1_300), None);
+    let settled = render_x_span(boot + std::time::Duration::from_millis(3_000), None);
+    assert!(
+        entry_start.0 > entry_mid.0 && entry_mid.0 > settled.0,
+        "the merchant must visibly move from the right market edge to the first stall: start={entry_start:?}, mid={entry_mid:?}, settled={settled:?}"
+    );
+    assert_eq!(
+        settled,
+        (108, 139),
+        "the completed entry lands on the authored first slot"
+    );
+
+    let exit_at = boot + std::time::Duration::from_secs(10);
+    let before_exit = render_x_span(exit_at, None);
+    let exit_start = render_x_span(exit_at, Some(exit_at));
+    let exit_mid = render_x_span(
+        exit_at + std::time::Duration::from_millis(200),
+        Some(exit_at),
+    );
+    let exit_edge = render_x_span(
+        exit_at + std::time::Duration::from_millis(500),
+        Some(exit_at),
+    );
+    assert_eq!(
+        exit_start, before_exit,
+        "exit begins at the currently visible idle-walk position"
+    );
+    assert!(
+        exit_start.0 < exit_mid.0 && exit_mid.0 < exit_edge.0,
+        "the merchant must visibly walk back toward the right edge: start={exit_start:?}, mid={exit_mid:?}, edge={exit_edge:?}"
+    );
+}
+
 // A free-roaming creature draws its destination from the WHOLE walkable mask
 // (`walkable_target`), which reaches within a few columns of the buffer edge —
 // and it is drawn `Anchor::Center`, so a 14-px lobster resting there was sliced
@@ -3782,5 +5012,27 @@ fn pod_divider_spans_the_desk_rows_between_pod_mates_and_nowhere_else() {
     assert!(
         checked_pairs > 0 && checked_ends > 0,
         "the rig must cover both cases (pairs={checked_pairs}, row-ends={checked_ends})"
+    );
+}
+
+#[test]
+fn signed_nearest_blit_clips_above_viewport_without_moving_the_foot_baseline() {
+    let bg = Rgb { r: 1, g: 2, b: 3 };
+    let foot = Rgb {
+        r: 240,
+        g: 80,
+        b: 20,
+    };
+    let mut pixels = vec![None; 16];
+    pixels[3 * 4 + 2] = Some(foot);
+    let frame = Frame::from_pixels(4, 4, pixels);
+    let mut buf = RgbBuffer::filled(4, 3, bg);
+
+    blit_frame_nearest_to_size_clipped(&frame, 0, -2, Size { w: 4, h: 4 }, &mut buf);
+
+    assert_eq!(
+        buf.get(2, 1),
+        foot,
+        "clipping the top two rows must leave the bottom-row foot at y=1"
     );
 }

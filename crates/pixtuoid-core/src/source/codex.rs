@@ -181,7 +181,7 @@ pub fn decode_codex_line(transcript_path: &str, source: &str, v: Value) -> Resul
         // protocol.rs) — accepted here too so a future serializer flip to the
         // alias form still drives Active/Idle. Mirrors upstream by construction.
         ("event_msg", "task_started") | ("event_msg", "turn_started") => vec![start()],
-        ("response_item", "function_call") => {
+        ("response_item", "function_call") | ("response_item", "custom_tool_call") => {
             if function_call_needs_approval(payload) {
                 vec![AgentEvent::Waiting {
                     agent_id,
@@ -192,10 +192,12 @@ pub fn decode_codex_line(transcript_path: &str, source: &str, v: Value) -> Resul
             }
         }
         // Resume signals: a command/patch finished running after (auto-)approval.
-        // function_call_output (response_item) is the modern form; exec_command_end
-        // and patch_apply_end are the event_msg forms. Each is an ActivityStart so
-        // the reducer clears any Waiting set by the permission gate.
+        // function_call_output (CLI) and custom_tool_call_output (Desktop) are
+        // response-item forms; exec_command_end and patch_apply_end are the
+        // event_msg forms. Each is an ActivityStart so the reducer clears any
+        // Waiting set by the permission gate and refreshes long-running tasks.
         ("response_item", "function_call_output")
+        | ("response_item", "custom_tool_call_output")
         | ("event_msg", "exec_command_end")
         | ("event_msg", "patch_apply_end") => {
             vec![start()]
@@ -214,9 +216,10 @@ pub fn decode_codex_line(transcript_path: &str, source: &str, v: Value) -> Resul
         | ("event_msg", "web_search_end")
         | ("response_item", "tool_search_call")
         | ("response_item", "tool_search_output") => vec![start()],
-        ("event_msg", "task_complete")
-        | ("event_msg", "turn_complete")
-        | ("event_msg", "turn_aborted") => vec![end()],
+        ("event_msg", "task_complete") | ("event_msg", "turn_complete") => {
+            vec![AgentEvent::TurnComplete { agent_id }]
+        }
+        ("event_msg", "turn_aborted") => vec![end()],
         // Token-meter usage observation (#632): `token_count` fires per turn
         // with `info.last_token_usage` (that turn's reading — the cumulative
         // twin `total_token_usage` is deliberately NOT read: the reducer
@@ -492,6 +495,39 @@ mod tests {
     }
 
     #[test]
+    fn custom_tool_call_and_output_keep_desktop_tasks_active() {
+        // Live Codex Desktop shape (2026-08): app/tool invocations use
+        // response_item custom_tool_call/custom_tool_call_output instead of
+        // the legacy function_call pair. Both are work pulses within a turn.
+        for line in [
+            json!({
+                "type":"response_item",
+                "payload":{
+                    "type":"custom_tool_call",
+                    "call_id":"call_1",
+                    "name":"exec",
+                    "status":"completed",
+                    "input":{}
+                }
+            }),
+            json!({
+                "type":"response_item",
+                "payload":{
+                    "type":"custom_tool_call_output",
+                    "call_id":"call_1",
+                    "output":"ok"
+                }
+            }),
+        ] {
+            let out = ev(line.clone());
+            assert!(
+                matches!(out.as_slice(), [AgentEvent::ActivityStart { .. }]),
+                "desktop custom-tool event {line} must keep the task Active"
+            );
+        }
+    }
+
+    #[test]
     fn patch_apply_end_resumes_work() {
         // A file-edit's resume signal (after patch approval) — mirrors the
         // exec resume so the reducer clears Waiting for patch flows too.
@@ -563,15 +599,22 @@ mod tests {
     }
 
     #[test]
-    fn task_complete_and_abort_end_activity() {
-        // task_complete (serialized today) + turn_complete (v2 serde alias) + turn_aborted.
-        for t in ["task_complete", "turn_complete", "turn_aborted"] {
+    fn completed_turns_are_distinct_from_aborts() {
+        // Successful completion drives the one-shot completion presentation;
+        // an aborted turn still only ends activity and must never celebrate.
+        for t in ["task_complete", "turn_complete"] {
             let out = ev(json!({"type":"event_msg","payload":{"type":t,"turn_id":"t"}}));
             assert!(
-                matches!(out.as_slice(), [AgentEvent::ActivityEnd { .. }]),
+                matches!(out.as_slice(), [AgentEvent::TurnComplete { .. }]),
                 "{t}"
             );
         }
+        let aborted =
+            ev(json!({"type":"event_msg","payload":{"type":"turn_aborted","turn_id":"t"}}));
+        assert!(matches!(
+            aborted.as_slice(),
+            [AgentEvent::ActivityEnd { .. }]
+        ));
     }
 
     #[test]

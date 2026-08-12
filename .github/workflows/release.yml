@@ -7,6 +7,10 @@ on:
 # One lossless repository-wide release queue: different tags must not interleave
 # irreversible crates.io/npm publication. `queue: max` retains every waiting
 # tag; cancel-in-progress stays false because a publish must never be interrupted.
+#
+# Fork transition: every job fails closed unless the repository owner explicitly
+# sets MAPLE_AGENT_MARKET_RELEASES_ENABLED=true. Do not set it until package
+# names, repository URLs, asset policy and publication targets are fork-owned.
 concurrency:
   group: pixtuoid-release
   queue: max
@@ -24,6 +28,7 @@ env:
 
 jobs:
   check:
+    if: ${{ vars.MAPLE_AGENT_MARKET_RELEASES_ENABLED == 'true' }}
     name: check
     runs-on: ubuntu-latest
     timeout-minutes: 15
@@ -81,6 +86,7 @@ jobs:
       - run: just test
 
   build:
+    if: ${{ vars.MAPLE_AGENT_MARKET_RELEASES_ENABLED == 'true' }}
     name: build (${{ matrix.target }})
     needs: check
     runs-on: ${{ matrix.os }}
@@ -170,6 +176,7 @@ jobs:
           if-no-files-found: error
 
   deb:
+    if: ${{ vars.MAPLE_AGENT_MARKET_RELEASES_ENABLED == 'true' }}
     name: deb (${{ matrix.target }})
     needs: check
     runs-on: ubuntu-latest
@@ -220,6 +227,7 @@ jobs:
           if-no-files-found: error
 
   release:
+    if: ${{ vars.MAPLE_AGENT_MARKET_RELEASES_ENABLED == 'true' }}
     name: release
     needs: [build, deb]
     runs-on: ubuntu-latest
@@ -281,7 +289,7 @@ jobs:
     needs: [check, build, deb]
     # Never publish a pre-release to crates.io — the publish is irreversible;
     # tester pre-release tags (v*-win.N etc.) build artifacts only.
-    if: ${{ !contains(github.ref_name, '-') }}
+    if: ${{ vars.MAPLE_AGENT_MARKET_RELEASES_ENABLED == 'true' && !contains(github.ref_name, '-') }}
     runs-on: ubuntu-latest
     timeout-minutes: 30
     permissions:
@@ -350,7 +358,7 @@ jobs:
     # (v*-win.N / -rc) build artifacts only. Consumes the SAME build artifacts
     # as the release job — npm is a third downstream consumer of the one build
     # matrix, not a parallel build.
-    if: ${{ !contains(github.ref_name, '-') }}
+    if: ${{ vars.MAPLE_AGENT_MARKET_RELEASES_ENABLED == 'true' && !contains(github.ref_name, '-') }}
     runs-on: ubuntu-latest
     timeout-minutes: 20
     permissions:

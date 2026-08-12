@@ -2,6 +2,7 @@ mod catppuccin;
 mod cyberpunk;
 mod dracula;
 mod gruvbox;
+mod maple;
 mod normal;
 mod tokyo_night;
 
@@ -11,6 +12,7 @@ pub use catppuccin::CATPPUCCIN;
 pub use cyberpunk::CYBERPUNK;
 pub use dracula::DRACULA;
 pub use gruvbox::GRUVBOX;
+pub use maple::MAPLE;
 pub use normal::NORMAL;
 pub use tokyo_night::TOKYO_NIGHT;
 
@@ -361,6 +363,7 @@ pub static ALL_THEMES: &[&Theme] = &[
     &TOKYO_NIGHT,
     &CATPPUCCIN,
     &GRUVBOX,
+    &MAPLE,
 ];
 
 /// Resolve a theme by its `name` (the `--theme` value), or `None` if unknown.
