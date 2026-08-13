@@ -6,7 +6,7 @@
 git clone https://github.com/SaM-runtime/maple-agent-market.git C:\dev\maple-agent-market
 Set-Location C:\dev\maple-agent-market
 git switch -c feature/my-change
-cargo build --locked -p pixtuoid
+cargo build --locked --workspace --bins
 .\target\debug\maple-agent-market.exe
 ```
 
@@ -36,6 +36,7 @@ python scripts\public-release-audit.py
 cargo check --locked --workspace --all-targets
 cargo clippy --locked --workspace --all-targets -- -D warnings
 python scripts\public-release-audit.py --selftest
+python scripts\build-public-release.py --selftest
 python scripts\stage-public-release.py --selftest
 ```
 
@@ -44,6 +45,20 @@ python scripts\stage-public-release.py --selftest
 ```powershell
 just snapshot
 ```
+
+## 公開 bundle
+
+公開 bundle 必須同時包含 `maple-agent-market(.exe)` 與 `pixtuoid-hook(.exe)`。前者是浮動視窗，後者是來源整合使用的 hook shim；不要只發行其中一個。
+
+```powershell
+# 以公開路徑重寫建置兩個執行檔，並對兩者進行 binary 稽核。
+python scripts\build-public-release.py
+
+# 僅接受乾淨、已 commit 的 revision；輸出必須在 repository 外且不存在。
+python scripts\stage-public-release.py --output C:\dist\maple-agent-market-0.16.0
+```
+
+輸出的 `PUBLIC_BUNDLE_MANIFEST.json` 必須保留 `entrypoint`（主程式），並以 `entrypoints` 列出兩個執行檔；`SHA256SUMS.txt` 必須涵蓋其自身以外的每個 bundle 檔案。安裝了 `just` 時，對應指令為 `just release-build` 與 `just release-stage C:\dist\maple-agent-market-0.16.0`。
 
 ## 素材 PR
 

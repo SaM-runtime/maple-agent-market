@@ -469,7 +469,7 @@ mod tests {
         // own FooterTone::Gateway arm — so the (deliberately disjoint) tone
         // vocabularies can't drift on the gateway severity policy. Was only
         // half-pinned: the board mapping above, but nothing held the footer side.
-        let theme = crate::theme::theme_by_name("normal").expect("normal theme");
+        let theme = crate::theme::theme_by_name("maple").expect("maple theme");
         for st in [
             DaemonState::Idle,
             DaemonState::Busy,

@@ -101,7 +101,7 @@ fn malformed_config_falls_back_and_reports_one_warning() {
 #[test]
 fn legacy_office_keys_are_ignored_instead_of_reactivated() {
     let cfg: AppConfig = toml::from_str(
-        "theme = 'dracula'\nmax-desks = 8\nlast-seen-version = '0.15'\n\
+        "theme = 'maple'\nmax-desks = 8\nlast-seen-version = '0.15'\n\
          [[pets]]\nkind = 'cat'\n\
          [audio]\nmuted = true\n",
     )

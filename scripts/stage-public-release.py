@@ -26,13 +26,19 @@ SOURCE_BUNDLE_FILES = (
     ("crates/pixtuoid/fonts/OFL-Monaspace.txt", "OFL-Monaspace.txt", "OFL-1.1"),
 )
 
+PUBLIC_EXECUTABLES = ("maple-agent-market", "pixtuoid-hook")
+EXECUTABLE_SPDX = {
+    "maple-agent-market": "MIT AND OFL-1.1",
+    "pixtuoid-hook": "MIT",
+}
+
 
 @dataclass(frozen=True)
 class BundleRequest:
     """All immutable inputs required to stage one public bundle."""
 
     root: pathlib.Path
-    artifact: pathlib.Path
+    artifacts: dict[str, pathlib.Path]
     output: pathlib.Path
     version: str
     revision: str
@@ -53,7 +59,7 @@ def normalized_request(request: BundleRequest) -> BundleRequest:
 
     return BundleRequest(
         root=request.root.resolve(),
-        artifact=request.artifact.resolve(),
+        artifacts={name: artifact.resolve() for name, artifact in request.artifacts.items()},
         output=request.output.resolve(),
         version=request.version,
         revision=request.revision,
@@ -73,8 +79,13 @@ def validate_request(request: BundleRequest) -> list[tuple[pathlib.Path, str, st
         pass
     else:
         raise ValueError("public bundle output must be outside the source repository")
-    if not request.artifact.is_file():
-        raise FileNotFoundError(f"release artifact is missing: {request.artifact}")
+    if set(request.artifacts) != set(PUBLIC_EXECUTABLES):
+        raise ValueError(
+            "public bundle must receive exactly: " + ", ".join(PUBLIC_EXECUTABLES)
+        )
+    for name, artifact in request.artifacts.items():
+        if not artifact.is_file():
+            raise FileNotFoundError(f"release artifact is missing: {name}: {artifact}")
 
     source_entries: list[tuple[pathlib.Path, str, str]] = []
     for source_name, staged_name, licence in SOURCE_BUNDLE_FILES:
@@ -100,29 +111,35 @@ def copy_source_components(
     return components
 
 
-def copy_executable(
-    artifact: pathlib.Path, staging: pathlib.Path
-) -> tuple[str, dict[str, str]]:
-    """Copy the release executable and return its name and manifest entry."""
+def copy_executables(
+    artifacts: dict[str, pathlib.Path], staging: pathlib.Path
+) -> tuple[list[str], list[dict[str, str]]]:
+    """Copy every public executable and return manifest-ready names and hashes."""
 
-    executable_name = (
-        "maple-agent-market.exe"
-        if artifact.suffix.casefold() == ".exe"
-        else "maple-agent-market"
-    )
-    executable = staging / executable_name
-    shutil.copy2(artifact, executable)
-    return executable_name, {
-        "path": executable_name,
-        "sha256": sha256(executable),
-        "spdx": "MIT AND OFL-1.1",
-    }
+    executable_names: list[str] = []
+    components: list[dict[str, str]] = []
+    for binary in PUBLIC_EXECUTABLES:
+        artifact = artifacts[binary]
+        executable_name = (
+            f"{binary}.exe" if artifact.suffix.casefold() == ".exe" else binary
+        )
+        executable = staging / executable_name
+        shutil.copy2(artifact, executable)
+        executable_names.append(executable_name)
+        components.append(
+            {
+                "path": executable_name,
+                "sha256": sha256(executable),
+                "spdx": EXECUTABLE_SPDX[binary],
+            }
+        )
+    return executable_names, components
 
 
 def write_bundle_manifest(
     staging: pathlib.Path,
     request: BundleRequest,
-    executable_name: str,
+    executable_names: list[str],
     components: list[dict[str, str]],
 ) -> None:
     """Write the machine-readable public/private asset boundary."""
@@ -133,7 +150,10 @@ def write_bundle_manifest(
         "version": request.version,
         "source_revision": request.revision,
         "profile": "public-safe",
-        "entrypoint": executable_name,
+        # Keep the original scalar entrypoint for existing consumers, while
+        # publishing the complete executable inventory for new consumers.
+        "entrypoint": executable_names[0],
+        "entrypoints": executable_names,
         "contains_private_maple_assets": False,
         "excluded_asset_classes": [
             "NEXON or MapleStory images, sprites, maps, monsters, portals, and skill frames",
@@ -181,11 +201,11 @@ def stage_bundle(request: BundleRequest) -> pathlib.Path:
     )
     try:
         components = copy_source_components(source_entries, staging)
-        executable_name, executable_component = copy_executable(
-            request.artifact, staging
+        executable_names, executable_components = copy_executables(
+            request.artifacts, staging
         )
-        components.append(executable_component)
-        write_bundle_manifest(staging, request, executable_name, components)
+        components.extend(executable_components)
+        write_bundle_manifest(staging, request, executable_names, components)
         write_checksum_inventory(staging)
         os.replace(staging, request.output)
     finally:
@@ -257,8 +277,8 @@ def require_fork_metadata(root: pathlib.Path) -> str:
     return version
 
 
-def built_release_artifact(root: pathlib.Path) -> pathlib.Path:
-    """Resolve the host-target artifact produced by build-public-release.py."""
+def built_release_artifacts(root: pathlib.Path) -> dict[str, pathlib.Path]:
+    """Resolve every host-target artifact produced by build-public-release.py."""
 
     rustc = os.environ.get("RUSTC", "rustc")
     version_output = subprocess.run(
@@ -270,7 +290,11 @@ def built_release_artifact(root: pathlib.Path) -> pathlib.Path:
         encoding="utf-8",
     ).stdout
     host = next(
-        (line.removeprefix("host: ").strip() for line in version_output.splitlines() if line.startswith("host: ")),
+        (
+            line.removeprefix("host: ").strip()
+            for line in version_output.splitlines()
+            if line.startswith("host: ")
+        ),
         None,
     )
     if not host:
@@ -278,11 +302,12 @@ def built_release_artifact(root: pathlib.Path) -> pathlib.Path:
     configured = pathlib.Path(os.environ.get("CARGO_TARGET_DIR", root / "target"))
     target_dir = configured if configured.is_absolute() else root / configured
     suffix = ".exe" if os.name == "nt" else ""
-    return target_dir.resolve() / host / "release" / f"maple-agent-market{suffix}"
+    release_dir = target_dir.resolve() / host / "release"
+    return {binary: release_dir / f"{binary}{suffix}" for binary in PUBLIC_EXECUTABLES}
 
 
-def run_release_build(root: pathlib.Path) -> pathlib.Path:
-    """Run the source and binary gates, then return the audited executable."""
+def run_release_build(root: pathlib.Path) -> dict[str, pathlib.Path]:
+    """Run the source and binary gates, then return every audited executable."""
 
     subprocess.run(
         [sys.executable, str(root / "scripts" / "public-release-audit.py"), "--selftest"],
@@ -299,14 +324,17 @@ def run_release_build(root: pathlib.Path) -> pathlib.Path:
         cwd=root,
         check=True,
     )
-    return built_release_artifact(root)
+    return built_release_artifacts(root)
 
 
 def selftest() -> int:
     failures: list[str] = []
     with tempfile.TemporaryDirectory() as tmp:
         root = pathlib.Path(tmp) / "繁體中文-source"
-        artifact = pathlib.Path(tmp) / "build" / "maple-agent-market.exe"
+        artifacts = {
+            "maple-agent-market": pathlib.Path(tmp) / "build" / "maple-agent-market.exe",
+            "pixtuoid-hook": pathlib.Path(tmp) / "build" / "pixtuoid-hook.exe",
+        }
         output = pathlib.Path(tmp) / "public-bundle"
         source_files = {
             "Cargo.toml": """
@@ -330,8 +358,9 @@ homepage = "https://github.com/IvanWng97/pixtuoid"
         subprocess.run(["git", "init", "--quiet"], cwd=root, check=True)
         if git_root(root) != root.resolve():
             failures.append("git root must decode a UTF-8 non-ASCII worktree path")
-        artifact.parent.mkdir(parents=True, exist_ok=True)
-        artifact.write_bytes(b"MZ public fixture")
+        for artifact in artifacts.values():
+            artifact.parent.mkdir(parents=True, exist_ok=True)
+            artifact.write_bytes(b"MZ public fixture")
 
         try:
             require_fork_metadata(root)
@@ -351,7 +380,22 @@ homepage = "https://example.github.io/maple-agent-market"
         if require_fork_metadata(root) != "0.16.0":
             failures.append("resolved fork metadata must preserve the workspace version")
 
-        request = BundleRequest(root, artifact, output, "0.16.0", "abc123")
+        try:
+            validate_request(
+                BundleRequest(
+                    root,
+                    {"maple-agent-market": artifacts["maple-agent-market"]},
+                    output,
+                    "0.16.0",
+                    "abc123",
+                )
+            )
+        except ValueError:
+            pass
+        else:
+            failures.append("bundle validation must reject a missing public executable")
+
+        request = BundleRequest(root, artifacts, output, "0.16.0", "abc123")
         stage_bundle(request)
 
         expected = {
@@ -365,6 +409,7 @@ homepage = "https://example.github.io/maple-agent-market"
             "SHA256SUMS.txt",
             "THIRD_PARTY_NOTICES.md",
             "maple-agent-market.exe",
+            "pixtuoid-hook.exe",
         }
         observed = {path.name for path in output.iterdir()}
         if observed != expected:
@@ -375,11 +420,42 @@ homepage = "https://example.github.io/maple-agent-market"
             "contains_private_maple_assets"
         ) is not False:
             failures.append("manifest does not pin the public-safe/private-asset boundary")
+        if manifest.get("entrypoints") != [
+            "maple-agent-market.exe",
+            "pixtuoid-hook.exe",
+        ]:
+            failures.append("manifest does not list both public executables")
+        if manifest.get("entrypoint") != "maple-agent-market.exe":
+            failures.append("manifest does not preserve the main entrypoint")
 
         checksum_lines = (output / "SHA256SUMS.txt").read_text("utf-8").splitlines()
-        checksum_names = {line.split("  ", 1)[1] for line in checksum_lines}
+        checksum_by_name = {
+            name: digest for digest, name in (line.split("  ", 1) for line in checksum_lines)
+        }
+        checksum_names = set(checksum_by_name)
         if checksum_names != expected - {"SHA256SUMS.txt"}:
             failures.append("checksum inventory is not the exact staged bundle")
+        for name in expected - {"SHA256SUMS.txt"}:
+            expected_digest = hashlib.sha256((output / name).read_bytes()).hexdigest()
+            if checksum_by_name.get(name) != expected_digest:
+                failures.append(f"checksum inventory hash mismatch: {name}")
+
+        component_by_name = {
+            component["path"]: component["sha256"]
+            for component in manifest.get("components", [])
+        }
+        for name in ("maple-agent-market.exe", "pixtuoid-hook.exe"):
+            expected_digest = hashlib.sha256((output / name).read_bytes()).hexdigest()
+            if component_by_name.get(name) != expected_digest:
+                failures.append(f"manifest executable hash mismatch: {name}")
+        component_spdx = {
+            component["path"]: component["spdx"]
+            for component in manifest.get("components", [])
+        }
+        if component_spdx.get("maple-agent-market.exe") != "MIT AND OFL-1.1":
+            failures.append("main executable SPDX must include its bundled OFL font")
+        if component_spdx.get("pixtuoid-hook.exe") != "MIT":
+            failures.append("hook executable SPDX must remain MIT")
 
         try:
             stage_bundle(request)
@@ -414,7 +490,7 @@ def main() -> int:
         root = git_root()
         require_clean_publication_candidate(root)
         version = require_fork_metadata(root)
-        artifact = run_release_build(root)
+        artifacts = run_release_build(root)
         revision = subprocess.run(
             ["git", "rev-parse", "HEAD"],
             cwd=root,
@@ -426,7 +502,7 @@ def main() -> int:
         output = stage_bundle(
             BundleRequest(
                 root=root,
-                artifact=artifact,
+                artifacts=artifacts,
                 output=args.output,
                 version=version,
                 revision=revision,

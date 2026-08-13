@@ -1,6 +1,6 @@
 [package]
 name                   = "pixtuoid-hook"
-description            = "Lightweight hook shim for pixtuoid"
+description            = "Lightweight event hook shim for Maple Agent Market"
 publish                = false
 version.workspace      = true
 edition.workspace      = true

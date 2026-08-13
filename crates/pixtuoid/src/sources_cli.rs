@@ -22,7 +22,7 @@ pub(crate) fn run_setup(yes: bool) -> Result<()> {
         return Ok(());
     }
     if !yes {
-        println!("Detected agent CLIs (run `pixtuoid setup --yes` to connect):");
+        println!("Detected agent CLIs (run `maple-agent-market setup --yes` to connect):");
         for sid in &detected {
             println!("  {sid}");
         }
@@ -47,7 +47,7 @@ pub(crate) fn run_setup(yes: bool) -> Result<()> {
     Ok(())
 }
 
-/// `pixtuoid sources [--json]` — print every source's connection state. Read-only.
+/// `maple-agent-market sources [--json]` — print every source's connection state. Read-only.
 pub(crate) fn run_sources_list(json: bool) -> Result<()> {
     let cfg = config::config_path();
     // Same NotFound-vs-everything-else split `doctor` makes: an unreadable log
@@ -79,7 +79,7 @@ pub(crate) fn run_sources_list(json: bool) -> Result<()> {
     Ok(())
 }
 
-/// `pixtuoid sources set <ids>` — declarative reconcile (connected set = exactly these).
+/// `maple-agent-market sources set <ids>` — declarative reconcile (connected set = exactly these).
 pub(crate) fn run_sources_set(ids: &[String], json: bool) -> Result<()> {
     let cfg = config::config_path();
     // Validate every id up front so a typo can't partially apply.
@@ -145,7 +145,7 @@ fn report_batch(rows: &[sources::OutcomeRow], json: bool) -> Result<()> {
 /// Print an [`sources::OutcomeRow`] batch as a text table or the `--json` array —
 /// the stable envelope external automation parses back from
 /// `connect`/`disconnect`/`sources set` (pinned by
-/// `outcome_envelope_is_the_id_outcome_raycast_contract` here plus the
+/// `outcome_envelope_is_the_id_outcome_automation_contract` here plus the
 /// byte-shape + committed-schema goldens in `sources.rs`).
 fn emit_outcomes(rows: &[sources::OutcomeRow], json: bool) -> Result<()> {
     if json {

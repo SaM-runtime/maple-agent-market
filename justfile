@@ -2,12 +2,12 @@
 default:
     @just --list
 
-# 編譯使用者執行檔 target/debug/maple-agent-market(.exe)。
+# 編譯浮動視窗與來源 hook 兩個使用者執行檔。
 build:
-    cargo build --locked -p pixtuoid
+    cargo build --locked --workspace --bins
 
 # 直接開啟內建程序化 Maple 雙地圖視窗。
-run:
+run: build
     cargo run --locked -p pixtuoid
 
 # 列出已由使用者匯入的本機素材包；乾淨安裝為空是正常狀態。
@@ -36,8 +36,14 @@ snapshot output="assets/readme/maple-agent-market-overview.png":
 audit:
     python scripts/public-release-audit.py --selftest
     python scripts/public-release-audit.py
+    python scripts/build-public-release.py --selftest
+    python scripts/stage-public-release.py --selftest
 
 preflight: fmt-check check clippy test audit
 
 release-build:
     python scripts/build-public-release.py
+
+# 在乾淨、已審核的 Git revision 外建立不可覆寫的公開安全 bundle。
+release-stage output:
+    python scripts/stage-public-release.py --output "{{output}}"

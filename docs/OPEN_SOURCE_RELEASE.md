@@ -31,13 +31,14 @@ cargo test --locked --workspace
 python scripts\public-release-audit.py --selftest
 python scripts\public-release-audit.py
 python scripts\stage-public-release.py --selftest
+python scripts\build-public-release.py --selftest
 python scripts\build-public-release.py
 ```
 
 `public-release-audit.py` 會 fail closed 檢查未核准 media、private path、音訊、封裝檔、憑證樣式與本機絕對路徑。allowlist 只對精確 hash 有效；檔案內容改變後必須重新做來源與視覺審查。
 
-release bundle 的 entrypoint 必須是 `maple-agent-market.exe`（Windows）或 `maple-agent-market`，manifest 必須明示 `contains_private_maple_assets: false`。
+release bundle 必須同時包含 `maple-agent-market(.exe)` 與 `pixtuoid-hook(.exe)`；manifest 保留相容用的 `entrypoint` 指向主程式，並以 `entrypoints` 列出兩者，同時明示 `contains_private_maple_assets: false`。前者開啟浮動視窗，後者供 Codex 等來源整合傳遞事件，缺一就不是可用的完整發行包。
 
 ## clone 驗收
 
-完成 push 後，應在全新目錄從 GitHub remote clone 指定 commit，執行 locked build，然後在不提供 `--pack-dir` 的情況下開啟視窗。只有這條路徑成功，才能聲稱朋友可直接 clone 使用。
+完成 push 後，應在全新目錄從 GitHub remote clone 指定 commit，執行 locked workspace binary build，確認兩個執行檔都存在，再在不提供 `--pack-dir` 的情況下開啟視窗並執行 hook 定位 smoke。只有這條路徑成功，才能聲稱該 revision 可由乾淨 clone 使用。

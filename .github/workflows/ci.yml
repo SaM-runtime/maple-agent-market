@@ -25,5 +25,9 @@ jobs:
         run: cargo test --locked --workspace
       - name: Public release audit self-test
         run: python scripts/public-release-audit.py --selftest
+      - name: Public release tooling self-tests
+        run: |
+          python scripts/build-public-release.py --selftest
+          python scripts/stage-public-release.py --selftest
       - name: Public release audit
         run: python scripts/public-release-audit.py

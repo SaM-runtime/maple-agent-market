@@ -52,11 +52,11 @@ Maple Agent Market 是桌面上的 agents orchestration visualizer。它把 Code
 ```powershell
 git clone https://github.com/SaM-runtime/maple-agent-market.git C:\dev\maple-agent-market
 Set-Location C:\dev\maple-agent-market
-cargo build --locked -p pixtuoid
+cargo build --locked --workspace --bins
 .\target\debug\maple-agent-market.exe
 ```
 
-`pixtuoid` 是為了保留上游相容契約而維持的內部 crate 名；對外執行檔是 `maple-agent-market.exe`。不帶子命令時會直接開啟浮動視窗，等同：
+這個命令會同時建立對外主程式 `maple-agent-market.exe` 與來源整合所需的 `pixtuoid-hook.exe`。`pixtuoid` 是為了保留上游相容契約而維持的內部 crate 名；主程式不帶子命令時會直接開啟浮動視窗，等同：
 
 ```powershell
 .\target\debug\maple-agent-market.exe floating
@@ -168,6 +168,22 @@ Repository 的可見性、用途是否營利或使用人數，都不會自動產
 python scripts\public-release-audit.py --selftest
 python scripts\public-release-audit.py
 ```
+
+### 可重現的公開 bundle
+
+`maple-agent-market` 是浮動視窗；`pixtuoid-hook` 是連接 Codex 等來源時使用的 hook shim。公開發行必須同時保留兩個執行檔，不能只複製前者。下列命令會以路徑重寫編譯兩者，並各自做 binary 稽核：
+
+```powershell
+python scripts\build-public-release.py
+```
+
+在乾淨、已審核並已 commit 的 working tree，可將兩個執行檔、授權與 SHA-256 清單放入 repository 外的新資料夾；既有輸出路徑會被拒絕覆寫：
+
+```powershell
+python scripts\stage-public-release.py --output C:\dist\maple-agent-market-0.16.0
+```
+
+bundle 的 `PUBLIC_BUNDLE_MANIFEST.json` 會保留 `entrypoint`（主程式）供既有工具使用，並以 `entrypoints` 列出 `maple-agent-market(.exe)` 與 `pixtuoid-hook(.exe)`；`SHA256SUMS.txt` 會涵蓋其自身以外的每個 bundle 檔案。
 
 ## 與 Pixtuoid 的關係
 

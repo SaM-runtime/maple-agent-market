@@ -1,10 +1,10 @@
-//! pixtuoid-core: headless logic for the pixtuoid TUI.
+//! pixtuoid-core: headless state logic for Maple Agent Market.
 //!
-//! The crate turns a stream of decoded agent-CLI events into an office
+//! The crate turns a stream of decoded agent-CLI events into a renderer-neutral
 //! [`SceneState`]: [`Reducer::apply`] folds each [`AgentEvent`] (tagged with the
-//! [`Transport`] it arrived on) into the per-agent slots a renderer then paints.
-//! It has no terminal dependency — the pixel/terminal painters live crate-up in
-//! `pixtuoid-scene` and the `pixtuoid` binary.
+//! [`Transport`] it arrived on) into the per-agent state a market, terminal, or
+//! future renderer can paint. It has no UI dependency — renderers live in
+//! `pixtuoid-scene` and the Maple Agent Market binary.
 //!
 //! ```
 //! use std::path::PathBuf;
@@ -12,7 +12,7 @@
 //!
 //! use pixtuoid_core::{AgentEvent, AgentId, Reducer, SceneState, Transport};
 //!
-//! let mut scene = SceneState::uniform(4); // one floor, 4 desks
+//! let mut scene = SceneState::uniform(4); // one layout row, 4 agent slots
 //! let mut reducer = Reducer::new();
 //! let id = AgentId::from_parts("claude-code", "session-1");
 //!
@@ -29,7 +29,7 @@
 //!     Transport::Hook,
 //! );
 //!
-//! // The session now occupies a desk, labelled `<source-prefix>·<cwd-basename>`.
+//! // The session now occupies an agent slot, labelled `<source-prefix>·<cwd-basename>`.
 //! let slot = scene.agents.get(&id).expect("the session took a desk");
 //! assert_eq!(&*slot.label, "cc·repo");
 //! ```

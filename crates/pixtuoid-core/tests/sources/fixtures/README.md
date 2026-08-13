@@ -75,18 +75,6 @@ CC's hook `transcript_path` == its transcript via `{{TRANSCRIPT_PATH}}`).
   `Notification` → Waiting approval-gate arm is NOT in this golden —
   non-interactive `reasonix run` has no approval gate, so it never fires — that
   arm is unit-pinned in `source/reasonix.rs` instead (closes #135).
-- **`claude-code/proof-session/`** — the §3 site proof-split timeline: one root
-  session, Read → Edit → Bash over `crates/pixtuoid/src/floating/offscreen.rs`,
-  self-referentially fixing the elevator-LED-lags-the-statusline desync (its
-  own real bottom-clamp logic — see `Statusline.astro`'s `clampToLastFloorAtBottom`).
-  ALSO read at render time by the `snapshot --proof` site-media renderer
-  (scripts/media.json job `proof`) — its timestamps ARE the clip's beat
-  timings, so retiming this fixture re-times the committed proof.webm. Its
-  visible strings (task phrase, file path, shell command) are pinned disjoint
-  from the statusline ticker's own FALLBACK corpus by
-  `tests/proof_fixture_disjointness.rs` (STATUSLINE-COLLISION handoff,
-  `docs/superpowers/plans/2026-07-05-wb-4-proof.md`) — the two are
-  agent-narration surfaces sharing one viewport at 4F.
 - **`omp/tool-run/`** — captured from a live **omp 16.4.0** `omp -p` run
   (2026-07-10, the #517 byte-real anchor for `verified_version`), sanitized:
   the fixed-width `type:"title"` slot, the v3 `session` header,

@@ -642,7 +642,7 @@ fn render_floor_paints_the_flame_crown_for_a_top_tier_agent() {
     // or sim/paint hop silently dropping slot.model/effort fails HERE even
     // while the unit-level paint_character_at test stays green.
     let pack = crate::embedded_pack::test_default_pack();
-    let theme = crate::theme::theme_by_name("normal").expect("normal theme exists");
+    let theme = crate::theme::theme_by_name("maple").expect("maple theme exists");
     let now = SystemTime::UNIX_EPOCH + std::time::Duration::from_secs(1_700_000_000);
     let mut scene = make_scene(1, 8);
     let slot = scene.agents.values_mut().next().expect("one agent");
@@ -689,7 +689,7 @@ fn render_floor_paints_the_flame_crown_for_a_top_tier_agent() {
 #[test]
 fn render_floor_paints_records_coffee_state_and_survives_a_tiny_buffer() {
     let pack = crate::embedded_pack::test_default_pack();
-    let theme = crate::theme::theme_by_name("normal").expect("normal theme exists");
+    let theme = crate::theme::theme_by_name("maple").expect("maple theme exists");
     let now = SystemTime::UNIX_EPOCH + std::time::Duration::from_secs(1_700_000_000);
     let scene = SceneState::new([8; MAX_FLOORS]);
     let mut fctx = FloorCtx::new();
@@ -761,7 +761,7 @@ fn floor_session_render_owns_the_dual_eviction() {
     // painter can't skip one and leak per-agent state or teleport a
     // recurring agent.
     let pack = crate::embedded_pack::test_default_pack();
-    let theme = crate::theme::theme_by_name("normal").expect("normal theme exists");
+    let theme = crate::theme::theme_by_name("maple").expect("maple theme exists");
     let now = SystemTime::UNIX_EPOCH + Duration::from_secs(1_700_000_000);
     let gone = AgentId::from_parts("claude-code", "session-evict");
     let mut session = FloorSession::new();
@@ -804,7 +804,7 @@ fn floor_session_render_surfaces_the_sims_occupied_waypoints() {
     // sim. (`last_occupied` is a private field; this test is a child module of
     // `floor`, so it reads it directly.)
     let pack = crate::embedded_pack::test_default_pack();
-    let theme = crate::theme::theme_by_name("normal").expect("normal theme exists");
+    let theme = crate::theme::theme_by_name("maple").expect("maple theme exists");
     let now0 = SystemTime::UNIX_EPOCH + Duration::from_secs(1_700_000_000);
     let mut scene = make_scene(1, 8);
     for slot in scene.agents.values_mut() {

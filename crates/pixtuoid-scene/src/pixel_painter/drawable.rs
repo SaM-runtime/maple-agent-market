@@ -846,7 +846,7 @@ mod tests {
     }
 
     fn theme() -> &'static crate::theme::Theme {
-        crate::theme::theme_by_name("normal").expect("theme")
+        crate::theme::theme_by_name("maple").expect("theme")
     }
 
     #[test]

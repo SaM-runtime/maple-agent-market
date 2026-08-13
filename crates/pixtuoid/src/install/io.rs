@@ -128,9 +128,9 @@ pub(crate) const HOOK_OVERRIDE_ENV: &str = "PIXTUOID_HOOK";
 /// `--hook-path` flag these messages used to advertise died with the
 /// `install-hooks` CLI (#284), so clap now answers it with `unexpected
 /// argument` — an error whose only remedy was itself an error.
-pub(crate) const SHIM_LOCATE_REMEDY: &str = "install it alongside pixtuoid (`brew install \
-     pixtuoid` / `cargo install pixtuoid-hook` / `npm i -g pixtuoid`) or point \
-     PIXTUOID_HOOK at an absolute path to the shim";
+pub(crate) const SHIM_LOCATE_REMEDY: &str = "install the Maple Agent Market release (or build a \
+     clean clone) so pixtuoid-hook is beside maple-agent-market, or point PIXTUOID_HOOK at an \
+     absolute path to the shim";
 
 /// AUTO-locate `pixtuoid-hook`: PATH, then a sibling of the running exe —
 /// both arms return absolute, verified-existing paths. The [`HOOK_OVERRIDE_ENV`]
@@ -168,7 +168,7 @@ fn default_hook_binary_from(
         return Ok(candidate);
     }
     Err(anyhow!(
-        "could not locate pixtuoid-hook (not on PATH, and not beside the pixtuoid \
+        "could not locate pixtuoid-hook (not on PATH, and not beside the Maple Agent Market \
          binary at {}); {SHIM_LOCATE_REMEDY}",
         dir.display()
     ))
@@ -187,10 +187,9 @@ fn running_exe_dir() -> Result<PathBuf> {
 /// Whether a PATH hit is a real native executable rather than a PATHEXT shim —
 /// the ENFORCEMENT of the rule [`hook_sibling_name`] states.
 ///
-/// `which` is PATHEXT-aware on Windows, so `npm i -g pixtuoid` (which
-/// materialises `pixtuoid-hook.cmd`, `.ps1` and an extensionless sh script in
-/// the global bin dir) resolves to a NON-PE before the real `pixtuoid-hook.exe`
-/// that the same install placed beside `maple-agent-market.exe` — and every
+/// `which` is PATHEXT-aware on Windows, so a `.cmd`, `.ps1`, or extensionless
+/// shell shim on PATH can resolve before the real `pixtuoid-hook.exe` beside
+/// `maple-agent-market.exe` — and every
 /// `EmbedAbsolute` target spawns the embedded path WITHOUT a shell, so the hook
 /// silently never fires. Rejecting the shim lets the exe-sibling arm answer.
 ///
@@ -527,11 +526,10 @@ mod tests {
 
     #[test]
     fn a_windows_path_hit_must_be_a_real_pe_not_a_pathext_shim() {
-        // `which` v8 is PATHEXT-aware, so on Windows `npm i -g pixtuoid` — which
-        // materialises `pixtuoid-hook.cmd`, `.ps1` and an extensionless sh script
-        // in the global bin dir — resolves to a NON-PE before the real
-        // `pixtuoid-hook.exe` sibling that the same npm install placed next to
-        // `maple-agent-market.exe`. Claude's Windows arm embeds that absolute path in EXEC
+        // `which` v8 is PATHEXT-aware, so on Windows a `.cmd`, `.ps1`, or
+        // extensionless shell shim on PATH resolves to a NON-PE before the real
+        // `pixtuoid-hook.exe` sibling beside `maple-agent-market.exe`. Claude's
+        // Windows arm embeds that absolute path in EXEC
         // form (`"args": []`), and `check_shim_binary`'s Windows `is_executable`
         // is just `exists()` — so the hook would silently never fire with a GREEN
         // doctor. Both truth tables run on every host (the wanted extension is a
@@ -646,7 +644,7 @@ mod tests {
     }
 
     #[test]
-    fn the_shim_locate_remedy_names_an_escape_hatch_the_cli_accepts() {
+    fn the_shim_locate_remedy_describes_the_current_release_or_clean_clone_path() {
         // The old wording said "pass --hook-path" — a flag that died with the
         // `install-hooks` CLI (#284). Every user who hits this (a `cargo install
         // pixtuoid` without the shim, a relocated install) was pointed at an
@@ -660,6 +658,17 @@ mod tests {
         );
         assert!(SHIM_LOCATE_REMEDY.contains(HOOK_OVERRIDE_ENV));
         assert!(!SHIM_LOCATE_REMEDY.contains("--hook-path"));
+        assert!(
+            SHIM_LOCATE_REMEDY.contains("Maple Agent Market")
+                && SHIM_LOCATE_REMEDY.contains("clean clone"),
+            "the user-facing recovery path must describe this project's supported distribution, not an upstream package channel"
+        );
+        for stale_channel in ["brew install", "cargo install", "npm i -g", "pixtuoid (`"] {
+            assert!(
+                !SHIM_LOCATE_REMEDY.contains(stale_channel),
+                "stale upstream install channel leaked into remedy: {stale_channel:?}"
+            );
+        }
     }
 
     #[test]

@@ -821,7 +821,7 @@ mod tests {
     use std::time::Duration;
 
     fn theme() -> &'static Theme {
-        crate::theme::theme_by_name("normal").expect("normal theme")
+        crate::theme::theme_by_name("maple").expect("maple theme")
     }
 
     fn render(head: Point, phase_ms: u64) -> RgbBuffer {

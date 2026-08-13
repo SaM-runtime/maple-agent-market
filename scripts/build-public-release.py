@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Build a host release binary without embedding maintainer filesystem paths."""
+"""Build host release binaries without embedding maintainer filesystem paths."""
 
 from __future__ import annotations
 
@@ -19,6 +19,11 @@ PUBLIC_ALIASES = {
     "temp": "/redacted/tmp",
     "workspace": "/src/maple-agent-market",
 }
+
+RELEASE_BINARIES = (
+    ("pixtuoid", "maple-agent-market"),
+    ("pixtuoid-hook", "pixtuoid-hook"),
+)
 
 
 def remap_flags(paths: dict[str, pathlib.Path]) -> list[str]:
@@ -69,14 +74,27 @@ def environment_path(root: pathlib.Path, name: str, default: pathlib.Path) -> pa
     return path.resolve()
 
 
-def release_artifact(root: pathlib.Path, target: str | None = None) -> pathlib.Path:
+def release_artifact(
+    root: pathlib.Path, target: str | None = None, binary: str = "maple-agent-market"
+) -> pathlib.Path:
     """Return the release executable path for an explicit or configured target."""
 
     target_dir = release_target_dir(root)
     target = target or os.environ.get("CARGO_BUILD_TARGET")
     suffix = ".exe" if os.name == "nt" else ""
     target_parts = [target] if target else []
-    return target_dir.joinpath(*target_parts, "release", f"maple-agent-market{suffix}")
+    return target_dir.joinpath(*target_parts, "release", f"{binary}{suffix}")
+
+
+def release_artifacts(
+    root: pathlib.Path, target: str | None = None
+) -> dict[str, pathlib.Path]:
+    """Return every public executable produced by the host release build."""
+
+    return {
+        binary: release_artifact(root, target, binary)
+        for _, binary in RELEASE_BINARIES
+    }
 
 
 def rustc_host(root: pathlib.Path) -> str:
@@ -109,44 +127,45 @@ def public_paths(root: pathlib.Path) -> dict[str, pathlib.Path]:
     }
 
 
-def run_audit(root: pathlib.Path, artifact: pathlib.Path | None = None) -> None:
-    """Run the source gate, optionally including one built artifact."""
+def run_audit(root: pathlib.Path, artifacts: tuple[pathlib.Path, ...] = ()) -> None:
+    """Run the source gate, including every requested built artifact."""
 
     audit = root / "scripts" / "public-release-audit.py"
     command = [sys.executable, str(audit)]
-    if artifact is not None:
+    for artifact in artifacts:
         command.extend(("--artifact", str(artifact)))
     subprocess.run(command, cwd=root, check=True)
 
 
-def build_release(root: pathlib.Path) -> pathlib.Path:
-    """Build and return the exact host executable through an explicit target path."""
+def build_release(root: pathlib.Path) -> dict[str, pathlib.Path]:
+    """Build and return every public host executable through explicit target paths."""
 
     flags = remap_flags(public_paths(root))
     cargo_config = f"target.'cfg(all())'.rustflags = {json.dumps(flags)}"
     target = rustc_host(root)
     target_dir = release_target_dir(root)
-    subprocess.run(
-        [
-            os.environ.get("CARGO", "cargo"),
-            "--config",
-            cargo_config,
-            "build",
-            "--locked",
-            "--release",
-            "--target",
-            target,
-            "--target-dir",
-            str(target_dir),
-            "-p",
-            "pixtuoid",
-            "--bin",
-            "maple-agent-market",
-        ],
-        cwd=root,
-        check=True,
-    )
-    return release_artifact(root, target)
+    for package, binary in RELEASE_BINARIES:
+        subprocess.run(
+            [
+                os.environ.get("CARGO", "cargo"),
+                "--config",
+                cargo_config,
+                "build",
+                "--locked",
+                "--release",
+                "--target",
+                target,
+                "--target-dir",
+                str(target_dir),
+                "-p",
+                package,
+                "--bin",
+                binary,
+            ],
+            cwd=root,
+            check=True,
+        )
+    return release_artifacts(root, target)
 
 
 def selftest() -> int:
@@ -174,8 +193,11 @@ def selftest() -> int:
         print("FAIL: a broad home remap must precede the more-specific workspace remap")
         return 1
     target = "x86_64-pc-windows-msvc"
-    artifact = release_artifact(pathlib.Path.cwd(), target)
-    if target not in artifact.parts:
+    artifacts = release_artifacts(pathlib.Path.cwd(), target)
+    if set(artifacts) != {"maple-agent-market", "pixtuoid-hook"}:
+        print("FAIL: release artifact set omitted a public executable")
+        return 1
+    if any(target not in artifact.parts for artifact in artifacts.values()):
         print("FAIL: release artifact path omitted the explicit Cargo target")
         return 1
     with tempfile.TemporaryDirectory() as tmp:
@@ -211,9 +233,10 @@ def main() -> int:
         check=True,
     )
     run_audit(root)
-    artifact = build_release(root)
-    run_audit(root, artifact)
-    print(f"public release build passed: {artifact}")
+    artifacts = build_release(root)
+    run_audit(root, tuple(artifacts.values()))
+    built_paths = ", ".join(str(path) for path in artifacts.values())
+    print(f"public release build passed: {built_paths}")
     return 0
 
 

@@ -3105,6 +3105,19 @@ pub fn paint_footer_into_surface(
 mod tests {
     use super::*;
 
+    /// Maple production uses its shop/training cards and chat strip. This
+    /// renamed clone keeps the retained generic compositor covered without
+    /// re-registering a second production theme.
+    static OFFICE_TEST_THEME: std::sync::LazyLock<Theme> = std::sync::LazyLock::new(|| {
+        let mut theme = pixtuoid_scene::theme::MAPLE.clone();
+        theme.name = "maple-office-test";
+        theme
+    });
+
+    fn office_test_theme() -> &'static Theme {
+        &OFFICE_TEST_THEME
+    }
+
     #[test]
     fn pack_xrgb_is_0x00rrggbb() {
         // Pin the surface pixel format (channel order + shift widths) so the two
@@ -3248,7 +3261,7 @@ mod tests {
     fn label_card_frame_uses_activity_tone_and_brighter_hover_highlight() {
         use pixtuoid_scene::layout::Point;
         use pixtuoid_scene::overlay::{LabelElement, LabelTone};
-        let theme = pixtuoid_scene::theme::theme_by_name("normal").expect("normal theme exists");
+        let theme = office_test_theme();
         let as_u32 = |c: Rgb| (c.r as u32) << 16 | (c.g as u32) << 8 | c.b as u32;
         let badge = |tone, hovered| {
             vec![LabelElement {
@@ -3310,7 +3323,7 @@ mod tests {
         use pixtuoid_scene::layout::Point;
         use pixtuoid_scene::overlay::{LabelElement, LabelTone};
 
-        let theme = pixtuoid_scene::theme::theme_by_name("normal").expect("normal theme exists");
+        let theme = office_test_theme();
         let label = [LabelElement {
             anchor_px: Point { x: 90, y: 55 },
             text: "cx·task".into(),
@@ -4142,7 +4155,7 @@ mod tests {
         // (`cc·`) exercises the `Some(hue)` arm the tone-only tests above skip.
         use pixtuoid_scene::layout::Point;
         use pixtuoid_scene::overlay::{LabelElement, LabelTone};
-        let theme = pixtuoid_scene::theme::theme_by_name("normal").expect("normal theme exists");
+        let theme = office_test_theme();
         let as_u32 = |c: Rgb| (c.r as u32) << 16 | (c.g as u32) << 8 | c.b as u32;
         // Idle grey dot vs the cc badge hue — deliberately distinct colors, so
         // "both present" proves a genuine split, not one color bleeding into both.
@@ -4178,7 +4191,7 @@ mod tests {
             return; // portable CI images are not required to ship a CJK face
         }
 
-        let theme = pixtuoid_scene::theme::theme_by_name("normal").expect("normal theme exists");
+        let theme = office_test_theme();
         let (win_w, win_h, scale) = (240usize, 80usize, 2i32);
         let label = LabelElement {
             anchor_px: Point { x: 50, y: 25 },
@@ -4224,7 +4237,7 @@ mod tests {
     fn paint_labels_render_antialiased_partial_coverage_not_binary_pixels() {
         use pixtuoid_scene::layout::Point;
         use pixtuoid_scene::overlay::{LabelElement, LabelTone};
-        let theme = pixtuoid_scene::theme::theme_by_name("normal").expect("normal theme exists");
+        let theme = office_test_theme();
         // Paint over a WHITE ground: an AA glyph's edges emit partial coverage, so
         // some pixels land STRICTLY between white and any fully-lit ink — the exact
         // thing the old all-or-nothing 8×8 bitmap font could never produce.
@@ -4254,7 +4267,7 @@ mod tests {
 
     #[test]
     fn wall_board_paints_brand_and_mood_tones_into_the_panel() {
-        let theme = pixtuoid_scene::theme::theme_by_name("normal").expect("normal theme exists");
+        let theme = office_test_theme();
         // 2 work + 1 wait + 1 idle, a busy gateway → the board carries the brand, a
         // ●work mood segment, and the ⬢gw chip. Rendered at a generous scale so the
         // full-coverage stroke interiors reach the exact tone colors.
@@ -4399,7 +4412,7 @@ mod tests {
         );
         let pack =
             pixtuoid_scene::embedded_pack::load_sprite_pack(None).expect("embedded pack loads");
-        let theme = pixtuoid_scene::theme::theme_by_name("normal").expect("normal theme exists");
+        let theme = pixtuoid_scene::theme::theme_by_name("maple").expect("maple theme exists");
         let now = std::time::UNIX_EPOCH + std::time::Duration::from_secs(1_700_000_000);
         let mut renderer = MapleRenderer::new();
         let (handle, rx) = crate::audio::AudioHandle::test_pair();
@@ -4432,7 +4445,7 @@ mod tests {
         // phantom-feedback twin of the label/volume blit tests it replaces.
         use pixtuoid_scene::board::{per_floor_counts, scene_stats};
         use pixtuoid_scene::footer::{FooterTone, RungKind};
-        let theme = pixtuoid_scene::theme::theme_by_name("normal").expect("normal theme exists");
+        let theme = office_test_theme();
         let mut scene = SceneState::new([8; pixtuoid_core::state::MAX_FLOORS]);
         let slot = active_on("/p/a.jsonl", 0, 0);
         scene.agents.insert(slot.agent_id, slot);
@@ -4582,7 +4595,7 @@ mod tests {
         use pixtuoid_scene::audio::OneShot;
         let pack =
             pixtuoid_scene::embedded_pack::load_sprite_pack(None).expect("embedded pack loads");
-        let theme = pixtuoid_scene::theme::theme_by_name("normal").expect("normal theme exists");
+        let theme = pixtuoid_scene::theme::theme_by_name("maple").expect("maple theme exists");
         let now0 = std::time::UNIX_EPOCH + std::time::Duration::from_secs(1_700_000_000);
         let mut idle = active_on("/w/wanderer.jsonl", 0, 0);
         idle.state = pixtuoid_core::state::ActivityState::Idle;
@@ -4621,7 +4634,7 @@ mod tests {
         let cap = 16;
         let pack =
             pixtuoid_scene::embedded_pack::load_sprite_pack(None).expect("embedded pack loads");
-        let theme = pixtuoid_scene::theme::theme_by_name("normal").expect("normal theme exists");
+        let theme = pixtuoid_scene::theme::theme_by_name("maple").expect("maple theme exists");
         let mut now = std::time::UNIX_EPOCH + std::time::Duration::from_secs(1_700_000_000);
         let mut renderer = MapleRenderer::new();
         let (handle, rx) = crate::audio::AudioHandle::test_pair();

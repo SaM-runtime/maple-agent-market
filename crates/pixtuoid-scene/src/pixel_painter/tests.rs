@@ -13,7 +13,29 @@ use pixtuoid_core::sprite::{Frame, Palette};
 use pixtuoid_core::state::{GlobalDeskIndex, ToolKind};
 use pixtuoid_core::walkable::OccupancyOverlay;
 use std::path::PathBuf;
-use std::sync::Arc;
+use std::sync::{Arc, LazyLock};
+
+/// Maple production routes to the outdoor map. This palette only covers the
+/// retained office renderer, while preserving its cool frosted-glass contract.
+static OFFICE_TEST_THEME: LazyLock<crate::theme::Theme> = LazyLock::new(|| {
+    let mut theme = crate::theme::MAPLE.clone();
+    theme.name = "maple-office-test";
+    theme.office.room_wall_trim_light = Rgb {
+        r: 110,
+        g: 112,
+        b: 128,
+    };
+    theme.office.room_wall_trim_dark = Rgb {
+        r: 40,
+        g: 42,
+        b: 54,
+    };
+    theme
+});
+
+fn office_test_theme() -> &'static crate::theme::Theme {
+    &OFFICE_TEST_THEME
+}
 
 #[test]
 fn stitch_vertical_wall_connects_each_joint() {
@@ -84,7 +106,7 @@ fn v_door_jambs_sit_flush_on_both_cut_ends() {
     // must COVER its cut end, or a 1px glass sliver survives between post
     // and opening (the #560 review's empirically-confirmed off-by-one: the
     // top post originally excluded start.y while the bottom one was flush).
-    let theme = crate::theme::theme_by_name("normal").expect("theme");
+    let theme = office_test_theme();
     let floor = Rgb {
         r: 150,
         g: 110,
@@ -217,7 +239,7 @@ fn glass_wall_h_back_cap_composites_over_a_character_behind_it() {
     // by the translucent glass. Stand in for that character with a vivid
     // warm pixel inside the cap band; the glass must shift it toward the
     // cool tone (red drops, blue rises) rather than leave it untouched.
-    let theme = crate::theme::theme_by_name("normal").expect("theme");
+    let theme = office_test_theme();
     let y_top = 20u16;
     // Place the stand-in at the REAL northmost row a routed walker's feet
     // can reach: footprint top `y_top` minus (OBSTACLE_PAD_PX=2 + 1) = the
@@ -260,7 +282,7 @@ fn glass_wall_v_composites_over_a_character_behind_its_north_cap() {
     // walkable) is drawn earlier, and the frosted glass composites over them.
     // Stand in with a vivid warm pixel in the cap's own column; the glass must
     // cool it (red↓ blue↑) rather than leave it untouched.
-    let theme = crate::theme::theme_by_name("normal").expect("theme");
+    let theme = office_test_theme();
     let (x_left, y_top, y_bot) = (10u16, 20u16, 40u16);
     // The cap overhang is the top WALL_TOP_OVERHANG_PX rows (visual-only floor a
     // walker can stand on). Row y_top is a seam glint (bright specular); probe
@@ -546,7 +568,7 @@ fn tool_glow_tint_maps_known_tools() {
         },
     );
     let idle_slot = make_slot(id, ActivityState::Idle);
-    let glow = &crate::theme::NORMAL.tool_glow;
+    let glow = &crate::theme::MAPLE.tool_glow;
     let edit_tint = palette::tool_glow_tint(&edit_slot, glow);
     let bash_tint = palette::tool_glow_tint(&bash_slot, glow);
     let idle_tint = palette::tool_glow_tint(&idle_slot, glow);
@@ -1484,7 +1506,7 @@ fn no_exclusive_waypoint_kind_ever_steps_aside() {
 fn kind_derivation_reproduces_the_string_parse_tint_for_representative_displays() {
     use pixtuoid_core::ToolDetail;
     let id = pixtuoid_core::AgentId::from_transcript_path("/g.jsonl");
-    let glow = &crate::theme::NORMAL.tool_glow;
+    let glow = &crate::theme::MAPLE.tool_glow;
     // Mirror the reducer's slot entry: detail typed → (display string, kind).
     let active = |detail: Option<&ToolDetail>| {
         make_slot(
@@ -1536,7 +1558,7 @@ fn kind_derivation_reproduces_the_string_parse_tint_for_representative_displays(
 #[test]
 fn tool_glow_for_kind_is_the_shared_kind_to_hue_map() {
     use pixtuoid_core::state::ToolKind;
-    let glow = &crate::theme::NORMAL.tool_glow;
+    let glow = &crate::theme::MAPLE.tool_glow;
     // The pure ToolKind→hue seam the binary's footer reads directly, so a tool
     // segment tints identically to the sprite's monitor glow.
     assert_eq!(palette::tool_glow_for_kind(ToolKind::Edit, glow), glow.edit);
@@ -1794,7 +1816,7 @@ fn glass_wall_h_clamps_below_buffer_bottom() {
     // y_top near the buffer bottom → the cap+face row span exceeds the height,
     // so the per-row `y >= bh continue` fires. Must not panic; in-bounds rows
     // still paint.
-    let theme = crate::theme::theme_by_name("normal").expect("theme");
+    let theme = crate::theme::theme_by_name("maple").expect("theme");
     let bh = 16u16;
     let mut buf = RgbBuffer::filled(40, bh, Rgb { r: 0, g: 0, b: 0 });
     paint_glass_wall_h(&mut buf, theme, 0, 39, bh - 1);
@@ -1814,7 +1836,7 @@ fn glass_wall_h_clamps_below_buffer_bottom() {
 fn glass_wall_v_clamps_past_right_edge() {
     // x_left == bw-1 → x_left+dx for dx>=1 exceeds the width, exercising the
     // `x >= bw continue`. Must not panic.
-    let theme = crate::theme::theme_by_name("normal").expect("theme");
+    let theme = crate::theme::theme_by_name("maple").expect("theme");
     let bw = 12u16;
     let mut buf = RgbBuffer::filled(bw, 40, Rgb { r: 0, g: 0, b: 0 });
     paint_glass_wall_v(&mut buf, theme, bw - 1, 5, 20);
@@ -1873,7 +1895,7 @@ fn furniture_room_decor_too_small_bounds_are_noops() {
     use super::furniture::{
         paint_doormat, paint_notice_board, paint_trash_bin, paint_water_cooler,
     };
-    let theme = crate::theme::theme_by_name("normal").expect("theme");
+    let theme = crate::theme::theme_by_name("maple").expect("theme");
     let bg = Rgb { r: 9, g: 9, b: 9 };
     let small = crate::layout::Bounds {
         x: 2,
@@ -1912,7 +1934,7 @@ fn furniture_room_decor_large_bounds_paint() {
     use super::furniture::{
         paint_doormat, paint_notice_board, paint_trash_bin, paint_water_cooler,
     };
-    let theme = crate::theme::theme_by_name("normal").expect("theme");
+    let theme = crate::theme::theme_by_name("maple").expect("theme");
     let bg = Rgb { r: 9, g: 9, b: 9 };
     // A generous room: width 40, height 40, well above every guard threshold.
     let big = crate::layout::Bounds {
@@ -1955,7 +1977,7 @@ fn furniture_painters_fill_exactly_their_rect_authority() {
     // hit-box-vs-sprite drift. Backs the name of `layout::tests::
     // pantry_and_meeting_procedural_rects_match_the_painted_geometry`.
     use super::furniture::{paint_doormat, paint_trash_bin, paint_water_cooler};
-    let theme = crate::theme::theme_by_name("normal").expect("theme");
+    let theme = crate::theme::theme_by_name("maple").expect("theme");
     let bg = Rgb { r: 1, g: 2, b: 3 };
     let big = crate::layout::Bounds {
         x: 4,
@@ -2020,7 +2042,7 @@ fn furniture_painters_fill_exactly_their_rect_authority() {
 #[test]
 fn furniture_corner_clip_does_not_panic() {
     use super::furniture::{paint_area_rug, paint_side_table};
-    let theme = crate::theme::theme_by_name("normal").expect("theme");
+    let theme = crate::theme::theme_by_name("maple").expect("theme");
     // Centre each piece near the (0,0) corner so part of the sprite has a
     // negative px/py, exercising the `< 0` / out-of-range `continue` clamps.
     let mut buf = RgbBuffer::filled(40, 40, Rgb { r: 0, g: 0, b: 0 });
@@ -2461,7 +2483,7 @@ fn paint_frame_is_pure_and_byte_identical() {
     let history_before = format!("{:?}", owned.history);
     let chitchat_before = owned.chitchat.len();
 
-    let theme = crate::theme::theme_by_name("normal").expect("normal theme");
+    let theme = crate::theme::theme_by_name("maple").expect("maple theme");
     let black = Rgb { r: 0, g: 0, b: 0 };
     let mut cache = FrameCache::new();
     let mut buf1 = RgbBuffer::filled(layout.buf_w, layout.buf_h, black);
@@ -2524,7 +2546,7 @@ fn corridor_runner_weaves_sparse_diamonds_without_inner_edge_rows() {
     // Taste pin from the interior-decor mock round (owner picked SOFT over
     // keep/narrow): stride-10 lattice, border rows only. The old stride-6 +
     // inner-edge treatment read as bathroom tiling, not a woven runner.
-    let theme = crate::theme::theme_by_name("normal").expect("theme");
+    let theme = office_test_theme();
     let floor = Rgb {
         r: 150,
         g: 110,
@@ -2572,7 +2594,7 @@ fn pantry_doorway_gets_a_centered_entry_mat() {
         .iter()
         .find(|d| d.start.y == d.end.y && d.start.y == p.bounds.y)
         .expect("the pantry north door");
-    let theme = crate::theme::theme_by_name("normal").expect("theme");
+    let theme = crate::theme::theme_by_name("maple").expect("theme");
     let floor = Rgb {
         r: 150,
         g: 110,
@@ -2604,7 +2626,7 @@ fn kitchen_island_sits_on_a_bar_mat() {
         .pantry
         .and_then(|p| p.kitchen_island)
         .expect("island at this size");
-    let theme = crate::theme::theme_by_name("normal").expect("theme");
+    let theme = crate::theme::theme_by_name("maple").expect("theme");
     let floor = Rgb {
         r: 150,
         g: 110,
@@ -2655,7 +2677,7 @@ fn pantry_mats_stay_inside_the_pantry_bounds() {
             g: 110,
             b: 72,
         };
-        let theme = crate::theme::theme_by_name("normal").expect("theme");
+        let theme = crate::theme::theme_by_name("maple").expect("theme");
         let mut buf = RgbBuffer::filled(w, h, floor);
         furniture::paint_pantry_entry_mat(&mut buf, &l, theme);
         furniture::paint_island_bar_mat(&mut buf, &l, theme);
@@ -2682,7 +2704,7 @@ fn fish_tank_paints_water_fish_and_cabinet_from_the_furniture_row() {
     // anim clock, so SOME cell in each lane must carry a fish color at any
     // instant. Frame reuses room_wall_trim_dark, cabinet reuses wood_*.
     use crate::layout::{furniture_def, Furniture};
-    let theme = crate::theme::theme_by_name("normal").expect("theme");
+    let theme = crate::theme::theme_by_name("maple").expect("theme");
     let floor = Rgb {
         r: 150,
         g: 110,
@@ -2734,7 +2756,7 @@ fn meeting_chairs_paint_with_backrests_toward_the_table_ends() {
     // profile sitter's orientation, carrying it alone when the chair is
     // empty; cushion from the chair_* theme family shared with the desk
     // chairs.
-    let theme = crate::theme::theme_by_name("normal").expect("theme");
+    let theme = crate::theme::theme_by_name("maple").expect("theme");
     let floor = Rgb {
         r: 150,
         g: 110,
@@ -2777,7 +2799,7 @@ fn busy_printer_ejects_a_page_and_idle_printer_stays_still() {
     // for stillness.
     let pack = crate::embedded_pack::load_sprite_pack(None).expect("pack");
     let mut cache = FrameCache::new();
-    let theme = crate::theme::theme_by_name("normal").expect("theme");
+    let theme = crate::theme::theme_by_name("maple").expect("theme");
     let pos = Point { x: 30, y: 20 };
     let now = SystemTime::UNIX_EPOCH + std::time::Duration::from_millis(600); // mid-eject
     let bg = Rgb { r: 1, g: 2, b: 3 };
@@ -2805,7 +2827,7 @@ fn busy_printer_ejects_a_page_and_idle_printer_stays_still() {
 fn busy_vending_machine_drops_a_can_and_idle_stays_stocked() {
     let pack = crate::embedded_pack::load_sprite_pack(None).expect("pack");
     let mut cache = FrameCache::new();
-    let theme = crate::theme::theme_by_name("normal").expect("theme");
+    let theme = crate::theme::theme_by_name("maple").expect("theme");
     let pos = Point { x: 30, y: 20 };
     let now = SystemTime::UNIX_EPOCH + std::time::Duration::from_millis(1_200); // mid-drop
     let bg = Rgb { r: 1, g: 2, b: 3 };
@@ -2843,7 +2865,7 @@ fn water_cooler_glugs_a_rising_bubble() {
     // Ambient like the coffee steam: a lit-water bubble climbs the bottle on
     // a fixed cycle. The bubble reuses tank_water_line (THE lit-water color)
     // — NOT the mascot harness's #d6f2f8 sentinel.
-    let theme = crate::theme::theme_by_name("normal").expect("theme");
+    let theme = crate::theme::theme_by_name("maple").expect("theme");
     let bg = Rgb { r: 1, g: 2, b: 3 };
     let pr = crate::layout::Bounds {
         x: 4,
@@ -3454,7 +3476,7 @@ fn floor_shadow_ellipses_fit_each_family_in_paint_order() {
 fn paint_empty_office(buf_w: u16, buf_h: u16) -> (RgbBuffer, Layout, &'static crate::theme::Theme) {
     let pack = crate::embedded_pack::test_default_pack();
     let layout = Layout::compute_with_seed(buf_w, buf_h, None, 0).expect("layout");
-    let theme = crate::theme::theme_by_name("normal").expect("normal theme");
+    let theme = crate::theme::theme_by_name("maple").expect("maple theme");
     let now = SystemTime::UNIX_EPOCH + std::time::Duration::from_secs(1_700_000_000);
     let scene = SceneState::uniform(16);
     let coffee = HashMap::new();
@@ -4755,7 +4777,7 @@ fn a_roaming_creature_is_never_sliced_by_the_canvas_edge() {
 
     let pack = crate::embedded_pack::test_default_pack();
     let layout = Layout::compute_with_seed(192, 128, None, 0).expect("layout");
-    let theme = crate::theme::theme_by_name("normal").expect("normal theme");
+    let theme = crate::theme::theme_by_name("maple").expect("maple theme");
     let boot = SystemTime::UNIX_EPOCH + Duration::from_secs(1_700_000_000);
     let coffee = HashMap::new();
     let motion = HashMap::new();

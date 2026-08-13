@@ -6,6 +6,8 @@
 
 - [ ] `cargo fmt --all -- --check`
 - [ ] `cargo test --locked --workspace`
+- [ ] `python scripts/build-public-release.py --selftest`
+- [ ] `python scripts/stage-public-release.py --selftest`
 - [ ] `python scripts/public-release-audit.py`
 - [ ] 若修改畫面，已用公開安全素材目視確認
 

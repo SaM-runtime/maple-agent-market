@@ -5,9 +5,11 @@
 乾淨 clone 不需要下載或安裝素材。雙地圖、角色、攤位、怪物、傳送點與泛用技能由 Rust 程序化繪製；相同 commit 可直接 build / run。
 
 ```powershell
-cargo build --locked -p pixtuoid
+cargo build --locked --workspace --bins
 .\target\debug\maple-agent-market.exe
 ```
+
+上述建置同時產生浮動視窗 `maple-agent-market.exe` 與來源整合所需的 `pixtuoid-hook.exe`。
 
 `assets list` 在沒有匯入任何本機 pack 時回傳空清單，這是正常狀態，不代表畫面缺少檔案。
 

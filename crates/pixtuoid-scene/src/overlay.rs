@@ -291,7 +291,7 @@ mod tests {
     fn badge_hue_resolves_a_registered_prefix() {
         // `cc·repo` splits to `cc`, which by_prefix maps to the claude_code hue —
         // pins that the split extracts the prefix before the FIRST separator.
-        let theme = &crate::theme::NORMAL;
+        let theme = &crate::theme::MAPLE;
         assert!(badge_hue("cc·repo", theme).is_some());
         assert_eq!(badge_hue("cc·repo", theme), theme.source.by_prefix("cc"));
     }
@@ -301,12 +301,12 @@ mod tests {
         // codex/antigravity fall back to a bare prefix (`cx`, `ag`) when cwd has
         // no basename; with no separator there is nothing to split, so no badge
         // (the label renders whole in its activity tone — the fallback path).
-        assert_eq!(badge_hue("cx", &crate::theme::NORMAL), None);
+        assert_eq!(badge_hue("cx", &crate::theme::MAPLE), None);
     }
 
     #[test]
     fn badge_hue_is_none_for_an_unregistered_prefix() {
-        assert_eq!(badge_hue("zz·repo", &crate::theme::NORMAL), None);
+        assert_eq!(badge_hue("zz·repo", &crate::theme::MAPLE), None);
     }
 
     #[test]

@@ -354,7 +354,7 @@ mod tests {
     // leave the buffer untouched — the guard at the top of paint_ellipse_blend.
     #[test]
     fn ellipse_blend_degenerate_is_a_noop() {
-        let theme = &crate::theme::NORMAL;
+        let theme = &crate::theme::MAPLE;
         let fill = Rgb {
             r: 30,
             g: 30,
@@ -402,7 +402,7 @@ mod tests {
     // degenerate test above isn't passing vacuously.
     #[test]
     fn ellipse_blend_paints_when_valid() {
-        let theme = &crate::theme::NORMAL;
+        let theme = &crate::theme::MAPLE;
         let fill = Rgb {
             r: 30,
             g: 30,
@@ -428,7 +428,7 @@ mod tests {
     // without panicking (RgbBuffer::put has no internal bounds guard).
     #[test]
     fn neon_panel_off_edge_does_not_panic() {
-        let theme = &crate::theme::NORMAL;
+        let theme = &crate::theme::MAPLE;
         let now = SystemTime::UNIX_EPOCH + std::time::Duration::from_secs(5);
         let mut buf = RgbBuffer::filled(10, 10, Rgb { r: 0, g: 0, b: 0 });
         // x=8, w=6 → px reaches 13 (>= width 10); y=8, h=5 → py reaches 12.

@@ -415,7 +415,8 @@ mod tests {
     #[test]
     fn ceiling_halo_painted_on_dark_theme() {
         let mut buf = RgbBuffer::filled(160, 90, Rgb { r: 0, g: 0, b: 0 });
-        let theme = &crate::theme::CYBERPUNK;
+        let mut theme = crate::theme::MAPLE.clone();
+        theme.kind = crate::theme::ThemeKind::Dark;
         let halos = vec![CeilingHalo {
             x: 50,
             y: 10,
@@ -427,14 +428,14 @@ mod tests {
             intensity: 0.8,
         }];
         let baseline = buf.get(50, 10);
-        paint_ceiling_halos(&mut buf, theme, &halos);
+        paint_ceiling_halos(&mut buf, &theme, &halos);
         assert_ne!(baseline, buf.get(50, 10), "halo should brighten the pixel");
     }
 
     #[test]
     fn ceiling_halo_skipped_on_light_theme() {
         let mut buf = RgbBuffer::filled(160, 90, Rgb { r: 0, g: 0, b: 0 });
-        let theme = &crate::theme::NORMAL;
+        let theme = &crate::theme::MAPLE;
         let halos = vec![CeilingHalo {
             x: 50,
             y: 10,
@@ -481,7 +482,7 @@ mod tests {
     fn sun_spot_scales_with_beam_strength() {
         use crate::pixel_painter::background::Weather;
         use chrono::TimeZone;
-        let theme = &crate::theme::NORMAL;
+        let theme = &crate::theme::MAPLE;
         let layout = crate::layout::Layout::compute(192, 80, Some(4)).expect("layout fits");
         // 07:00 → East-wall spot. Weather varies by day at a fixed hour, so
         // search days for each weather. Real calendar arithmetic (NaiveDate +
@@ -549,7 +550,7 @@ mod tests {
     #[test]
     fn sun_spot_paints_nothing_at_the_exact_sunrise_instant() {
         use chrono::TimeZone;
-        let theme = &crate::theme::NORMAL;
+        let theme = &crate::theme::MAPLE;
         let layout = crate::layout::Layout::compute(192, 80, Some(4)).expect("layout fits");
         let sunrise: SystemTime = chrono::Local
             .with_ymd_and_hms(2026, 1, 1, 5, 0, 0)
@@ -590,9 +591,11 @@ mod tests {
     #[test]
     fn ceiling_halo_near_edge_does_not_panic() {
         let mut buf = RgbBuffer::filled(6, 4, Rgb { r: 0, g: 0, b: 0 });
-        let theme = &crate::theme::CYBERPUNK; // Dark theme so halos paint.
-                                              // Halo centred at the bottom-right corner: the 5×2 stamp runs off both
-                                              // edges, exercising the clamp.
+        let mut theme = crate::theme::MAPLE.clone();
+        // Dark test double so the halo-rendering branch remains covered.
+        theme.kind = crate::theme::ThemeKind::Dark;
+        // Halo centred at the bottom-right corner: the 5×2 stamp runs off both
+        // edges, exercising the clamp.
         let halos = vec![CeilingHalo {
             x: 5,
             y: 0,
@@ -603,7 +606,7 @@ mod tests {
             },
             intensity: 0.8,
         }];
-        paint_ceiling_halos(&mut buf, theme, &halos);
+        paint_ceiling_halos(&mut buf, &theme, &halos);
     }
 
     // Dust motes anchored to the layout's spill columns can land outside a
@@ -613,7 +616,7 @@ mod tests {
     #[test]
     fn dust_motes_clamp_to_a_tiny_buffer() {
         use chrono::TimeZone;
-        let theme = &crate::theme::NORMAL;
+        let theme = &crate::theme::MAPLE;
         let layout = crate::layout::Layout::compute(192, 80, Some(4)).expect("layout fits");
         // 07:00 Clear morning → sun up + full beam.
         let now = (1..=60u32)
@@ -645,7 +648,7 @@ mod tests {
     #[test]
     fn sun_spot_zero_wall_band_returns_early() {
         use chrono::TimeZone;
-        let theme = &crate::theme::NORMAL;
+        let theme = &crate::theme::MAPLE;
         // top_margin == WALL_BAND_TO_TOP_MARGIN → wall_band_h saturating_sub to 0.
         let mut layout = crate::layout::Layout::compute(192, 80, Some(4)).expect("layout fits");
         layout.top_margin = crate::layout::WALL_BAND_TO_TOP_MARGIN;

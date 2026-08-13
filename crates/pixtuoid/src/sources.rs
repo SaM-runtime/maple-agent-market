@@ -126,7 +126,7 @@ impl OutcomeRow {
     }
 }
 
-/// A serializable status row for `pixtuoid sources --json`.
+/// A serializable status row for `maple-agent-market sources --json`.
 #[derive(Debug, Clone, PartialEq, Eq, serde::Serialize)]
 pub struct SourceStatus {
     pub id: String,
@@ -560,8 +560,9 @@ fn status_from_row(r: &ConnectionRow) -> SourceStatus {
     }
 }
 
-/// The status of every registered source — what `pixtuoid sources [--json]` and
-/// onboarding read. Resolves the connected-set the same way the boot seed does.
+/// The status of every registered source — what
+/// `maple-agent-market sources [--json]` and onboarding read. Resolves the
+/// connected-set the same way the boot seed does.
 pub fn status(cfg: &Path, log: &str) -> Vec<SourceStatus> {
     let app = config::load(cfg, &mut Vec::new());
     let connected = config::resolve_connected(&app);

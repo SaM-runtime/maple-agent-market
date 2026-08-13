@@ -1,20 +1,8 @@
-mod catppuccin;
-mod cyberpunk;
-mod dracula;
-mod gruvbox;
 mod maple;
-mod normal;
-mod tokyo_night;
 
 use pixtuoid_core::sprite::Rgb;
 
-pub use catppuccin::CATPPUCCIN;
-pub use cyberpunk::CYBERPUNK;
-pub use dracula::DRACULA;
-pub use gruvbox::GRUVBOX;
 pub use maple::MAPLE;
-pub use normal::NORMAL;
-pub use tokyo_night::TOKYO_NIGHT;
 
 /// Light vs Dark classification — drives effects that only look right on
 /// one or the other (e.g. ceiling halos read as soft glow on dark themes
@@ -239,10 +227,9 @@ pub struct UiColors {
     pub neon_star: Rgb,
 }
 
-/// Corridor appliance colors (vending machine, printer, coat rack). These were
-/// hardcoded RGB literals in `pixel_painter/drawable.rs`, so the appliances
-/// rendered with the NORMAL theme's palette on every theme — clashing on the
-/// dark/neon/pastel ones. Each theme now supplies its own harmonized set.
+/// Corridor appliance colors (vending machine, printer, coat rack). Keeping
+/// these roles in the theme avoids hardcoded RGB literals in the retained
+/// shared renderer and gives the Maple palette one color authority.
 #[derive(Debug, Clone)]
 pub struct ApplianceColors {
     /// Vending machine chassis (the dark box body).
@@ -273,8 +260,8 @@ pub struct ApplianceColors {
 /// the OpenClaw daemon (`all()` returns `[Rgb; 13]`, count-pinned to
 /// the source registry by `source_colors_cover_every_registered_source`) — drawn
 /// as a leading `[xx]` badge in the agent-dashboard popup (agents only) and the
-/// Sources panel (all sources, incl. the daemon). Each theme supplies its own so
-/// the badge harmonizes with the palette and stays legible on `tooltip_bg`
+/// Sources panel (all sources, incl. the daemon). The Maple theme supplies these
+/// colors so each badge harmonizes with the palette and stays legible on `tooltip_bg`
 /// (guarded by `source_badges_legible_for_every_theme`).
 #[derive(Debug, Clone)]
 pub struct SourceColors {
@@ -355,16 +342,9 @@ impl SourceColors {
     }
 }
 
-/// Every built-in theme, in picker order — the slice `theme_by_name` searches.
-pub static ALL_THEMES: &[&Theme] = &[
-    &NORMAL,
-    &CYBERPUNK,
-    &DRACULA,
-    &TOKYO_NIGHT,
-    &CATPPUCCIN,
-    &GRUVBOX,
-    &MAPLE,
-];
+/// The sole production theme. The visualizer deliberately exposes no generic
+/// office palette, so the picker and CLI cannot silently leave the Maple UI.
+pub static ALL_THEMES: &[&Theme] = &[&MAPLE];
 
 /// Resolve a theme by its `name` (the `--theme` value), or `None` if unknown.
 pub fn theme_by_name(name: &str) -> Option<&'static Theme> {
@@ -387,22 +367,38 @@ mod tests {
     }
 
     #[test]
+    fn registry_is_maple_only_and_rejects_retired_theme_names() {
+        assert_eq!(ALL_THEMES.len(), 1, "the production picker has one theme");
+        assert_eq!(ALL_THEMES[0].name, "maple");
+        assert!(std::ptr::eq(ALL_THEMES[0], &MAPLE));
+        assert!(std::ptr::eq(
+            theme_by_name("maple").expect("Maple must resolve"),
+            &MAPLE
+        ));
+
+        for retired in [
+            "normal",
+            "cyberpunk",
+            "dracula",
+            "tokyo-night",
+            "catppuccin",
+            "gruvbox",
+        ] {
+            assert!(
+                theme_by_name(retired).is_none(),
+                "retired theme {retired:?} must not resolve"
+            );
+        }
+    }
+
+    #[test]
     fn unknown_theme_returns_none() {
         assert!(theme_by_name("doesnotexist").is_none());
     }
 
     #[test]
-    fn dark_themes_marked_dark() {
-        assert_eq!(CYBERPUNK.kind, ThemeKind::Dark);
-        assert_eq!(DRACULA.kind, ThemeKind::Dark);
-        assert_eq!(TOKYO_NIGHT.kind, ThemeKind::Dark);
-        assert_eq!(GRUVBOX.kind, ThemeKind::Dark);
-        assert_eq!(CATPPUCCIN.kind, ThemeKind::Dark);
-    }
-
-    #[test]
-    fn light_themes_marked_light() {
-        assert_eq!(NORMAL.kind, ThemeKind::Light);
+    fn maple_theme_is_marked_light() {
+        assert_eq!(MAPLE.kind, ThemeKind::Light);
     }
 
     // The window-wall celestial disc (Task 7) must read as a WARM sun and a
@@ -441,7 +437,7 @@ mod tests {
             c.r as u32 + c.g as u32 + c.b as u32
         }
         // Half the appliance guard's printer margin: the tower is 3px wide,
-        // so it needs real contrast, but themes like gruvbox run warm/low.
+        // so it needs real contrast without pinning an exact palette value.
         const MIN_PAPER_MARGIN: u32 = 120;
         for t in ALL_THEMES {
             let f = &t.furniture;
@@ -458,9 +454,8 @@ mod tests {
         }
     }
 
-    // Per-channel sum-of-abs-diff. Distinct from a luminance test on purpose: two
-    // hues can share a luminance yet read as different colors (catppuccin's sky
-    // and teal were lum 592 vs 587 — a lum-only floor would miss them), so mutual
+    // Per-channel sum-of-abs-diff. Distinct from a luminance test on purpose:
+    // two hues can share a luminance yet still differ visibly, so mutual
     // distinguishability is a Manhattan-distance question, not a brightness one.
     // Shared by the source-badge and tool-glow legibility guards.
     fn manhattan(a: Rgb, b: Rgb) -> u32 {
@@ -480,11 +475,9 @@ mod tests {
     // each ship such a guard; this is the missing sibling.
     #[test]
     fn tool_glow_hues_are_distinct_for_every_theme() {
-        /// Lower than `MIN_SOURCE_HUE_DIST` (60) on purpose: six glow roles share
-        /// ONE palette's accent range, and the tightest legitimate pair across the
-        /// bundled themes is catppuccin's edit-vs-read at 54. It still fails loudly
-        /// on the near-collisions this caught — an aliased `default` sitting on
-        /// another tool's EXACT rgb (distance 0).
+        /// Lower than `MIN_SOURCE_HUE_DIST` (60) on purpose because six glow roles
+        /// share one compact accent range. It still fails loudly on the regression
+        /// this guards: an aliased `default` sitting on another tool's exact RGB.
         const MIN_TOOL_GLOW_DIST: u32 = 30;
         for t in ALL_THEMES {
             // Destructured with NO `..`: a seventh glow role must join the guard
@@ -596,11 +589,9 @@ mod tests {
             c.r as u32 + c.g as u32 + c.b as u32
         }
         // Floor at which two source badges read as different colors at the 2-char
-        // badge scale. The tightest legitimate pair across the bundled themes is
-        // 82 (normal codex-vs-codewhale: blue vs teal), so 60 leaves margin while
-        // still failing loudly on a near-collision (a 39-distance regression once
-        // shipped on catppuccin). New themes/sources must clear this, not merely
-        // differ by one bit.
+        // badge scale. It leaves tuning margin under the reviewed Maple palette
+        // while still failing loudly on a near-collision; new sources must clear
+        // this threshold, not merely differ by one bit.
         const MIN_SOURCE_HUE_DIST: u32 = 60;
         for t in ALL_THEMES {
             let s = &t.source;
@@ -636,10 +627,10 @@ mod tests {
     fn source_colors_cover_every_registered_source() {
         use pixtuoid_core::source::registry;
         assert_eq!(
-            NORMAL.source.all().len(),
+            MAPLE.source.all().len(),
             registry::registered_source_names().count(),
             "SourceColors has a different hue count than the registered sources — add the \
-             new source's field to SourceColors + all() (and a hue in every theme file)"
+             new source's field to SourceColors + all() and the Maple theme definition"
         );
     }
 
@@ -655,7 +646,7 @@ mod tests {
     fn by_prefix_accepts_every_registered_label_prefix() {
         for d in pixtuoid_core::source::registry::REGISTRY {
             assert!(
-                NORMAL.source.by_prefix(d.label_prefix).is_some(),
+                MAPLE.source.by_prefix(d.label_prefix).is_some(),
                 "theme::by_prefix has no arm for source {:?} label_prefix {:?} — its badge \
                  would fall back to idle; add the arm (or align it with the registry rename)",
                 d.name,
