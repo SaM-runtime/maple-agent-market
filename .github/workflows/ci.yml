@@ -1,0 +1,29 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+permissions:
+  contents: read
+
+jobs:
+  verify:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: rustfmt, clippy
+      - uses: Swatinem/rust-cache@v2
+      - name: Rust format
+        run: cargo fmt --all -- --check
+      - name: Rust lint
+        run: cargo clippy --locked --workspace --all-targets -- -D warnings
+      - name: Rust tests
+        run: cargo test --locked --workspace
+      - name: Public release audit self-test
+        run: python scripts/public-release-audit.py --selftest
+      - name: Public release audit
+        run: python scripts/public-release-audit.py

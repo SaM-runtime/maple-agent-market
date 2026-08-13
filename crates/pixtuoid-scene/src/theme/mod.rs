@@ -1,0 +1,666 @@
+mod catppuccin;
+mod cyberpunk;
+mod dracula;
+mod gruvbox;
+mod maple;
+mod normal;
+mod tokyo_night;
+
+use pixtuoid_core::sprite::Rgb;
+
+pub use catppuccin::CATPPUCCIN;
+pub use cyberpunk::CYBERPUNK;
+pub use dracula::DRACULA;
+pub use gruvbox::GRUVBOX;
+pub use maple::MAPLE;
+pub use normal::NORMAL;
+pub use tokyo_night::TOKYO_NIGHT;
+
+/// Light vs Dark classification — drives effects that only look right on
+/// one or the other (e.g. ceiling halos read as soft glow on dark themes
+/// but as dirt smears on light themes).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ThemeKind {
+    /// A light-background theme.
+    Light,
+    /// A dark-background theme.
+    Dark,
+}
+
+/// A complete office color palette: nine role groups plus name/kind.
+#[derive(Debug, Clone)]
+pub struct Theme {
+    /// Theme id — the `--theme` value and the registry lookup key.
+    pub name: &'static str,
+    /// Light vs dark classification.
+    pub kind: ThemeKind,
+    /// Room-shell colors (walls, carpet, window frame).
+    pub surface: SurfaceColors,
+    /// Office-fixture colors (cubicles, runner, skyline, clock, shadow).
+    pub office: OfficeColors,
+    /// Sky, sun/moon, and interior-light colors.
+    pub lighting: LightingColors,
+    /// Furniture colors (desks, rugs, aquarium, token-meter paper).
+    pub furniture: FurnitureColors,
+    /// Transient-effect cue colors (glow, sleep z, steam, dust, bubble).
+    pub effects: EffectColors,
+    /// Name-badge, tooltip, and neon-brand UI colors.
+    pub ui: UiColors,
+    /// Per-tool monitor-glow hues.
+    pub tool_glow: ToolGlowColors,
+    /// Corridor-appliance colors (vending, printer, coat rack).
+    pub appliance: ApplianceColors,
+    /// Per-CLI agent-badge hues.
+    pub source: SourceColors,
+}
+
+/// The room shell: perimeter walls, carpet, and window frame.
+#[derive(Debug, Clone)]
+pub struct SurfaceColors {
+    /// Perimeter wall fill.
+    pub wall: Rgb,
+    /// Perimeter wall base/top trim line.
+    pub wall_trim: Rgb,
+    /// Carpet base fill.
+    pub carpet_base: Rgb,
+    /// Lighter carpet speckle.
+    pub carpet_light: Rgb,
+    /// Darker carpet speckle.
+    pub carpet_dark: Rgb,
+    /// Floor-to-ceiling window frame / mullions.
+    pub window_frame: Rgb,
+    /// Base buffer fill behind the whole scene.
+    pub bg_fallback: Rgb,
+}
+
+/// Office fixtures: cubicles, corridor runner, city skyline, clock, shadow.
+#[derive(Debug, Clone)]
+pub struct OfficeColors {
+    /// Frosted-glass room-divider highlight / gradient base.
+    pub room_wall_trim_light: Rgb,
+    /// Room-divider door jambs + dark trim (also the aquarium frame).
+    pub room_wall_trim_dark: Rgb,
+    /// Cubicle pod-divider wall.
+    pub cubicle_divider: Rgb,
+    /// Corridor runner-rug base.
+    pub runner_base: Rgb,
+    /// Corridor runner-rug stripe.
+    pub runner_stripe: Rgb,
+    /// Corridor runner-rug edge border.
+    pub runner_edge: Rgb,
+    /// Neon wall-board panel background.
+    pub neon_panel_bg: Rgb,
+    /// Neon wall-board pulsing-border base color.
+    pub neon_frame_base: Rgb,
+    /// City-skyline building, shaded side.
+    pub building_dark: Rgb,
+    /// City-skyline building, lit side.
+    pub building_light: Rgb,
+    /// The three lit city-skyline window hues.
+    pub city_lit_windows: [Rgb; 3],
+    /// Unlit city-skyline window.
+    pub city_dark_window: Rgb,
+    /// Wall-clock rim.
+    pub clock_rim: Rgb,
+    /// Wall-clock face.
+    pub clock_face: Rgb,
+    /// Wall-clock hands.
+    pub clock_hand: Rgb,
+    /// Drop-shadow tint under sprites and furniture.
+    pub shadow: Rgb,
+}
+
+/// Sky gradients, sun/moon disc, light spill, and night tint.
+#[derive(Debug, Clone)]
+pub struct LightingColors {
+    /// Daytime window-sky gradient near the horizon.
+    pub day_sky_a: Rgb,
+    /// Daytime window-sky gradient near the top.
+    pub day_sky_b: Rgb,
+    /// Night window-sky gradient near the horizon.
+    pub night_sky_a: Rgb,
+    /// Night window-sky gradient near the top.
+    pub night_sky_b: Rgb,
+    /// Twilight (dawn/dusk) warm-shift near the horizon.
+    pub twilight_a: Rgb,
+    /// Twilight (dawn/dusk) warm-shift near the top.
+    pub twilight_b: Rgb,
+    /// Warm sunlight spill on the floor and walls.
+    pub sun_spill: Rgb,
+    /// Soft overhead ceiling light-pool tint.
+    pub ceiling_pool: Rgb,
+    /// Lounge floor-lamp glow halo.
+    pub floor_lamp_halo: Rgb,
+    /// Night-time interior darkening tint.
+    pub night_tint: Rgb,
+    /// The sun disc's core color (window-wall celestial body, `pixel_painter::background::celestial::compute_disc`).
+    /// The soft halo ring reuses this SAME hue at lower alpha (no separate glow color) — must read
+    /// warm (see `sun_and_moon_read_warm_and_cool_for_every_theme`).
+    pub sun_core: Rgb,
+    /// The moon disc's core color (lit side; the dark limb is the fixed `MOON_SHADOW` in
+    /// `background/celestial.rs`, not per-theme). Must read cool.
+    pub moon_core: Rgb,
+}
+
+/// Desk, rug, aquarium, and token-meter furniture colors.
+#[derive(Debug, Clone)]
+pub struct FurnitureColors {
+    /// Desk/table wood surface.
+    pub wood_top: Rgb,
+    /// Desk/table wood edge trim (darker).
+    pub wood_trim: Rgb,
+    /// Lounge area-rug field (main fill).
+    pub rug_field: Rgb,
+    /// Lounge area-rug border trim.
+    pub rug_trim: Rgb,
+    /// Lounge area-rug accent detail.
+    pub rug_accent: Rgb,
+    /// Coffee-table magazine cover.
+    pub magazine: Rgb,
+    /// Coffee-table magazine spine/trim.
+    pub magazine_trim: Rgb,
+    /// Chair wood trim.
+    pub chair_trim: Rgb,
+    /// Desk coffee-cup body.
+    pub coffee_cup: Rgb,
+    /// Desk coffee-cup shaded side.
+    pub coffee_cup_shadow: Rgb,
+    /// Aquarium water body (deep) + its lit surface row.
+    pub tank_water: Rgb,
+    /// Aquarium surface highlight line; also the water-cooler glug bubble.
+    pub tank_water_line: Rgb,
+    /// The two fish (frame/cabinet reuse `room_wall_trim_dark` / `wood_*`).
+    pub tank_fish: Rgb,
+    /// The second aquarium fish (kept off the lobster's carapace reds).
+    pub tank_fish_alt: Rgb,
+    /// Aquarium plant.
+    pub tank_plant: Rgb,
+    /// Token-meter paper tower (#632): the sheet face + the every-other-row
+    /// ream shading that makes the block read as STACKED PAPER, not a slab.
+    pub paper: Rgb,
+    /// Token-meter paper ream-shading (the every-other-row band).
+    pub paper_shade: Rgb,
+}
+
+/// Transient effect cues (glow, sleep z, steam, dust, bubble).
+#[derive(Debug, Clone)]
+pub struct EffectColors {
+    /// Lit monitor bezel on an active screen.
+    pub monitor_frame_lit: Rgb,
+    /// Floating "z" of a sleeping agent.
+    pub sleep_z: Rgb,
+    /// Steam wisp off a fresh coffee cup.
+    pub coffee_steam: Rgb,
+    /// Dust puff kicked up while walking.
+    pub walking_dust: Rgb,
+    /// Overhead bubble on a waiting agent.
+    pub waiting_bubble: Rgb,
+}
+
+/// Per-tool monitor-glow hues (the screen glow while a tool runs).
+#[derive(Debug, Clone)]
+pub struct ToolGlowColors {
+    /// Glow while an Edit/Write tool runs.
+    pub edit: Rgb,
+    /// Glow while a Read tool runs.
+    pub read: Rgb,
+    /// Glow while a Bash tool runs.
+    pub bash: Rgb,
+    /// Glow while an Agent/subagent tool runs.
+    pub agent: Rgb,
+    /// Glow while a Grep/search tool runs.
+    pub grep: Rgb,
+    /// Glow for any other tool.
+    pub default: Rgb,
+}
+
+/// Name-badge, tooltip, and neon-brand UI colors.
+#[derive(Debug, Clone)]
+pub struct UiColors {
+    /// Name-badge tone for an active agent.
+    pub label_active: Rgb,
+    /// Name-badge tone for a waiting agent.
+    pub label_waiting: Rgb,
+    /// Name-badge tone for an idle agent.
+    pub label_idle: Rgb,
+    /// Name-badge tone for an exiting agent.
+    pub label_exiting: Rgb,
+    /// Tooltip / popup background fill.
+    pub tooltip_bg: Rgb,
+    /// Tooltip title text.
+    pub tooltip_title: Rgb,
+    /// Tooltip body text.
+    pub tooltip_text: Rgb,
+    /// Tooltip dimmed/secondary text.
+    pub tooltip_dim: Rgb,
+    /// Neon wall-board brand text (and the theme-picker swatch).
+    pub neon_brand: Rgb,
+    /// Neon wall-board ★ star-CTA accent.
+    pub neon_star: Rgb,
+}
+
+/// Corridor appliance colors (vending machine, printer, coat rack). These were
+/// hardcoded RGB literals in `pixel_painter/drawable.rs`, so the appliances
+/// rendered with the NORMAL theme's palette on every theme — clashing on the
+/// dark/neon/pastel ones. Each theme now supplies its own harmonized set.
+#[derive(Debug, Clone)]
+pub struct ApplianceColors {
+    /// Vending machine chassis (the dark box body).
+    pub vending_body: Rgb,
+    /// Vending front sign / accent strip — the theme's signature accent.
+    pub vending_panel: Rgb,
+    /// Four distinct drink-bottle colors behind the glass.
+    pub vending_drinks: [Rgb; 4],
+    /// Warm small detail (coin-slot trim).
+    pub vending_trim: Rgb,
+    /// Darkest recess / slot.
+    pub vending_dark: Rgb,
+    /// Printer chassis — a light neutral.
+    pub printer_body: Rgb,
+    /// Printer lid / top — darker.
+    pub printer_top: Rgb,
+    /// Scanner glass — a cool tint.
+    pub printer_glass: Rgb,
+    /// Paper stack — near-white.
+    pub printer_paper: Rgb,
+    /// Output tray — mid neutral.
+    pub printer_tray: Rgb,
+    /// Three hanging coats on the coat rack.
+    pub coats: [Rgb; 3],
+}
+
+/// Per-source badge hues. One color per registered source — the 12 agent CLIs +
+/// the OpenClaw daemon (`all()` returns `[Rgb; 13]`, count-pinned to
+/// the source registry by `source_colors_cover_every_registered_source`) — drawn
+/// as a leading `[xx]` badge in the agent-dashboard popup (agents only) and the
+/// Sources panel (all sources, incl. the daemon). Each theme supplies its own so
+/// the badge harmonizes with the palette and stays legible on `tooltip_bg`
+/// (guarded by `source_badges_legible_for_every_theme`).
+#[derive(Debug, Clone)]
+pub struct SourceColors {
+    /// Claude Code badge hue.
+    pub claude_code: Rgb,
+    /// Codex badge hue.
+    pub codex: Rgb,
+    /// Reasonix badge hue.
+    pub reasonix: Rgb,
+    /// Antigravity badge hue.
+    pub antigravity: Rgb,
+    /// CodeWhale badge hue.
+    pub codewhale: Rgb,
+    /// OpenCode badge hue.
+    pub opencode: Rgb,
+    /// Copilot badge hue.
+    pub copilot: Rgb,
+    /// Cursor badge hue.
+    pub cursor: Rgb,
+    /// OpenClaw daemon badge hue.
+    pub openclaw: Rgb,
+    /// Hermes badge hue.
+    pub hermes: Rgb,
+    /// omp badge hue.
+    pub omp: Rgb,
+    /// Grok badge hue.
+    pub grok: Rgb,
+    /// Kimi badge hue.
+    pub kimi: Rgb,
+}
+
+impl SourceColors {
+    /// All badge hues in declaration order. The ONE enumeration the legibility
+    /// guard and the count-pin test share, so adding a source forces a new field
+    /// HERE (caught by `source_colors_cover_every_registered_source`) instead of
+    /// silently escaping the per-theme distinctness check.
+    pub fn all(&self) -> [Rgb; 13] {
+        [
+            self.claude_code,
+            self.codex,
+            self.reasonix,
+            self.antigravity,
+            self.codewhale,
+            self.opencode,
+            self.copilot,
+            self.cursor,
+            self.openclaw,
+            self.hermes,
+            self.omp,
+            self.grok,
+            self.kimi,
+        ]
+    }
+
+    /// Badge hue for a source's 2-char label prefix (`SourceDescriptor::label_prefix`
+    /// in `pixtuoid_core::source::registry`), or `None` for an unknown prefix. The
+    /// painters (dashboard / connection) resolve a badge color from the prefix
+    /// without name-matching each source inline. The accepted prefixes are the
+    /// registry's authoritative `SourceDescriptor::label_prefix` values — one arm
+    /// per registered source (kept in lockstep by the badge-coverage guards).
+    pub fn by_prefix(&self, prefix: &str) -> Option<Rgb> {
+        Some(match prefix {
+            "cc" => self.claude_code,
+            "cx" => self.codex,
+            "rx" => self.reasonix,
+            "ag" => self.antigravity,
+            "cw" => self.codewhale,
+            "oc" => self.opencode,
+            "cp" => self.copilot,
+            "cu" => self.cursor,
+            "ok" => self.openclaw,
+            "hm" => self.hermes,
+            "om" => self.omp,
+            "gk" => self.grok,
+            "km" => self.kimi,
+            _ => return None,
+        })
+    }
+}
+
+/// Every built-in theme, in picker order — the slice `theme_by_name` searches.
+pub static ALL_THEMES: &[&Theme] = &[
+    &NORMAL,
+    &CYBERPUNK,
+    &DRACULA,
+    &TOKYO_NIGHT,
+    &CATPPUCCIN,
+    &GRUVBOX,
+    &MAPLE,
+];
+
+/// Resolve a theme by its `name` (the `--theme` value), or `None` if unknown.
+pub fn theme_by_name(name: &str) -> Option<&'static Theme> {
+    ALL_THEMES.iter().find(|t| t.name == name).copied()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn all_themes_resolve_by_name() {
+        for t in ALL_THEMES {
+            assert!(
+                theme_by_name(t.name).is_some(),
+                "theme '{}' not found",
+                t.name
+            );
+        }
+    }
+
+    #[test]
+    fn unknown_theme_returns_none() {
+        assert!(theme_by_name("doesnotexist").is_none());
+    }
+
+    #[test]
+    fn dark_themes_marked_dark() {
+        assert_eq!(CYBERPUNK.kind, ThemeKind::Dark);
+        assert_eq!(DRACULA.kind, ThemeKind::Dark);
+        assert_eq!(TOKYO_NIGHT.kind, ThemeKind::Dark);
+        assert_eq!(GRUVBOX.kind, ThemeKind::Dark);
+        assert_eq!(CATPPUCCIN.kind, ThemeKind::Dark);
+    }
+
+    #[test]
+    fn light_themes_marked_light() {
+        assert_eq!(NORMAL.kind, ThemeKind::Light);
+    }
+
+    // The window-wall celestial disc (Task 7) must read as a WARM sun and a
+    // COOL moon on every theme, or the day/night disc stops selling its
+    // identity regardless of how well it otherwise matches the palette.
+    #[test]
+    fn sun_and_moon_read_warm_and_cool_for_every_theme() {
+        for t in ALL_THEMES {
+            let l = &t.lighting;
+            assert!(
+                l.sun_core.r > l.sun_core.b,
+                "{}: sun_core {:?} should read warm (r > b)",
+                t.name,
+                l.sun_core
+            );
+            assert!(
+                l.moon_core.b > l.moon_core.r,
+                "{}: moon_core {:?} should read cool (b > r)",
+                t.name,
+                l.moon_core
+            );
+        }
+    }
+
+    // Every theme's appliance palette must keep the appliances LEGIBLE — the
+    // bug was a hardcoded normal-theme set on all themes, so this guards both
+    // that each theme supplies its own AND that the supplied set reads right.
+    #[test]
+    fn token_paper_is_legible_on_the_desk_for_every_theme() {
+        // #632: the paper tower sits on the desk's wood wing — it must read
+        // bright against the wood AND its two ream tones must differ (the
+        // banding is what makes the block read as stacked paper). No code
+        // invariant guarded this before; the media baselines held only by
+        // hand-tuning (film-critic catch).
+        fn lum(c: Rgb) -> u32 {
+            c.r as u32 + c.g as u32 + c.b as u32
+        }
+        // Half the appliance guard's printer margin: the tower is 3px wide,
+        // so it needs real contrast, but themes like gruvbox run warm/low.
+        const MIN_PAPER_MARGIN: u32 = 120;
+        for t in ALL_THEMES {
+            let f = &t.furniture;
+            assert!(
+                lum(f.paper) >= lum(f.wood_top) + MIN_PAPER_MARGIN,
+                "{}: paper must read bright against the desk wood",
+                t.name
+            );
+            assert_ne!(
+                f.paper, f.paper_shade,
+                "{}: ream banding needs two distinct paper tones",
+                t.name
+            );
+        }
+    }
+
+    // Per-channel sum-of-abs-diff. Distinct from a luminance test on purpose: two
+    // hues can share a luminance yet read as different colors (catppuccin's sky
+    // and teal were lum 592 vs 587 — a lum-only floor would miss them), so mutual
+    // distinguishability is a Manhattan-distance question, not a brightness one.
+    // Shared by the source-badge and tool-glow legibility guards.
+    fn manhattan(a: Rgb, b: Rgb) -> u32 {
+        (a.r as u32).abs_diff(b.r as u32)
+            + (a.g as u32).abs_diff(b.g as u32)
+            + (a.b as u32).abs_diff(b.b as u32)
+    }
+
+    // The tool-glow map is an at-a-glance colour code (`pixel_painter::palette`:
+    // "green = generic/default, blue = Edit/Write, cyan = Read, orange = Bash,
+    // purple = Agent/Task") feeding FIVE surfaces from one table — the sprite's
+    // monitor glow, the desk screen glow, the ceiling halo, the footer tool tally
+    // and the tooltip. Two roles sharing an RGB is a CORRECTNESS bug, not taste:
+    // `recolor_frame` substitutes by RGB equality, and `CharacterGlow::Thinking`
+    // also resolves to `default`, so an aliased `default` makes a thinking agent
+    // and an editing agent glow identically. The appliance and source palettes
+    // each ship such a guard; this is the missing sibling.
+    #[test]
+    fn tool_glow_hues_are_distinct_for_every_theme() {
+        /// Lower than `MIN_SOURCE_HUE_DIST` (60) on purpose: six glow roles share
+        /// ONE palette's accent range, and the tightest legitimate pair across the
+        /// bundled themes is catppuccin's edit-vs-read at 54. It still fails loudly
+        /// on the near-collisions this caught — an aliased `default` sitting on
+        /// another tool's EXACT rgb (distance 0).
+        const MIN_TOOL_GLOW_DIST: u32 = 30;
+        for t in ALL_THEMES {
+            // Destructured with NO `..`: a seventh glow role must join the guard
+            // or this stops compiling (the `placement_sweep::pieces()` discipline).
+            let ToolGlowColors {
+                edit,
+                read,
+                bash,
+                agent,
+                grep,
+                default,
+            } = t.tool_glow;
+            let hues = [
+                ("edit", edit),
+                ("read", read),
+                ("bash", bash),
+                ("agent", agent),
+                ("grep", grep),
+                ("default", default),
+            ];
+            for i in 0..hues.len() {
+                for j in (i + 1)..hues.len() {
+                    let d = manhattan(hues[i].1, hues[j].1);
+                    assert!(
+                        d >= MIN_TOOL_GLOW_DIST,
+                        "{}: tool glow {} and {} too close ({d} < {MIN_TOOL_GLOW_DIST})",
+                        t.name,
+                        hues[i].0,
+                        hues[j].0
+                    );
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn appliance_palette_is_legible_for_every_theme() {
+        fn lum(c: Rgb) -> u32 {
+            c.r as u32 + c.g as u32 + c.b as u32
+        }
+        for t in ALL_THEMES {
+            let a = &t.appliance;
+            // Printer: paper is the lightest, the lid/top the darkest — so the
+            // scanner + paper read against the chassis in every theme.
+            assert!(
+                lum(a.printer_paper) > lum(a.printer_body)
+                    && lum(a.printer_body) > lum(a.printer_top),
+                "{}: printer must layer paper > body > top by luminance",
+                t.name
+            );
+            // Vending: the accent panel + each drink must be visible against the
+            // dark chassis (not collapse into it).
+            assert_ne!(
+                a.vending_panel, a.vending_body,
+                "{}: vending panel invisible",
+                t.name
+            );
+            for (i, d) in a.vending_drinks.iter().enumerate() {
+                assert_ne!(
+                    *d, a.vending_body,
+                    "{}: drink {i} invisible on body",
+                    t.name
+                );
+                // The busy drop darkens the picked product cell to vending_dark;
+                // a drink equal to it would erase that feedback frame.
+                assert_ne!(
+                    *d, a.vending_dark,
+                    "{}: drink {i} indistinguishable from the darkened drop cell",
+                    t.name
+                );
+            }
+            // The water cooler's glug bubble paints tank_water_line over the
+            // bottle's fixed fill — equal colors erase the third appliance anim.
+            assert_ne!(
+                t.furniture.tank_water_line,
+                crate::pixel_painter::COOLER_WATER,
+                "{}: glug bubble invisible in the cooler bottle",
+                t.name
+            );
+            // The busy printer ejects its page onto corridor carpet — the paper
+            // must not dissolve into any carpet speckle color.
+            for c in [
+                t.surface.carpet_base,
+                t.surface.carpet_light,
+                t.surface.carpet_dark,
+            ] {
+                assert_ne!(
+                    a.printer_paper, c,
+                    "{}: ejected page invisible on carpet",
+                    t.name
+                );
+            }
+            // The chassis is darker than its brightest drink (the box reads as a
+            // box, the bottles pop).
+            let brightest_drink = a.vending_drinks.iter().map(|c| lum(*c)).max().unwrap();
+            assert!(
+                lum(a.vending_body) < brightest_drink,
+                "{}: vending body should be darker than its drinks",
+                t.name
+            );
+        }
+    }
+
+    // Every theme's per-CLI badge palette must read on the popup bg (tooltip_bg)
+    // and be mutually distinguishable, so a glance tells cc from cx from rx.
+    #[test]
+    fn source_badges_legible_for_every_theme() {
+        fn lum(c: Rgb) -> u32 {
+            c.r as u32 + c.g as u32 + c.b as u32
+        }
+        // Floor at which two source badges read as different colors at the 2-char
+        // badge scale. The tightest legitimate pair across the bundled themes is
+        // 82 (normal codex-vs-codewhale: blue vs teal), so 60 leaves margin while
+        // still failing loudly on a near-collision (a 39-distance regression once
+        // shipped on catppuccin). New themes/sources must clear this, not merely
+        // differ by one bit.
+        const MIN_SOURCE_HUE_DIST: u32 = 60;
+        for t in ALL_THEMES {
+            let s = &t.source;
+            let bg = t.ui.tooltip_bg;
+            let hues = s.all();
+            // Each hue must contrast the popup bg (lum-sum delta >= 80).
+            for (i, h) in hues.iter().enumerate() {
+                assert!(
+                    lum(*h).abs_diff(lum(bg)) >= 80,
+                    "{}: source hue {i} too close to tooltip_bg",
+                    t.name
+                );
+            }
+            // Every pair must be mutually distinguishable, not merely unequal.
+            for i in 0..hues.len() {
+                for j in (i + 1)..hues.len() {
+                    let d = manhattan(hues[i], hues[j]);
+                    assert!(
+                        d >= MIN_SOURCE_HUE_DIST,
+                        "{}: source hues {i} and {j} too close ({d} < {MIN_SOURCE_HUE_DIST})",
+                        t.name
+                    );
+                }
+            }
+        }
+    }
+
+    // A newly registered source must get a SourceColors field (→ a hue in every
+    // theme + an entry in `all()`), or its badge escapes the distinctness guard
+    // above. Pinned by count so the omission fails loudly HERE rather than
+    // shipping an unchecked badge color.
+    #[test]
+    fn source_colors_cover_every_registered_source() {
+        use pixtuoid_core::source::registry;
+        assert_eq!(
+            NORMAL.source.all().len(),
+            registry::registered_source_names().count(),
+            "SourceColors has a different hue count than the registered sources — add the \
+             new source's field to SourceColors + all() (and a hue in every theme file)"
+        );
+    }
+
+    // `by_prefix`'s match arms are a hand-kept copy of the registry's
+    // authoritative `SourceDescriptor::label_prefix` strings. The count guard
+    // above and the distinctness guard pin the HUES, not the prefix STRINGS —
+    // those were only pinned transitively, via the site-manifest chain and only
+    // for `status == "supported"` rows. A registry prefix RENAME that misses the
+    // matching `by_prefix` arm silently drops that source's badge to the idle
+    // fallback (`by_prefix(tag).unwrap_or(ui.label_idle)` in the painters). Pin
+    // the string mapping directly to the registry so the rename fails loudly HERE.
+    #[test]
+    fn by_prefix_accepts_every_registered_label_prefix() {
+        for d in pixtuoid_core::source::registry::REGISTRY {
+            assert!(
+                NORMAL.source.by_prefix(d.label_prefix).is_some(),
+                "theme::by_prefix has no arm for source {:?} label_prefix {:?} — its badge \
+                 would fall back to idle; add the arm (or align it with the registry rename)",
+                d.name,
+                d.label_prefix
+            );
+        }
+    }
+}

@@ -1,0 +1,35 @@
+version = 1
+
+# These groups are provenance assertions for the exact hashes in
+# media-allowlist.sha256. A matching path is not proof of authorship: every
+# hash change still requires visual/source review before the allowlist moves.
+
+[[asset_group]]
+id = "pixtuoid-upstream-mit"
+spdx = "MIT"
+source_url = "https://github.com/IvanWng97/pixtuoid"
+licence_file = "LICENSE"
+notice_file = "THIRD_PARTY_NOTICES.md"
+patterns = [
+  "crates/pixtuoid-core/tests/render/fixtures/**",
+]
+
+[[asset_group]]
+id = "maple-agent-market-mit"
+spdx = "MIT"
+source_url = "https://github.com/SaM-runtime/maple-agent-market"
+licence_file = "LICENSE"
+notice_file = "THIRD_PARTY_NOTICES.md"
+patterns = [
+  "assets/readme/**",
+]
+
+[[asset_group]]
+id = "monaspace-neon-ofl"
+spdx = "OFL-1.1"
+source_url = "https://github.com/githubnext/monaspace"
+licence_file = "crates/pixtuoid/fonts/OFL-Monaspace.txt"
+notice_file = "THIRD_PARTY_NOTICES.md"
+patterns = [
+  "crates/pixtuoid/fonts/MonaspaceNeon-SemiBold.otf",
+]

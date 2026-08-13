@@ -1,0 +1,90 @@
+[package]
+name                   = "pixtuoid"
+description            = "Maple-inspired agent orchestration market, based on Pixtuoid"
+publish                = false
+version.workspace      = true
+edition.workspace      = true
+rust-version.workspace = true
+license.workspace      = true
+repository.workspace   = true
+authors.workspace      = true
+homepage.workspace     = true
+keywords.workspace     = true
+categories.workspace   = true
+
+[lints]
+workspace = true
+
+[[bin]]
+name = "maple-agent-market"
+path = "src/main.rs"
+
+[dependencies]
+pixtuoid-core  = { path = "../pixtuoid-core", version = "0.16.0" }
+pixtuoid-scene = { path = "../pixtuoid-scene", version = "0.16.0" }
+# Monaspace Neon 的 AA 文字 rasterizer，只存在於 floating window binary。
+ab_glyph = "0.2"
+tokio              = { workspace = true, features = ["rt-multi-thread", "macros", "sync", "time", "net", "fs", "io-util"] }
+clap               = { workspace = true }
+serde              = { workspace = true }
+# connect／disconnect 會合併使用者既有 JSON 設定；保留原本 key 順序以減少噪音 diff。
+serde_json         = { workspace = true, features = ["preserve_order"] }
+toml               = { workspace = true }
+toml_edit          = { workspace = true }
+# Content-addressed local asset manifests shared by collaborators.
+sha2               = "0.11"
+# YAML parse+emit for the Hermes install target (config.yaml hooks merge). saphyr
+# is the maintained yaml-rust successor (serde_yaml/serde_yml are both abandoned);
+# it data-preserves a user's other config keys on merge but does NOT round-trip
+# comments (a YAML-ecosystem limitation — see install/hermes.rs). Binary-only.
+saphyr             = "0.0.11"
+anyhow             = { workspace = true }
+tracing            = { workspace = true }
+tracing-subscriber = { workspace = true }
+which              = "8"
+# clock feature gives us Local::now() w/ system timezone for the wall clock.
+chrono             = { version = "0.4", default-features = false, features = ["clock"] }
+# The Maple Agent Market desktop window (binary-only — pixtuoid-core stays window-free,
+# invariant #1). winit = the frameless always-on-top window + main-thread event loop;
+# softbuffer = CPU blit of the scene RgbBuffer into it (no GPU). Both rust-windowing,
+# share raw-window-handle 0.6, MSRV ≤ 1.89.
+winit              = "0.30"
+softbuffer         = "0.4"
+
+# Audio gateway: rodio/cpal playback plus optional local-file decoding.
+# Local BGM adds MP3/WAV/OGG/FLAC decoders but commits no media; an absent
+# `bgm-path` preserves the synthesized score. Optional behind the default-on
+# `audio` feature: `--no-default-features` builds a silent binary (and skips cpal's
+# Linux ALSA system-header requirement). `tracing` routes rodio's OWN diagnostics
+# (mid-session stream errors, the device-list-enumeration failure, the drop log)
+# to `tracing::error!/debug!` instead of its default `eprintln!`, so window-mode
+# diagnostics stay in the log file. See `sink::rodio_sink::RodioSink::open`.
+rodio = { version = "0.22.2", default-features = false, features = ["playback", "tracing", "mp3", "wav", "vorbis", "flac"], optional = true }
+
+[features]
+default = ["audio"]
+# Ambient sound (config-OFF at runtime regardless; this gates the DEPENDENCY).
+audio = ["dep:rodio"]
+
+# Unix-only secure file creation and temporary stderr redirection for local
+# hook installation and audio device probing. Same 0.2 as pixtuoid-core/hook.
+[target.'cfg(unix)'.dependencies]
+libc = "0.2"
+
+# GetShortPathNameW for the Codex/Reasonix Windows hook path: resolve a
+# space/metacharacter-bearing install path to its DOS 8.3 short form so cmd.exe /C
+# can invoke it (#195). Same 0.61 major as pixtuoid-core — no second build.
+[target.'cfg(windows)'.dependencies]
+windows-sys = { version = "0.61", features = [
+    "Win32_Storage_FileSystem",
+] }
+
+[dev-dependencies]
+tempfile = "3"
+# `sources --json` 的 end-to-end CLI golden。
+snapbox  = { version = "1", features = ["json"] }
+tokio    = { workspace = true }
+image    = { version = "0.25", default-features = false, features = ["png", "gif"] }
+# Integration tests parse the `--json` CLI output back (the delivery-contract
+# e2e in cli_json.rs). Already a normal dep, so no new lockfile entry.
+serde_json = { workspace = true }

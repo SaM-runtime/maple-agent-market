@@ -1,0 +1,556 @@
+// The per-CLI installers + merge/verify/target have no cross-crate/cross-target
+// consumers (all callers are in-lib via `crate::install::…`) EXCEPT the three
+// `io` env filters and `target::TARGETS` (the bin's registry walk), so they are
+// `pub(crate) mod` with just those items re-exported — making `unreachable_pub`
+// the compiler tooth for the rest of their item surface (extends #573's io-only
+// tooth). `pub mod install` (lib.rs) stays pub to carry the re-exports.
+pub(crate) mod claude;
+pub(crate) mod codewhale;
+pub(crate) mod codex;
+pub(crate) mod cursor;
+pub(crate) mod grok;
+pub(crate) mod hermes;
+mod hook_cmd;
+pub(crate) mod kimi;
+// io stays pub(crate) for a STRONGER reason than its siblings: it holds the
+// config-write authority (invariant #4), which must never be cross-crate
+// reachable — only its three env filters (below) are re-exported.
+pub(crate) mod io;
+pub use io::{nonempty, nonempty_abs_env, nonempty_env, owner_only_create, tighten_to_owner_only};
+pub(crate) mod merge;
+pub(crate) mod openclaw;
+pub(crate) mod opencode;
+pub(crate) mod reasonix;
+pub(crate) mod target;
+pub use target::TARGETS;
+pub(crate) mod verify;
+
+use std::path::PathBuf;
+
+use anyhow::{bail, Context, Result};
+
+use target::{BinaryStrategy, Target, BACKUP_SUFFIX};
+
+/// The idempotency sentinel stamped on every hook entry pixtuoid installs — the
+/// six JSON/TOML/YAML-config targets (Claude/Codex/CodeWhale/Cursor/Reasonix/Hermes)
+/// install/uninstall/detect key on this, not the command shape. (opencode, openclaw and grok write their own wholly-owned files with their own sentinel.)
+pub(crate) const SENTINEL_KEY: &str = "_pixtuoid";
+
+/// Whether `t`'s config currently bears pixtuoid hooks — the load-bearing gate
+/// for `verify_target` (an uninstalled config would verify "broken"; see
+/// `doctor::diagnose`). A dry-run uninstall that would change the parsed doc
+/// means managed hooks are present. An absent/empty config is excluded. A config
+/// present but UNREADABLE is INCLUDED (true) — we cannot look, so we must not
+/// claim it is uninstalled. A config that reads but cannot be PARSED falls back to
+/// the marker probe (`config_mentions_us`) instead: asserting "installed" about a
+/// document we could not interpret produced advice that could not succeed (the
+/// WHY, and the one bounded false negative, are at the call site). (Until 0.12.0
+/// this was also `config::resolve_connected`'s migrate-default signal for an
+/// absent `[sources]` flag — that inference was dropped, so this went
+/// `pub` → `pub(crate)`. Callers: `doctor::diagnose`'s verify gate,
+/// `doctor::run`'s per-source `hooks_installed` report row, and
+/// `sources::skip_freeze` (the onboarding-skip freeze probes it so a pre-0.12
+/// upgrader's hooks survive a skip).)
+pub(crate) fn has_hooks(t: &'static Target, config: Option<PathBuf>) -> bool {
+    // Mirror `verify_target`'s config resolution: an injected root (fixture
+    // tests, a non-default config) else the target's real default path. The
+    // gate (this) and the verify it guards MUST read the SAME config, or
+    // `diagnose` through an injected root could never observe an install.
+    let path = match config.map(Ok).unwrap_or_else(|| (t.default_config_path)()) {
+        Ok(p) => p,
+        // No resolvable default path (no home dir) → no config to bear hooks.
+        Err(_) => return false,
+    };
+    match io::read_config(&path) {
+        Ok(c) if c.trim().is_empty() => false,
+        // A merge that ERRS means "we could not tell" — so ask the cheaper question
+        // the parse was only a means to: does this document mention US at all? The
+        // old `unwrap_or(true)` assumed present, which is right for a corrupt config
+        // that DOES bear our hooks (the case its rationale names) but wrong for one
+        // we merely cannot represent: OpenClaw's config is legal JSON5, so a
+        // never-connected user with a comment in theirs was reported hooks-INSTALLED,
+        // then verified BROKEN ("plugin artifact missing…, reconnect openclaw") —
+        // advice that cannot succeed, since the merge refuses that same document by
+        // design (the OpenClaw-JSON5 sharp edge). ONE uniform rule for all targets —
+        // no per-target branch — because `unwrap_or(true)` was wrong for every one of
+        // them: asserting "installed" about a config we could not read is a claim we
+        // cannot support. A false NEGATIVE is possible but bounded: a managed config
+        // normally names us (the `_pixtuoid` sentinel, `plugins.entries.pixtuoid`, or
+        // the embedded `pixtuoid-hook` path), and the one gap is kimi on WINDOWS,
+        // which carries no sentinel and whose bare exec form (`<path> --source kimi`)
+        // spells our name only if the shim path does. There the probe answers "not
+        // ours" for a CORRUPT config — under-reporting installed-ness, never the false
+        // "install broken" the old default produced. Asserted where it holds by
+        // `kimis_uppercase_env_marker_alone_satisfies_the_fallback_probe` (unix).
+        Ok(c) => (t.merge_uninstall)(&c)
+            .map(|o| o.changed)
+            // Unparseable ⇒ fall back to the marker probe (see `config_mentions_us`).
+            // Its residual false-POSITIVE is narrowed, not gone: an unparseable config
+            // that merely MENTIONS the string — a comment, or a foreign load path under
+            // a directory named after us — still reads as ours and then verifies BROKEN
+            // on its absent artifacts. Accepted: that needs a coincidence, where the old
+            // `unwrap_or(true)` fired for every JSON5 document. Tighten to the
+            // per-format markers if it ever bites.
+            .unwrap_or_else(|_| config_mentions_us(&c)),
+        Err(_) => true,
+    }
+}
+
+/// The substring every config pixtuoid has written contains — our own name, in the
+/// sentinel key, the plugin entry id, the baked plugin path, or an env prefix. Used
+/// only as the "is this ours at all?" fallback when a config cannot be parsed for a
+/// real answer.
+const PLUGIN_MENTION: &str = "pixtuoid";
+
+/// Does `content` bear OUR marker? The fallback DECISION, extracted so a test can
+/// drive it against every target's real written config instead of only through
+/// `has_hooks` (whose fallback is unreachable for a config that parses). Folded to
+/// lowercase because `kimi` — the one target with no `_pixtuoid` sentinel — marks
+/// itself with the UPPERCASE `PIXTUOID_SOURCE=kimi`. This is NOT the same question
+/// as matching an OpenClaw plugin id, which is case-SENSITIVE upstream (see
+/// `openclaw::is_plugin_id`); don't harmonize the two.
+fn config_mentions_us(content: &str) -> bool {
+    content.to_ascii_lowercase().contains(PLUGIN_MENTION)
+}
+
+/// Verify a target's installed config is structurally SOUND (the silent-dead
+/// check, #309) — read-only, false-positive-free. Call only when hooks are
+/// claimed installed (`has_hooks(t, config)`, same `config`). Returns the per-source `verify_schema`
+/// verdict (sentinel + event-set + target extras) PLUS the shim-on-disk check
+/// this (the only I/O) layer adds: an embedded absolute path is stat'd for
+/// exists+executable (HARD); a Claude/Unix bare name is a soft PATH note (a
+/// doctor-process PATH miss is not proof the CLI can't resolve it). `config`
+/// overrides the default path (tests + a `--config` round); `None` = the
+/// target's default — mirrors `install_target`. Layer-internal (`pub(crate)`,
+/// like its sibling `has_hooks`): the sole caller is `doctor::diagnose`'s verify
+/// gate — `pub mod install` makes the path pub-reachable, so `unreachable_pub`
+/// can't mechanically catch the over-broad `pub`.
+pub(crate) fn verify_target(
+    t: &'static Target,
+    config: Option<PathBuf>,
+) -> verify::SchemaVerifyResult {
+    use verify::ShimRef;
+    let path = match config.map(Ok).unwrap_or_else(|| (t.default_config_path)()) {
+        Ok(p) => p,
+        Err(_) => {
+            return verify::SchemaVerifyResult {
+                issues: vec!["no config path resolves (no home dir)".into()],
+                notes: vec![],
+            }
+        }
+    };
+    let content = match io::read_config(&path) {
+        Ok(c) if c.trim().is_empty() => {
+            return verify::SchemaVerifyResult {
+                issues: vec!["config is empty — hooks are not installed".into()],
+                notes: vec![],
+            }
+        }
+        Ok(c) => c,
+        Err(_) => {
+            return verify::SchemaVerifyResult {
+                issues: vec![format!(
+                    "config unreadable: {}",
+                    verify::display_safe(&path)
+                )],
+                notes: vec![],
+            }
+        }
+    };
+    let parse = (t.verify_schema)(&content);
+    let mut issues = parse.issues;
+    // A target's own SOFT observations (a config format we can't strictly parse, a
+    // fail-closed switch the user owns) ride out alongside the filesystem ones.
+    let mut notes = parse.notes;
+    match parse.shim {
+        ShimRef::Absolute(p) => check_shim_binary(&p, &mut issues),
+        ShimRef::BareName => {
+            // Claude/Unix bare `pixtuoid-hook` relies on PATH; a doctor-process
+            // PATH miss is NOT proof the CLI can't resolve it → soft note only.
+            if !io::hook_on_path() {
+                notes.push(
+                    "pixtuoid-hook not on this process's PATH (the CLI's PATH may differ)".into(),
+                );
+            }
+        }
+        ShimRef::Unknown => {
+            // SOFT, not hard: we couldn't extract a path from the command, so we
+            // can't CONFIRM the shim exists — but we also can't prove it's broken
+            // (a future source with a novel-but-valid command shape lands here).
+            // False-positive-free wins: a note, never a "broken" verdict. The
+            // genuine no-hooks case is already a HARD issue from verify_schema's
+            // sentinel/event-set check, so this never masks a real break.
+            notes.push("could not read the shim path from the managed hook command".into());
+        }
+    }
+    // Wholly-owned extra artifacts (the OpenClaw plugin DIR): the config merge can
+    // verify clean while the plugin FILES the gateway actually loads are
+    // missing/clobbered — the exact silent-dead class doctor exists to catch, and
+    // the config-level `verify_schema` is blind to it (#332). Stat each artifact
+    // path: a missing file is a HARD break (like a missing shim). The artifact
+    // PATHS are independent of the baked shim path (only the entry-module CONTENT
+    // bakes it), so a placeholder hook arg yields the real install locations
+    // WITHOUT resolving the binary — a read-only doctor check must not hard-error
+    // just because pixtuoid-hook isn't locatable. Calling the SAME fn install uses
+    // means the verified path set can never drift from the writer's.
+    //
+    // INVARIANT (#387): `install_target`'s code-write surface is exactly
+    // {`config_path` merge, `extra_artifacts` dir}, and BOTH are verify-covered —
+    // the config by `verify_schema` (opencode's plugin IS its config), the dir by
+    // this stat. A NEW code-shipping path added to `install_target` MUST gain a
+    // matching check here, or it ships the silent-dead class for a 3rd code-artifact
+    // target. Pinned by `verify_target_hard_flags_a_missing_code_artifact_for_every_extra_artifacts_target`.
+    if let Some(make) = t.extra_artifacts {
+        match make(std::path::Path::new("pixtuoid-hook")) {
+            Ok(arts) => {
+                let mut missing: Vec<PathBuf> = Vec::new();
+                for (p, intended) in arts {
+                    if !p.exists() {
+                        missing.push(p);
+                        continue;
+                    }
+                    // Existence misses a shim that MOVED (#332 — a green doctor over a
+                    // plugin whose every forward fails), so stat the baked path too.
+                    if !intended.contains(verify::BAKED_HOOK_MARKER) {
+                        continue;
+                    }
+                    match io::read_config(&p)
+                        .ok()
+                        .as_deref()
+                        .and_then(verify::baked_hook_path)
+                    {
+                        Some(baked) => check_shim_binary(&baked, &mut issues),
+                        None => notes.push(format!(
+                            "could not read the baked shim path from {}",
+                            verify::display_safe(&p)
+                        )),
+                    }
+                }
+                issues.extend(missing_artifact_issue(&missing));
+            }
+            // Couldn't even compute the paths (e.g. no home dir) — can't confirm,
+            // so a soft note, never a spurious "broken" (the config path would have
+            // failed to resolve first anyway).
+            Err(e) => notes.push(format!("could not resolve plugin artifact paths: {e}")),
+        }
+    }
+    verify::SchemaVerifyResult { issues, notes }
+}
+
+/// The HARD issue(s) for missing code artifacts, collapsed when they share a
+/// directory — the whole plugin dir being gone is ONE fact, and OpenClaw ships
+/// three artifacts, so listing each absolute path made source diagnostics
+/// line ~266 chars against a ~62-char budget: half a minute of marquee scrolling
+/// to learn the files are all in the same place. Named the same way either way, so
+/// the "reconnect" remedy reads identically.
+fn missing_artifact_issue(missing: &[PathBuf]) -> Vec<String> {
+    let [first, rest @ ..] = missing else {
+        return Vec::new();
+    };
+    let dir = first.parent();
+    if !rest.is_empty() && dir.is_some() && rest.iter().all(|p| p.parent() == dir) {
+        let names: Vec<String> = missing
+            .iter()
+            .filter_map(|p| p.file_name())
+            .map(|n| n.to_string_lossy().into_owned())
+            .collect();
+        return vec![format!(
+            "{} plugin artifacts missing from {}: {}",
+            missing.len(),
+            verify::display_safe(dir.unwrap_or(first)),
+            crate::strip_control_chars(&names.join(", "))
+        )];
+    }
+    missing
+        .iter()
+        .map(|p| format!("plugin artifact missing: {}", verify::display_safe(p)))
+        .collect()
+}
+
+/// Stat one resolved shim path — the ONE check shared by an embedded hook command
+/// (`ShimRef::Absolute`) and a code artifact's baked `HOOK_PATH`, so the two can't
+/// report a moved binary differently. `display_safe`: the path comes from the
+/// user's hand-editable hook command / plugin file and these issues reach a real
+/// terminal (doctor stdout / boot eprintln), so control chars are stripped at the
+/// SOURCE — no surface can leak an ANSI/OSC escape (R0615-06 discipline).
+fn check_shim_binary(p: &std::path::Path, issues: &mut Vec<String>) {
+    let shown = verify::display_safe(p);
+    if !p.exists() {
+        issues.push(format!("shim binary missing: {shown}"));
+    } else if !is_executable(p) {
+        issues.push(format!("shim binary not executable: {shown}"));
+    }
+}
+
+#[cfg(unix)]
+fn is_executable(p: &std::path::Path) -> bool {
+    use std::os::unix::fs::PermissionsExt;
+    std::fs::metadata(p)
+        .map(|m| m.permissions().mode() & 0o111 != 0)
+        .unwrap_or(false)
+}
+
+#[cfg(not(unix))]
+fn is_executable(p: &std::path::Path) -> bool {
+    // Windows has no executable bit; the caller already confirmed existence.
+    p.exists()
+}
+
+/// A Windows drive-relative path (`C:foo.exe` — a drive prefix but no root).
+/// `is_relative()` is true for it, yet `cwd.join` replaces NOTHING (std: a
+/// path with a prefix replaces self in its entirety), so the absolutization
+/// arm would silently no-op and embed a command that resolves against the
+/// hook-spawner's per-drive cwd. Always false on Unix (`Component::Prefix`
+/// is Windows-only).
+fn is_drive_relative(p: &std::path::Path) -> bool {
+    !p.has_root() && matches!(p.components().next(), Some(std::path::Component::Prefix(_)))
+}
+
+/// Resolve the hook binary for a target. An explicit path always wins —
+/// `--hook-path` first, then the `PIXTUOID_HOOK` env override (empty =
+/// unset, see `io::nonempty_env`); both flow through the same
+/// absolutize-and-warn arm, and the returned bool reports that an explicit
+/// override was used so `install_target` EMBEDS it (the user pointed at a
+/// specific binary — writing the bare PATH-resolved name would discard their
+/// choice) and skips the PATH warning. Otherwise `locate` tries to find
+/// `pixtuoid-hook`; if that fails we only hard-error for targets that EMBED
+/// the path (`BinaryStrategy::EmbedAbsolute`, e.g. Codex). Targets that write the
+/// bare name and rely on PATH (Claude) fall back to the bare name so a
+/// fresh-machine install still succeeds — the `path_warning` flag in the
+/// diagnostics cover the not-yet-on-PATH case. The env override is injected by the
+/// caller so the whole decision is testable without mutating process env.
+fn resolve_hook_binary_from(
+    t: &Target,
+    hook_path: Option<PathBuf>,
+    env_hook: Option<PathBuf>,
+    locate: impl FnOnce() -> Result<PathBuf>,
+) -> Result<(PathBuf, bool)> {
+    // The CLI flag outranks the ambient env override. Both are EXPLICIT paths
+    // that get EMBEDDED into the config, where a relative path would resolve
+    // against the CLI's cwd at hook time — hooks would silently never fire
+    // from other dirs — so both take the same absolutize-and-warn arm (the
+    // env seam used to pass through `locate()` verbatim and bypass it).
+    let explicit = hook_path
+        .map(|p| (p, "--hook-path"))
+        .or(env_hook.map(|p| (p, io::HOOK_OVERRIDE_ENV)));
+    if let Some((p, origin)) = explicit {
+        // Drive-relative input would make the cwd-join below a silent no-op
+        // (see `is_drive_relative`) — the exact never-fires embed this arm
+        // exists to prevent, so hard-error like the unreadable-cwd case.
+        if is_drive_relative(&p) {
+            bail!(
+                "{origin} {} is drive-relative (a drive prefix with no root, like C:foo.exe) \
+                 and would resolve against a per-drive cwd at hook time; pass an absolute path",
+                p.display()
+            );
+        }
+        // Absolutize against our cwd (plain join, not canonicalize — Windows
+        // canonicalize yields a \\?\ verbatim path that the cmd.exe bare form
+        // can't take).
+        let p = if p.is_relative() {
+            // A failed cwd query must NOT fall back to silently embedding the
+            // relative path — that re-creates exactly the never-fires bug the
+            // absolutization exists to prevent.
+            let cwd = std::env::current_dir().with_context(|| {
+                format!("{origin} is relative and the current directory is unreadable; pass an absolute path")
+            })?;
+            cwd.join(&p)
+        } else {
+            p
+        };
+        if !p.exists() {
+            // tracing, not println!: machine-readable source commands reserve
+            // stdout for their result. `p` is an untrusted PIXTUOID_HOOK value.
+            tracing::warn!(
+                "{origin} {} does not exist yet; the hook will fail until it does",
+                crate::strip_control_chars(&p.display().to_string())
+            );
+        }
+        return Ok((p, true));
+    }
+    match locate() {
+        Ok(p) => Ok((p, false)),
+        Err(e) if t.binary_strategy == BinaryStrategy::EmbedAbsolute => Err(e),
+        Err(_) => Ok((PathBuf::from("pixtuoid-hook"), false)),
+    }
+}
+
+/// Whether an install changed the config or was already current. Carried by
+/// `InstallReport` so both presenters (CLI stdout, TUI panel) render the same
+/// outcome from one core.
+#[derive(Debug)]
+pub enum InstallOutcome {
+    Installed,
+    AlreadyUpToDate,
+}
+
+/// Structured result of `install_target` for the source-management CLI.
+/// NO I/O: the core does the ConfigLock round and returns this; the caller
+/// decides how to surface it.
+#[derive(Debug)]
+pub struct InstallReport {
+    pub outcome: InstallOutcome,
+    pub config_path: PathBuf,
+    /// The backup taken this round (`None` on a no-op, or when one already exists).
+    pub backup: Option<PathBuf>,
+    /// True when the bare `pixtuoid-hook` isn't on PATH (Claude/Unix, no explicit
+    /// hook). An install-time environment check, surfaced by the presenter.
+    pub path_warning: bool,
+    /// The target's `post_install_hint` — a step the user must still take for the
+    /// install to take effect (OpenClaw's running gateway must restart). Stamped for
+    /// the panel, which has the report but not the source id; the CLI presenters read
+    /// the SAME `Target` field through `sources::post_install_hint`, so every surface
+    /// resolves one authority and none can invent its own advice.
+    pub post_install_hint: Option<&'static str>,
+}
+
+/// Install pixtuoid hooks into `t`'s config, returning a structured report.
+/// The ConfigLock round (read→merge→backup→write) is the load-bearing write
+/// authority (invariant #4); it stays intact here. **`pub(crate)`: the ONLY
+/// caller is `crate::sources::connect_target`** — the install trigger is not a
+/// public API; everything binds a source through `crate::sources`.
+pub(crate) fn install_target(
+    t: &Target,
+    config: Option<PathBuf>,
+    hook_path: Option<PathBuf>,
+) -> Result<InstallReport> {
+    let path = config
+        .map(Ok)
+        .unwrap_or_else(|| (t.default_config_path)())?;
+    let env_hook = io::nonempty_env(io::HOOK_OVERRIDE_ENV).map(PathBuf::from);
+    let (binary, explicit_hook) =
+        resolve_hook_binary_from(t, hook_path, env_hook, io::default_hook_binary)?;
+    let hook_cmd = (t.hook_command)(&binary, explicit_hook)?;
+    // The lock covers the WHOLE read→merge→backup→write round (lost-update
+    // TOCTOU: two concurrent pixtuoid runs would otherwise interleave
+    // read(A)→write(B)→write(A) and A's rename clobbers B's change). Residual:
+    // the CLI itself (e.g. CC rewriting settings.json) can't honor this lock —
+    // it only serializes pixtuoid against pixtuoid.
+    let lock = io::lock_config(&path)?;
+    // Read + backup through the guard's pinned resolution (ConfigLock::read /
+    // ::backup_once), NOT by re-resolving `path`: a symlink retarget between
+    // lock and read would otherwise split the round across two files (see
+    // ConfigLock::read).
+    let content = lock.read()?;
+    // Merge FIRST so a present-but-malformed config bails (merge_install's
+    // parse_*_or_empty "refusing to overwrite") BEFORE we touch the filesystem —
+    // else the wholly-owned extra artifacts below were left on disk as orphan
+    // plugin files registered nowhere (a partial install).
+    let outcome = (t.merge_install)(&content, &hook_cmd)
+        .with_context(|| format!("processing {}", path.display()))?;
+    // Wholly-owned extra artifacts (the OpenClaw plugin dir) — written before the
+    // config WRITE so a re-install refreshes them even when the merge is a no-op
+    // (heals a deleted plugin file), but only AFTER the merge confirmed the config
+    // parses. The shim's resolved path is baked into the entry module.
+    if let Some(make) = t.extra_artifacts {
+        for (p, c) in make(&binary)? {
+            if let Some(dir) = p.parent() {
+                std::fs::create_dir_all(dir)
+                    .with_context(|| format!("creating plugin dir {}", dir.display()))?;
+            }
+            // Atomic (temp-in-dir → fsync → rename), NOT a plain `fs::write`: a
+            // torn write would leave a half-rendered plugin the gateway then
+            // fails to load. It is NOT symlink-REPLACING: `write_config_atomic`
+            // resolves through a symlink at `p` and renames onto the link's
+            // target (invariant #4 — its own doc says "FOLLOWS symlinks", pinned
+            // by `write_config_atomic_through_symlink_preserves_link`); only the
+            // distinct, attacker-controllable `.tmp` is `O_NOFOLLOW`-hardened.
+            // Reuses the ConfigLock write authority (each artifact is its own
+            // lock target — disjoint from the config lock held here, consistent
+            // lock order config→artifact, so no self-deadlock).
+            io::write_config_atomic(&p, &c).with_context(|| format!("writing {}", p.display()))?;
+        }
+    }
+    // The PATH check is an install-time environment check, independent of whether
+    // the file content changed — always surface it (a no-op re-install on a box
+    // where pixtuoid-hook isn't on PATH would otherwise warn nothing). Skipped
+    // when an explicit --hook-path was written: the absolute path is embedded,
+    // so PATH resolution never happens.
+    let path_warning = t.binary_strategy == BinaryStrategy::BareNameOnPath
+        && !explicit_hook
+        && !io::hook_on_path();
+    if !outcome.changed {
+        return Ok(InstallReport {
+            outcome: InstallOutcome::AlreadyUpToDate,
+            config_path: path,
+            backup: None,
+            path_warning,
+            post_install_hint: t.post_install_hint,
+        });
+    }
+    let backup = lock.backup_once(BACKUP_SUFFIX)?;
+    lock.write_atomic(&outcome.content)?;
+    Ok(InstallReport {
+        outcome: InstallOutcome::Installed,
+        config_path: path,
+        backup,
+        path_warning,
+        post_install_hint: t.post_install_hint,
+    })
+}
+
+/// Whether an uninstall removed managed entries or found nothing to remove.
+#[derive(Debug)]
+pub enum UninstallOutcome {
+    Removed,
+    NothingToRemove,
+}
+
+/// Structured result of `uninstall_target`.
+#[derive(Debug)]
+pub struct UninstallReport {
+    pub outcome: UninstallOutcome,
+    pub config_path: PathBuf,
+    /// The backup deleted on a successful removal (the install backup is no
+    /// longer needed once the hooks are gone).
+    pub removed_backup: Option<PathBuf>,
+}
+
+/// Remove pixtuoid hooks from `t`'s config, returning a structured report. The
+/// pure core behind the `disconnect` command. Same lock
+/// scope + the load-bearing "never rewrite/delete-backup on a semantic no-op"
+/// rule as before.
+/// Remove pixtuoid hooks from `t`'s config. **`pub(crate)`: the ONLY caller is
+/// `crate::sources::disconnect_target`** — go through `crate::sources`.
+pub(crate) fn uninstall_target(t: &Target, config: Option<PathBuf>) -> Result<UninstallReport> {
+    let path = config
+        .map(Ok)
+        .unwrap_or_else(|| (t.default_config_path)())?;
+    // Absent config → nothing to remove, decided BEFORE locking: lock_config
+    // creates the parent dir + a .lock sidecar, and materializing ~/.reasonix
+    // here would flip that target's presence probe on a pure no-op.
+    if !target::config_present(&path) {
+        return Ok(UninstallReport {
+            outcome: UninstallOutcome::NothingToRemove,
+            config_path: path,
+            removed_backup: None,
+        });
+    }
+    // Same lock scope as install_target: the whole read→merge→write round, all
+    // addressed through the guard's pinned resolution.
+    let lock = io::lock_config(&path)?;
+    let content = lock.read()?;
+    let outcome =
+        (t.merge_uninstall)(&content).with_context(|| format!("processing {}", path.display()))?;
+    if !outcome.changed {
+        // SEMANTIC no-op (covers an empty config and no managed entries).
+        // Never rewrite the file or delete the backup here: the backup is the
+        // user's only recovery path. A byte comparison here would falsely
+        // fire on any hand-formatted config and destroy the backup.
+        return Ok(UninstallReport {
+            outcome: UninstallOutcome::NothingToRemove,
+            config_path: path,
+            removed_backup: None,
+        });
+    }
+    lock.write_atomic(&outcome.content)?;
+    let removed_backup = lock.remove_backup(BACKUP_SUFFIX)?;
+    Ok(UninstallReport {
+        outcome: UninstallOutcome::Removed,
+        config_path: path,
+        removed_backup,
+    })
+}
+
+#[cfg(test)]
+mod tests;

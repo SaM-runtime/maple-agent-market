@@ -1,0 +1,9 @@
+# 已核准、可再散布媒體的精確 SHA-256 baseline。
+#
+# 兩個 mini sprite 只用於 Pixtuoid MIT parser 測試；Monaspace 依 OFL；
+# README 圖由本專案程序化 renderer 產生。任何 hash 或路徑變更都必須
+# 重新審查來源、授權與畫面。
+f494a10d986c3d76ca69fb107069aa7b351639f0e6caaf2942f4164777b3aa38  assets/readme/maple-agent-market-overview.png
+848de4f3cf027b3463ec5bd74af74a1e4c8bd216d28b4f30c99fa0597c981459  crates/pixtuoid-core/tests/render/fixtures/mini.sprite
+dc6c3937cab245bc3950553c8e4d92cd07d35b7ec5e72bbe8d338270e4304e95  crates/pixtuoid-core/tests/render/fixtures/mini_pack/idle.sprite
+8f84330052a8d41d623f659050180c8bdd2f1b22f5f967ef5640d452effab787  crates/pixtuoid/fonts/MonaspaceNeon-SemiBold.otf

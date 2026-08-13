@@ -1,0 +1,11 @@
+[pack]
+name = "Maple Agent Market Original"
+version = "1"
+
+# The clean-clone visuals are original procedural Rust painters. This pack is
+# deliberately metadata-only: no Pixtuoid office art and no NEXON game frame is
+# embedded. A user-selected local pack may add optional animation overrides.
+[palette]
+"." = "transparent"
+
+[animations]

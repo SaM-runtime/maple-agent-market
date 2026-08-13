@@ -1,0 +1,43 @@
+[package]
+name                   = "pixtuoid-scene"
+description            = "Backend-agnostic Maple Agent Market render and simulation engine"
+publish                = false
+version.workspace      = true
+edition.workspace      = true
+rust-version.workspace = true
+license.workspace      = true
+repository.workspace   = true
+authors.workspace      = true
+homepage.workspace     = true
+keywords.workspace     = true
+categories.workspace   = true
+
+# NB: `workspace = true` cannot be combined with per-crate lint tables (Cargo
+# rejects the manifest), so the crate-specific `forbid(unsafe_code)` lives as
+# the crate-root attribute in src/lib.rs instead.
+[lints]
+workspace = true
+
+# `native` 將 core 的 async runtime 與 watcher layer 一併啟用。
+[features]
+default = ["native"]
+native  = ["pixtuoid-core/native"]
+
+[dependencies]
+pixtuoid-core = { path = "../pixtuoid-core", version = "0.16.0", default-features = false }
+anyhow        = { workspace = true }
+tracing       = { workspace = true }
+# clock feature gives us Local::now() w/ system timezone for the wall clock.
+chrono        = { version = "0.4", default-features = false, features = ["clock"] }
+# palette gives Lab-space color blending — perceptually-correct twilight
+# transitions and dim overlays vs naive sRGB linear blend.
+palette       = { version = "0.7", default-features = false, features = ["std"] }
+
+[dev-dependencies]
+serde_json = { workspace = true }
+# Property-based testing of the pure-geometry algebraic invariants (the
+# walk-physics module today; the walkable-mask props stayed core-side): generate thousands of inputs to
+# falsify a property, shrinking any failure to a minimal counterexample. Found
+# failures persist under `proptest-regressions/` so they re-run forever.
+proptest   = "1"
+tempfile   = "3"

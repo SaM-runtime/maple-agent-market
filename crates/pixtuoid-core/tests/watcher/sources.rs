@@ -1,0 +1,706 @@
+use std::time::Duration;
+
+use tempfile::TempDir;
+use tokio::io::AsyncWriteExt;
+use tokio::sync::mpsc;
+
+use pixtuoid_core::source::antigravity::AntigravitySource;
+use pixtuoid_core::source::claude_code::ClaudeCodeSource;
+use pixtuoid_core::source::codex::CodexSource;
+use pixtuoid_core::source::copilot::CopilotSource;
+use pixtuoid_core::source::AgentEvent;
+use pixtuoid_core::source::Source;
+use pixtuoid_core::source::Transport;
+
+use crate::fast_watch;
+
+// CodexSource::run is just `JsonlWatcher::new(...).run(tx)` — drive the real
+// Source impl against a TempDir sessions_root so its run()-glue is exercised
+// (not only the watcher internals). A rollout file with a task_started line must
+// surface an ActivityStart through the source.
+#[tokio::test]
+async fn codex_source_run_emits_events_from_rollout() {
+    fast_watch();
+    let dir = TempDir::new().unwrap();
+    let sessions_root = dir.path().to_path_buf();
+    let uuid = "019e7762-9ded-7e33-be41-946ecf105bf4";
+    let transcript = sessions_root.join(format!("rollout-2026-05-29T22-36-52-{uuid}.jsonl"));
+
+    let (tx, mut rx) = mpsc::channel::<(Transport, AgentEvent)>(32);
+    let src = CodexSource {
+        sessions_root,
+        child_end_unclaims: None,
+    };
+    let handle = tokio::spawn(async move { Box::new(src).run(tx).await });
+
+    tokio::time::sleep(Duration::from_millis(50)).await;
+
+    let meta = serde_json::json!({
+        "type": "session_meta",
+        "payload": { "id": uuid, "cwd": "/repo" }
+    });
+    let task_started = serde_json::json!({
+        "type": "event_msg",
+        "payload": { "type": "task_started", "turn_id": "t" }
+    });
+    let mut f = tokio::fs::OpenOptions::new()
+        .create(true)
+        .append(true)
+        .open(&transcript)
+        .await
+        .unwrap();
+    f.write_all(format!("{meta}\n{task_started}\n").as_bytes())
+        .await
+        .unwrap();
+    f.flush().await.unwrap();
+    drop(f);
+
+    let mut got_activity = false;
+    let deadline = tokio::time::Instant::now() + Duration::from_secs(15);
+    while tokio::time::Instant::now() < deadline {
+        if let Ok(Some((_, AgentEvent::ActivityStart { .. }))) =
+            tokio::time::timeout(Duration::from_millis(200), rx.recv()).await
+        {
+            got_activity = true;
+            break;
+        }
+    }
+    assert!(
+        got_activity,
+        "CodexSource::run should surface ActivityStart"
+    );
+    handle.abort();
+}
+
+// Windows has no validated Codex rollout-FD probe, and this local install keeps
+// Codex hooks disabled. After the reducer's short idle reap, the watcher still
+// owns its first-sight claim; a new task_started append must therefore re-emit
+// the normal SessionStart + Rename pair before its ActivityStart reaches the
+// now-empty reducer.
+#[tokio::test]
+async fn codex_task_started_re_registers_after_short_idle_reap_without_hooks() {
+    use std::time::SystemTime;
+
+    use pixtuoid_core::state::reducer::{EXIT_GRACE_WINDOW, STALE_SHORT_IDLE_TIMEOUT};
+    use pixtuoid_core::state::ActivityState;
+    use pixtuoid_core::{Reducer, SceneState};
+
+    fast_watch();
+    let dir = TempDir::new().unwrap();
+    let sessions_root = dir.path().to_path_buf();
+    let uuid = "019e7762-9ded-7e33-be41-946ecf105bf4";
+    let transcript = sessions_root.join(format!("rollout-2026-05-29T22-36-52-{uuid}.jsonl"));
+
+    let (tx, mut rx) = mpsc::channel::<(Transport, AgentEvent)>(64);
+    let src = CodexSource {
+        sessions_root,
+        child_end_unclaims: None,
+    };
+    let handle = tokio::spawn(async move { Box::new(src).run(tx).await });
+    tokio::time::sleep(Duration::from_millis(50)).await;
+
+    let initial = [
+        serde_json::json!({
+            "type": "session_meta",
+            "payload": { "id": uuid, "cwd": "/repo" }
+        }),
+        serde_json::json!({
+            "type": "event_msg",
+            "payload": { "type": "task_started", "turn_id": "t1" }
+        }),
+        serde_json::json!({
+            "type": "event_msg",
+            "payload": { "type": "task_complete", "turn_id": "t1" }
+        }),
+    ];
+    let mut file = tokio::fs::OpenOptions::new()
+        .create(true)
+        .append(true)
+        .open(&transcript)
+        .await
+        .unwrap();
+    for line in initial {
+        file.write_all(format!("{line}\n").as_bytes())
+            .await
+            .unwrap();
+    }
+    file.flush().await.unwrap();
+
+    let applied_at = SystemTime::now();
+    let mut scene = SceneState::uniform(8);
+    let mut reducer = Reducer::new();
+    let initial_deadline = tokio::time::Instant::now() + Duration::from_secs(5);
+    let mut saw_turn_complete = false;
+    while tokio::time::Instant::now() < initial_deadline && !saw_turn_complete {
+        if let Ok(Some((transport, event))) =
+            tokio::time::timeout(Duration::from_millis(200), rx.recv()).await
+        {
+            saw_turn_complete = matches!(&event, AgentEvent::TurnComplete { .. });
+            reducer.apply(&mut scene, event, applied_at, transport);
+        }
+    }
+    assert!(
+        saw_turn_complete,
+        "initial Codex turn must reach TurnComplete"
+    );
+    assert_eq!(scene.agents.len(), 1, "initial rollout must register");
+
+    let stale_at = applied_at + STALE_SHORT_IDLE_TIMEOUT + Duration::from_secs(1);
+    reducer.tick(&mut scene, stale_at);
+    assert!(
+        scene.agents.values().all(|slot| slot.exiting_at.is_some()),
+        "the Codex short-idle sweep must start the walkout"
+    );
+    reducer.tick(
+        &mut scene,
+        stale_at + EXIT_GRACE_WINDOW + Duration::from_secs(1),
+    );
+    assert!(
+        scene.agents.is_empty(),
+        "the reproduction requires a fully reaped scene"
+    );
+
+    let resumed = serde_json::json!({
+        "type": "event_msg",
+        "payload": { "type": "task_started", "turn_id": "t2" }
+    });
+    file.write_all(format!("{resumed}\n").as_bytes())
+        .await
+        .unwrap();
+    file.flush().await.unwrap();
+
+    let resumed_at = stale_at + EXIT_GRACE_WINDOW + Duration::from_secs(2);
+    let resume_deadline = tokio::time::Instant::now() + Duration::from_secs(5);
+    let mut resumed_active = false;
+    while tokio::time::Instant::now() < resume_deadline && !resumed_active {
+        if let Ok(Some((transport, event))) =
+            tokio::time::timeout(Duration::from_millis(200), rx.recv()).await
+        {
+            reducer.apply(&mut scene, event, resumed_at, transport);
+            resumed_active = scene
+                .agents
+                .values()
+                .any(|slot| matches!(slot.state, ActivityState::Active { .. }));
+        }
+    }
+    handle.abort();
+
+    assert!(
+        resumed_active,
+        "task_started must re-register the reaped Codex slot before ActivityStart"
+    );
+    assert_eq!(scene.agents.len(), 1, "the resumed rollout is one agent");
+    let slot = scene.agents.values().next().unwrap();
+    assert_eq!(
+        &*slot.label.text(),
+        "cx·repo",
+        "re-entry must reuse first-sight identity and label derivation"
+    );
+}
+
+// AntigravitySource::run mirrors CodexSource::run — drive the real Source impl
+// against a TempDir brain_root.
+#[tokio::test]
+async fn antigravity_source_run_emits_events_from_transcript() {
+    fast_watch();
+    let dir = TempDir::new().unwrap();
+    let brain_root = dir.path().to_path_buf();
+    let project_dir = brain_root.join("sess");
+    tokio::fs::create_dir_all(&project_dir).await.unwrap();
+    let transcript = project_dir.join("transcript.jsonl");
+
+    let (tx, mut rx) = mpsc::channel::<(Transport, AgentEvent)>(32);
+    let src = AntigravitySource { brain_root };
+    let handle = tokio::spawn(async move { Box::new(src).run(tx).await });
+
+    tokio::time::sleep(Duration::from_millis(50)).await;
+
+    let planner = serde_json::json!({
+        "step_index": 1,
+        "cwd": "/repo",
+        "type": "PLANNER_RESPONSE",
+        "tool_calls": [ { "name": "list_dir", "args": { "DirectoryPath": "\"/repo/src\"" } } ]
+    });
+    let mut f = tokio::fs::OpenOptions::new()
+        .create(true)
+        .append(true)
+        .open(&transcript)
+        .await
+        .unwrap();
+    f.write_all(format!("{planner}\n").as_bytes())
+        .await
+        .unwrap();
+    f.flush().await.unwrap();
+    drop(f);
+
+    let mut got_activity = false;
+    let deadline = tokio::time::Instant::now() + Duration::from_secs(15);
+    while tokio::time::Instant::now() < deadline {
+        if let Ok(Some((_, AgentEvent::ActivityStart { .. }))) =
+            tokio::time::timeout(Duration::from_millis(200), rx.recv()).await
+        {
+            got_activity = true;
+            break;
+        }
+    }
+    assert!(
+        got_activity,
+        "AntigravitySource::run should surface ActivityStart"
+    );
+    handle.abort();
+}
+
+// CC is now a PURE transcript watcher (the hook socket lifted to `HookRouter`) —
+// drive the real Source impl so the watcher spawn + run glue is exercised. A CC
+// transcript written under the projects_root must surface a SessionStart through
+// the JSONL leg, with NO hook socket involved at all (platform-neutral now).
+#[tokio::test]
+async fn claude_code_source_run_emits_session_start_from_jsonl() {
+    fast_watch();
+    let dir = TempDir::new().unwrap();
+    let projects_root = dir.path().join("projects");
+    let project_dir = projects_root.join("proj-cc");
+    tokio::fs::create_dir_all(&project_dir).await.unwrap();
+    let transcript = project_dir.join("ses-cc.jsonl");
+
+    let (tx, mut rx) = mpsc::channel::<(Transport, AgentEvent)>(32);
+    let mut src = ClaudeCodeSource::default_paths();
+    src.projects_root = projects_root;
+    let handle = tokio::spawn(async move { Box::new(src).run(tx).await });
+
+    tokio::time::sleep(Duration::from_millis(50)).await;
+
+    let line = serde_json::json!({
+        "type": "assistant",
+        "sessionId": "ses-cc",
+        "cwd": "/repo",
+        "message": {
+            "role": "assistant",
+            "content": [
+                { "type": "tool_use", "id": "tu_1", "name": "Bash", "input": { "command": "ls" } }
+            ]
+        }
+    });
+    let mut f = tokio::fs::OpenOptions::new()
+        .create(true)
+        .append(true)
+        .open(&transcript)
+        .await
+        .unwrap();
+    f.write_all(format!("{line}\n").as_bytes()).await.unwrap();
+    f.flush().await.unwrap();
+    drop(f);
+
+    let mut got_start = false;
+    let deadline = tokio::time::Instant::now() + Duration::from_secs(15);
+    while tokio::time::Instant::now() < deadline {
+        if let Ok(Some((_, AgentEvent::SessionStart { .. }))) =
+            tokio::time::timeout(Duration::from_millis(200), rx.recv()).await
+        {
+            got_start = true;
+            break;
+        }
+    }
+    assert!(
+        got_start,
+        "ClaudeCodeSource::run should surface SessionStart from the JSONL leg"
+    );
+    handle.abort();
+}
+
+// #632: a usage-bearing assistant line must surface AgentEvent::Usage through
+// the REAL Source::run glue (the decoder unit test can't see a seam dropping
+// the new variant between the watcher and the channel).
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn claude_code_source_run_emits_usage_from_jsonl() {
+    fast_watch();
+    let dir = TempDir::new().unwrap();
+    let projects_root = dir.path().join("projects");
+    let project_dir = projects_root.join("proj-cu");
+    tokio::fs::create_dir_all(&project_dir).await.unwrap();
+    let transcript = project_dir.join("ses-cu.jsonl");
+
+    let (tx, mut rx) = mpsc::channel::<(Transport, AgentEvent)>(32);
+    let mut src = ClaudeCodeSource::default_paths();
+    src.projects_root = projects_root;
+    let handle = tokio::spawn(async move { Box::new(src).run(tx).await });
+
+    tokio::time::sleep(Duration::from_millis(50)).await;
+
+    let line = serde_json::json!({
+        "type": "assistant",
+        "sessionId": "ses-cu",
+        "cwd": "/repo",
+        "message": {
+            "role": "assistant",
+            "content": [],
+            "usage": {
+                "input_tokens": 1200,
+                "cache_creation_input_tokens": 50000,
+                "cache_read_input_tokens": 940000,
+                "output_tokens": 5300
+            }
+        }
+    });
+    let mut f = tokio::fs::OpenOptions::new()
+        .create(true)
+        .append(true)
+        .open(&transcript)
+        .await
+        .unwrap();
+    f.write_all(format!("{line}\n").as_bytes()).await.unwrap();
+    f.flush().await.unwrap();
+    drop(f);
+
+    let mut got_usage = false;
+    let deadline = tokio::time::Instant::now() + Duration::from_secs(15);
+    while tokio::time::Instant::now() < deadline {
+        if let Ok(Some((_, AgentEvent::Usage { fresh_tokens, .. }))) =
+            tokio::time::timeout(Duration::from_millis(200), rx.recv()).await
+        {
+            assert_eq!(fresh_tokens, 56_500, "fresh = in + cache_create + out");
+            got_usage = true;
+            break;
+        }
+    }
+    assert!(
+        got_usage,
+        "ClaudeCodeSource::run should surface Usage from a usage-bearing line"
+    );
+    handle.abort();
+}
+
+// CopilotSource::run drives a JsonlWatcher over <sessions_root>/<id>/events.jsonl
+// with the parent-dir id-deriver. The e2e gap that unit tests can't cover: does
+// the real watcher RECURSE into the <sessionId>/ dir, pick up the constant-named
+// `events.jsonl`, derive the id from the PARENT DIR (not the "events" stem), and
+// surface a copilot SessionStart? Driven against real-shaped bytes.
+#[tokio::test]
+async fn copilot_source_run_emits_session_start_from_events_jsonl() {
+    fast_watch();
+    let dir = TempDir::new().unwrap();
+    let sessions_root = dir.path().to_path_buf();
+    let session_dir = sessions_root.join("65f8cef9-7dd8-46fa-9f6a-78cc95f68ab3");
+    tokio::fs::create_dir_all(&session_dir).await.unwrap();
+    let transcript = session_dir.join("events.jsonl");
+
+    let (tx, mut rx) = mpsc::channel::<(Transport, AgentEvent)>(32);
+    let src = CopilotSource { sessions_root };
+    let handle = tokio::spawn(async move { Box::new(src).run(tx).await });
+
+    tokio::time::sleep(Duration::from_millis(50)).await;
+
+    // Real session.start shape + a tool round (single agent → one AgentId).
+    let start = serde_json::json!({
+        "type": "session.start",
+        "data": {"sessionId": "65f8cef9-7dd8-46fa-9f6a-78cc95f68ab3", "version": 1,
+                 "producer": "copilot-agent", "context": {"cwd": "/repo"}},
+        "id": "a", "timestamp": "2026-05-22T05:59:45.488Z", "parentId": serde_json::Value::Null
+    });
+    let tool = serde_json::json!({
+        "type": "tool.execution_start",
+        "data": {"toolCallId": "tooluse_1", "toolName": "view", "arguments": {"path": "/repo"}},
+        "id": "b", "timestamp": "2026-05-22T06:00:14.298Z", "parentId": "a"
+    });
+    let mut f = tokio::fs::OpenOptions::new()
+        .create(true)
+        .append(true)
+        .open(&transcript)
+        .await
+        .unwrap();
+    f.write_all(format!("{start}\n{tool}\n").as_bytes())
+        .await
+        .unwrap();
+    f.flush().await.unwrap();
+    drop(f);
+
+    let mut session_id = None;
+    let deadline = tokio::time::Instant::now() + Duration::from_secs(15);
+    while tokio::time::Instant::now() < deadline {
+        if let Ok(Some((
+            _,
+            AgentEvent::SessionStart {
+                source,
+                session_id: sid,
+                ..
+            },
+        ))) = tokio::time::timeout(Duration::from_millis(200), rx.recv()).await
+        {
+            assert_eq!(source, "copilot");
+            session_id = Some(sid);
+            break;
+        }
+    }
+    assert_eq!(
+        session_id.as_deref(),
+        Some("65f8cef9-7dd8-46fa-9f6a-78cc95f68ab3"),
+        "CopilotSource::run should surface a copilot SessionStart from events.jsonl"
+    );
+    handle.abort();
+}
+
+// OmpSource::run drives a JsonlWatcher over the DEEPEST nesting yet:
+// <sessions_root>/<encoded-cwd>/<ts>_<uuid>.jsonl with a subagent child at
+// <sessions_root>/<encoded-cwd>/<ts>_<uuid>/<taskId>.jsonl. The e2e gap unit
+// tests can't cover: does the real watcher recurse BOTH levels, key the root
+// on its stem and the child on the stem CHAIN, and surface the child's header
+// SessionStart parent-linked to the root? Driven against real-shaped bytes.
+#[tokio::test]
+async fn omp_source_run_links_a_nested_subagent_to_its_root() {
+    use pixtuoid_core::source::omp::OmpSource;
+    use pixtuoid_core::AgentId;
+
+    fast_watch();
+    let dir = TempDir::new().unwrap();
+    let sessions_root = dir.path().to_path_buf();
+    const ROOT_STEM: &str = "2026-07-09T08-00-00-000Z_0197f0aa-0000-7000-8000-000000000001";
+    let cwd_dir = sessions_root.join("-dev-proj");
+    let child_dir = cwd_dir.join(ROOT_STEM);
+    tokio::fs::create_dir_all(&child_dir).await.unwrap();
+    let root_transcript = cwd_dir.join(format!("{ROOT_STEM}.jsonl"));
+    let child_transcript = child_dir.join("Alpha.jsonl");
+
+    let (tx, mut rx) = mpsc::channel::<(Transport, AgentEvent)>(32);
+    let src = OmpSource { sessions_root };
+    let handle = tokio::spawn(async move { Box::new(src).run(tx).await });
+
+    tokio::time::sleep(Duration::from_millis(50)).await;
+
+    let header = |id: &str| {
+        serde_json::json!({
+            "type": "session", "version": 3, "id": id,
+            "timestamp": "2026-07-09T08:00:00.000Z", "cwd": "/dev/proj"
+        })
+    };
+    for (path, id) in [
+        (&root_transcript, "0197f0aa-0000-7000-8000-000000000001"),
+        (&child_transcript, "0197f0cc-0000-7000-8000-000000000003"),
+    ] {
+        let mut f = tokio::fs::OpenOptions::new()
+            .create(true)
+            .append(true)
+            .open(path)
+            .await
+            .unwrap();
+        f.write_all(format!("{}\n", header(id)).as_bytes())
+            .await
+            .unwrap();
+        f.flush().await.unwrap();
+    }
+
+    // Collect until the CHILD's parented SessionStart shows (root + child both
+    // also arrive via first-sight; only the header-decoded child carries the
+    // parent link). Expected ids go through the SAME seam fold + deriver the
+    // watcher uses (walk.rs `id_path` → `omp_id_from_path`) — a raw-case
+    // literal here passes on Unix and fails ONLY on windows-test, where the
+    // id-space is normalize_path_key-folded (the path-fold
+    // expectation-literal class).
+    use pixtuoid_core::source::omp::omp_id_from_path;
+    let watcher_key = |p: &std::path::Path| {
+        omp_id_from_path(std::path::Path::new(
+            &pixtuoid_core::id::normalize_path_key(&p.to_string_lossy()),
+        ))
+    };
+    let root_id = AgentId::from_parts("omp", &watcher_key(&root_transcript));
+    let child_id = AgentId::from_parts("omp", &watcher_key(&child_transcript));
+    let mut child_linked = false;
+    let deadline = tokio::time::Instant::now() + Duration::from_secs(15);
+    while tokio::time::Instant::now() < deadline && !child_linked {
+        if let Ok(Some((
+            _,
+            AgentEvent::SessionStart {
+                agent_id,
+                source,
+                parent_id: Some(parent),
+                ..
+            },
+        ))) = tokio::time::timeout(Duration::from_millis(200), rx.recv()).await
+        {
+            assert_eq!(source, "omp");
+            assert_eq!(agent_id, child_id, "the parented start must be the child");
+            assert_eq!(parent, root_id, "child must link to the root stem's id");
+            child_linked = true;
+        }
+    }
+    assert!(
+        child_linked,
+        "OmpSource::run should surface the nested child's parent-linked SessionStart"
+    );
+    handle.abort();
+}
+
+// The session-ended checker's WIRING into OmpSource's watcher (native.rs) —
+// the checker fn is unit-tested, but swapping it for `|_| false` in the
+// JsonlWatcher::new call would keep every unit test green while finished
+// sessions resurrect at first sight. Paired: the same recent transcript
+// seeds a SessionStart WITHOUT the session_exit marker and is gated WITH it,
+// so the assert can only pass through the wired checker.
+#[tokio::test]
+async fn omp_ended_transcript_is_gated_at_first_sight_and_a_live_one_seeds() {
+    use pixtuoid_core::source::omp::OmpSource;
+
+    fast_watch();
+    let header = r#"{"type":"session","version":3,"id":"0197","timestamp":"2026-07-09T08:00:00.000Z","cwd":"/dev/proj"}"#;
+    let exit = r#"{"type":"custom","id":"e1","parentId":null,"timestamp":"2026-07-09T08:10:00.000Z","customType":"session_exit","data":{"reason":"exit command","kind":"normal","recordedAt":"2026-07-09T08:10:00.000Z"}}"#;
+
+    for (name, content, expect_start) in [
+        ("live", format!("{header}\n"), true),
+        ("ended", format!("{header}\n{exit}\n"), false),
+    ] {
+        let dir = TempDir::new().unwrap();
+        let sessions_root = dir.path().to_path_buf();
+        let cwd_dir = sessions_root.join("-dev-proj");
+        tokio::fs::create_dir_all(&cwd_dir).await.unwrap();
+        // Pre-existing, mtime "now" — inside the default initial window, so
+        // ONLY the ended-marker gate can suppress the seed.
+        std::fs::write(
+            cwd_dir.join("2026-07-09T08-00-00-000Z_0197f0aa-0000-7000-8000-000000000001.jsonl"),
+            &content,
+        )
+        .unwrap();
+
+        let (tx, mut rx) = mpsc::channel::<(Transport, AgentEvent)>(32);
+        let src = OmpSource { sessions_root };
+        let handle = tokio::spawn(async move { Box::new(src).run(tx).await });
+
+        let deadline =
+            tokio::time::Instant::now() + Duration::from_secs(if expect_start { 15 } else { 1 });
+        let mut saw_start = false;
+        while tokio::time::Instant::now() < deadline && !saw_start {
+            if let Ok(Some((_, AgentEvent::SessionStart { .. }))) =
+                tokio::time::timeout(Duration::from_millis(200), rx.recv()).await
+            {
+                saw_start = true;
+            }
+        }
+        assert_eq!(
+            saw_start, expect_start,
+            "{name}: expected SessionStart={expect_start} for a recent pre-existing transcript"
+        );
+        handle.abort();
+    }
+}
+
+// The COMMITTED permission-flow fixture, folded through the REAL `Reducer` —
+// the assertion `codex_source_run_emits_events_from_rollout` above cannot make.
+// That test stops at "an ActivityStart arrived" over two inline JSON lines; it
+// never observes an `ActivityState`, so nothing in the suite has ever checked
+// that a real Codex rollout drives the state machine anywhere.
+//
+// That coverage lived only in a MANUAL script that was structurally incapable
+// of failing, so it reported success while producing no agent at all. A check
+// nobody can fail is not coverage; this is why the assertion belongs in a test.
+#[tokio::test]
+async fn codex_permission_flow_fixture_drives_the_reducer_through_waiting() {
+    use pixtuoid_core::state::ActivityState;
+    use pixtuoid_core::{Reducer, SceneState};
+
+    fast_watch();
+    let dir = TempDir::new().unwrap();
+    let sessions_root = dir.path().to_path_buf();
+
+    // `codex_id_from_path` keys on the filename's trailing UUID, so the replay
+    // name (not the fixture's own) is what identifies the session.
+    let fixture = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+        .join("tests/sources/fixtures/codex/permission-flow")
+        .join("rollout-2026-01-01T00-00-00-01000000-0000-7000-8000-000000000001.jsonl");
+    let body = std::fs::read_to_string(&fixture).expect("committed permission-flow fixture");
+    let transcript = sessions_root
+        .join("rollout-2026-01-01T00-00-00-0a0a0a0a-0b0b-0c0c-0d0d-0e0e0e0e0e0e.jsonl");
+
+    let (tx, mut rx) = mpsc::channel::<(Transport, AgentEvent)>(64);
+    let src = CodexSource {
+        sessions_root,
+        child_end_unclaims: None,
+    };
+    let handle = tokio::spawn(async move { Box::new(src).run(tx).await });
+    tokio::time::sleep(Duration::from_millis(50)).await;
+
+    // Written in one shot: first sight reads the whole file from the top, so the
+    // events arrive in file order without a per-line sleep to make this flaky.
+    tokio::fs::write(&transcript, &body).await.unwrap();
+
+    // `SceneState::uniform` — NOT `default()`, whose all-zero floor_capacities
+    // make `total_capacity()` 0 so `register_slot` refuses every SessionStart
+    // and the scene stays silently empty.
+    let mut scene = SceneState::uniform(8);
+    let mut reducer = Reducer::new();
+    let mut states: Vec<ActivityState> = Vec::new();
+
+    let deadline = tokio::time::Instant::now() + Duration::from_secs(15);
+    while tokio::time::Instant::now() < deadline {
+        match tokio::time::timeout(Duration::from_millis(300), rx.recv()).await {
+            Ok(Some((transport, ev))) => {
+                reducer.apply(&mut scene, ev, std::time::SystemTime::now(), transport);
+                if let Some(slot) = scene.agents.values().next() {
+                    // Distinct-consecutive, mirroring what the replay printed.
+                    if states.last() != Some(&slot.state) {
+                        states.push(slot.state.clone());
+                    }
+                }
+            }
+            // A quiet gap once the whole file has been folded: the fixture is
+            // finite, so this is the normal exit, not a timeout failure. A
+            // CLOSED channel ends the loop unconditionally — guarding it on
+            // `states` would spin at full CPU until the deadline on the very
+            // path where nothing more can arrive.
+            Ok(None) => break,
+            Err(_) if !states.is_empty() => break,
+            _ => {}
+        }
+    }
+    handle.abort();
+
+    let slot = scene
+        .agents
+        .values()
+        .next()
+        .expect("the rollout must register exactly one cx· agent");
+    assert_eq!(scene.agents.len(), 1, "one rollout is one agent");
+    assert_eq!(
+        &*slot.label.text(),
+        "cx·demo-project",
+        "label derives from the session_meta cwd basename"
+    );
+
+    // ORDER, not mere presence. Two `any()` checks would also pass for a reducer
+    // that parked the agent on the permission prompt BEFORE the tool ran, or one
+    // that left it Waiting after the fixture's task_complete — neither of which
+    // is the permission flow this scenario is named for.
+    let idx = |want: &str| {
+        states.iter().position(|s| {
+            matches!(
+                (s, want),
+                (ActivityState::Idle, "idle")
+                    | (ActivityState::Active { .. }, "active")
+                    | (ActivityState::Waiting { .. }, "waiting")
+            )
+        })
+    };
+    let (first_active, first_waiting) = (idx("active"), idx("waiting"));
+    assert!(
+        matches!(states.first(), Some(ActivityState::Idle)),
+        "registration lands Idle, got {states:?}"
+    );
+    assert!(
+        first_active.is_some(),
+        "the fixture's function_call must drive Active, got {states:?}"
+    );
+    // THE point of this scenario: an escalation-requiring exec_command parks the
+    // agent on a permission prompt. This is the only state in the progression a
+    // decoder-level test can't reach — it is a reducer decision.
+    assert!(
+        first_waiting.is_some(),
+        "the escalated exec_command must drive Waiting(permission), got {states:?}"
+    );
+    assert!(
+        first_active < first_waiting,
+        "Active must precede Waiting — the tool runs, THEN the gate parks it: {states:?}"
+    );
+    // The terminal state: the fixture ends on task_complete, so the permission
+    // gate must have been resolved rather than left latched.
+    assert!(
+        !matches!(states.last(), Some(ActivityState::Waiting { .. })),
+        "the agent must not still be Waiting after task_complete, got {states:?}"
+    );
+}

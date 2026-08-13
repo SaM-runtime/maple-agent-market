@@ -1,0 +1,1097 @@
+use std::path::{Path, PathBuf};
+
+use anyhow::Result;
+use serde_json::Value;
+
+use crate::source::decoder::{
+    cwd_basename_label, ellipsize, make_tool_detail, parsed_tail_lines, MAX_DECODED_FIELD_CHARS,
+};
+use crate::source::AgentEvent;
+use crate::AgentId;
+
+// The runtime half (`ClaudeCodeSource`, the shim↔daemon socket-path anchor,
+// and the `cc_probe` liveness re-export) — ONE gate for the whole `native`
+// layer of this source; the re-export keeps the pre-split
+// `source::claude_code::{ClaudeCodeSource, live_cc_session_ids}` paths.
+#[cfg(feature = "native")]
+mod native;
+#[cfg(feature = "native")]
+pub use native::{live_cc_session_ids, ClaudeCodeSource};
+
+/// homebrew-core contract: their formula's `test do` runs
+/// `pixtuoid connect claude-code --json` and asserts the parsed result equals
+/// `[{"id" => "claude-code", "outcome" => "connected"}]`. Renaming this id
+/// breaks Homebrew's CI on the next autobump — ours stays green, because our
+/// own tests assert this string as their OWN golden. Coordinate a core PR.
+pub const SOURCE_NAME: &str = "claude-code";
+
+/// The label the attachment decoder synthesizes for the `ultra_effort_exit`
+/// marker — deliberately NOT a real effort word (last-seen-wins kills the
+/// flame instantly), and NOT for display: `pixtuoid_scene::burn::fresh_effort`
+/// suppresses it so the internal sentinel never reaches the dossier. ONE
+/// shared const so the synthesize side and the suppress side can't drift.
+/// In-workspace decoder↔painter contract token, not a stable API.
+#[doc(hidden)]
+pub const ULTRA_EXIT_LABEL: &str = "ultra_exit";
+
+/// CC's session/agent id = the transcript filename stem, which is
+/// cwd-independent (the cwd-derived project-dir is the *parent* dir, not the
+/// stem): `<uuid>.jsonl` → `<uuid>` for a root, `agent-<id>.jsonl` →
+/// `agent-<id>` for a subagent. Mirrors `codex_id_from_path`. CC session UUIDs
+/// and agent-ids are lowercase, so the Windows path fold is inert here.
+pub fn cc_id_from_path(path: &Path) -> String {
+    path.file_stem()
+        .and_then(|s| s.to_str())
+        .unwrap_or("")
+        .to_string()
+}
+
+/// CC's source-specific hook arms — `SubagentStart`/`SubagentStop` (#241).
+/// Like the Codex twin (`codex::decode_codex_hook_custom`) they change the
+/// event's SUBJECT to the child's AgentId, which the shared session-keyed arms
+/// cannot express; every other CC hook event falls through (`Ok(None)`) to
+/// those shared arms. Dispatched via `registry::HookDecoding::custom`.
+///
+/// Why CC needs these at all when its subagents already register via JSONL:
+/// a Workflow-tool fleet spawns subagents with NO per-agent `Agent` tool_use
+/// in the parent transcript (b1 Task-drain structurally can't fire) and the
+/// subagent transcripts carry NO end marker — without `SubagentStop`, finished
+/// fleet agents idle until the 10/30-min stale sweeps batch-reap them, holding
+/// desks and starving the next wave. Wire facts (captured live, CC v2.1.170,
+/// pinned in `tests/sources/claude/fixtures/hook-payloads.jsonl`): the
+/// payload's `agent_id` is BARE hex (no `agent-` prefix) while the transcript
+/// filename stem — the JSONL watcher's id space (`cc_id_from_path`) — is
+/// `agent-<id>`; `SubagentStop` additionally carries `agent_transcript_path`
+/// (the subagent's own transcript, incl. the deeper `subagents/workflows/
+/// wf_*/` nesting), which is the authoritative key.
+pub(crate) fn decode_cc_hook_custom(v: &Value) -> Result<Option<Vec<AgentEvent>>> {
+    use anyhow::anyhow;
+    let Some(obj) = v.as_object() else {
+        return Ok(None); // shared path reports the malformed payload
+    };
+    let event = obj
+        .get("hook_event_name")
+        .and_then(|s| s.as_str())
+        .unwrap_or("");
+    if event != "SubagentStart" && event != "SubagentStop" {
+        return Ok(None);
+    }
+    // Per the registry's custom-decoder contract: claim our two events FULLY
+    // (Err on malformed instances), never fall through. An empty `session_id`
+    // or `agent_id` would mint a phantom that never coalesces with the real
+    // subagent transcript — reject rather than decode.
+    let session_id = obj
+        .get("session_id")
+        .and_then(|s| s.as_str())
+        .filter(|s| !s.is_empty())
+        .ok_or_else(|| anyhow!("{event} missing/empty session_id"))?;
+    let wire_agent_id = obj
+        .get("agent_id")
+        .and_then(|s| s.as_str())
+        .filter(|s| !s.is_empty())
+        .ok_or_else(|| anyhow!("{event} missing/empty agent_id"))?;
+    // The wire id is bare hex; prefix it into the transcript-stem id space.
+    // Tolerate an already-prefixed form (the CC docs' example shows one even
+    // though the live wire sends bare) without double-prefixing.
+    let prefixed = if wire_agent_id.starts_with("agent-") {
+        wire_agent_id.to_string()
+    } else {
+        format!("agent-{wire_agent_id}")
+    };
+    if event == "SubagentStart" {
+        // Instant registration with the parent link — the JSONL watcher's
+        // later SessionStart for the same transcript coalesces (duplicate
+        // SessionStart = enrichment no-op in the reducer). Mirrors the Codex
+        // arm field-by-field so the reducer treats both identically.
+        let cwd = obj.get("cwd").and_then(|s| s.as_str()).unwrap_or("").into();
+        Ok(Some(vec![AgentEvent::SessionStart {
+            agent_id: AgentId::from_parts(SOURCE_NAME, &prefixed),
+            source: SOURCE_NAME.to_string(),
+            session_id: prefixed,
+            cwd,
+            parent_id: Some(AgentId::from_parts(SOURCE_NAME, session_id)),
+        }]))
+    } else {
+        // SubagentStop: end the CHILD promptly (else its transcript lingers
+        // to the 10/30-min stale sweeps). Best-effort, mirroring the Codex
+        // twin: losing the race against the child's slot creation leaves a
+        // harmless no-op + the stale-sweep fallback. The authoritative key is
+        // the subagent transcript's filename stem (`cc_id_from_path` on
+        // `agent_transcript_path` — EXACT parity with the watcher's id
+        // deriver, immune to a prefix-scheme drift); the prefixed wire id is
+        // the fallback when the path is absent.
+        let path_key = obj
+            .get("agent_transcript_path")
+            .and_then(|s| s.as_str())
+            .filter(|s| !s.is_empty())
+            .map(|p| cc_id_from_path(Path::new(&crate::id::normalize_path_key(p))))
+            .filter(|s| !s.is_empty());
+        if let Some(ref k) = path_key {
+            if *k != prefixed {
+                // Drift alarm: the stem and the prefixed wire id disagree —
+                // upstream changed the filename scheme or the prefix. The
+                // stem keeps THIS exit keyed to the watcher, but hook-FIRST
+                // registrations (Start keys on the prefixed form) would
+                // become sweep-cleared phantoms — genuinely actionable, so
+                // warn (it reaches the warn-floor file log), unlike the
+                // per-dispatch tool-name breadcrumbs.
+                crate::source::drift::shape_drift(
+                    SOURCE_NAME,
+                    &format!(
+                        "SubagentStop transcript stem `{k}` != prefixed agent_id \
+                         `{prefixed}`; keying on the stem"
+                    ),
+                );
+            }
+        }
+        Ok(Some(vec![AgentEvent::SessionEnd {
+            agent_id: AgentId::from_parts(SOURCE_NAME, &path_key.unwrap_or(prefixed)),
+            as_child: true,
+        }]))
+    }
+}
+
+/// Resolve `CLAUDE_CONFIG_DIR` (an empty OR whitespace-only value is treated as
+/// unset, via the shared `platform::nonempty` trim authority — a `"  "` value
+/// otherwise resolved hooks/watch to a relative `"  /…"`). `pub` +
+/// `#[doc(hidden)]` so the `pixtuoid` install crate's settings.json resolver
+/// shares this one definition — the two CC path sites must not drift. Internal
+/// cross-crate helper, not a stable API.
+#[doc(hidden)]
+pub fn claude_config_dir() -> Option<PathBuf> {
+    crate::platform::nonempty(std::env::var("CLAUDE_CONFIG_DIR").ok()).map(PathBuf::from)
+}
+
+/// The COMPLETE set of CC transcript top-level `type` discriminators, verified
+/// empirically against a live `~/.claude/projects` corpus. CC is a CLOSED binary
+/// — there is NO fetchable transcript-format schema, so unlike codex/copilot/omp/
+/// grok this axis gets NO CI drift-watch; the runtime breadcrumb below is the SOLE
+/// defense (the antigravity `defense-#2-only` class). The tail breadcrumbs a
+/// top-level `type` OUTSIDE this set — a brand-new line SHAPE, and the axis
+/// visibly churns (`worktree-state`/`relocated`/`frame-link` are recent CC
+/// additions), so this live-stream breadcrumb is the only way the repo learns CC
+/// added one. It stays SILENT on the HIGH-cardinality INNER `attachment.type`
+/// (`hook_success` streams ~per tool-call) — breadcrumbing that would flood, per
+/// drift.rs's anti-flood rule. `user`/`assistant`/`attachment` are decoded; the
+/// rest are session-metadata/sidecar lines we knowingly ignore. Set to the LATEST
+/// format only (legacy `summary`/`progress` are intentionally absent — a replayed
+/// legacy line breadcrumbs at session-frequency, not a flood).
+///
+/// The set is swept from the CC-transcript files the watcher actually decodes
+/// (`<uuid>.jsonl` + `agent-<id>.jsonl`). It deliberately does NOT include the
+/// FOREIGN workflow-orchestrator `journal.jsonl` types (`started`/`result`),
+/// which live in the same tree but are excluded upstream by `skip_workflow_journal`
+/// (claude_code/native.rs) so they never reach this decoder — else they would
+/// flood (avg ~14 per file). Caveat: unlike codex/copilot/omp's structural axes
+/// this is an EMPIRICAL assumption about CC's wire, not a schema-bounded one and
+/// with no CI drift-watch — a genuinely-new HIGH-frequency top-level type would
+/// breadcrumb until named here. The per-line VOLUME is log-confined (a sustained
+/// regime warns per line to the warn floor), and the drift is surfaced through
+/// startup diagnostics plus `maple-agent-market sources` and `doctor`, so it is
+/// visible and self-healing — strictly
+/// better than the prior zero-signal silent drop.
+const KNOWN_TYPES: &[&str] = &[
+    "agent-name",
+    "ai-title",
+    "assistant",
+    "attachment",
+    "bridge-session",
+    "custom-title",
+    "file-history-delta",
+    "file-history-snapshot",
+    "frame-link",
+    "last-prompt",
+    "mode",
+    "permission-mode",
+    "pr-link",
+    "queue-operation",
+    "relocated",
+    "system",
+    "user",
+    "worktree-state",
+];
+
+/// Decode one CC JSONL transcript line into 0..N AgentEvents.
+pub fn decode_cc_line(transcript_path: &str, source: &str, v: Value) -> Result<Vec<AgentEvent>> {
+    // Key on the session UUID (filename stem), NOT the raw path — matches the
+    // hook decoder's `IdKey::SessionId` and the watcher's `cc_id_from_path`
+    // deriver, so all four CC keying sites coalesce (mirrors Codex).
+    let agent_id = AgentId::from_parts(source, &cc_id_from_path(Path::new(transcript_path)));
+    let Some(obj) = v.as_object() else {
+        return Ok(vec![]);
+    };
+
+    let mut out = Vec::new();
+    let ty = obj.get("type").and_then(|s| s.as_str()).unwrap_or("");
+
+    // An unrecognized top-level `type` is a structural wire change — breadcrumb it
+    // (defense #2). Guarded on the LOW-cardinality top-level `type` (session-freq),
+    // never the HIGH-cardinality inner `attachment.type`. A known type still runs
+    // its handling below; only the breadcrumb is new. Empty type = a typeless line.
+    if !ty.is_empty() && !KNOWN_TYPES.contains(&ty) {
+        crate::source::drift::unknown_event(source, ty);
+    }
+
+    // `.filter(non-empty)`: an empty `attributionAgent` would emit `Rename {
+    // label: "" }`, blanking a good hook-derived label with no recovery until the
+    // next Rename — same empty-string guard as the decoder's id fields.
+    if let Some(name) = obj
+        .get("attributionAgent")
+        .and_then(|v| v.as_str())
+        .filter(|s| !s.is_empty())
+    {
+        // Strip a `namespace:` prefix, keeping the segment after the LAST colon.
+        // A trailing colon ("ns:") splits to an EMPTY segment — the guard above
+        // only checked the PRE-split value, so without re-checking here it would
+        // emit `Rename { label: "" }` and blank the sprite label for the whole
+        // session (the exact harm the empty-string guard exists to prevent).
+        let seg = name.rsplit(':').next().unwrap_or(name);
+        if !seg.is_empty() {
+            // Capped at decode (CONTRIBUTING pitfall 3): `attributionAgent` is
+            // transcript content, and the label persists in slot state for the
+            // session's lifetime.
+            let label = ellipsize(seg, MAX_DECODED_FIELD_CHARS);
+            out.push(AgentEvent::Rename { agent_id, label });
+        }
+    }
+
+    // Burn-tier effort observation: CC stamps a PERIODIC reminder attachment
+    // while ultra-class effort is active (re-fires
+    // every ~dozen prompts for the whole ultra span) plus an EXIT marker on
+    // leaving it — the wire carries no effort VALUE, so the arm synthesizes
+    // each marker's own label. The `/effort` picker's chosen level is
+    // deliberately NOT derivable (its command line has empty args);
+    // freshness-TTL on the reducer side backstops a missed exit.
+    if ty == "attachment" {
+        if let Some(kind) = obj
+            .get("attachment")
+            .and_then(|a| a.get("type"))
+            .and_then(|t| t.as_str())
+        {
+            let effort = match kind {
+                "ultra_effort_enter" => Some("ultra"),
+                "ultrathink_effort" => Some("ultrathink"),
+                // The EXIT marker (rare but real — 7 in a 280-enter corpus,
+                // shape `{"type":"ultra_effort_exit"}`): synthesize a label
+                // that is NOT in the scene's MAX_EFFORTS set, so
+                // last-seen-wins drops the boost IMMEDIATELY instead of
+                // waiting out the freshness TTL.
+                "ultra_effort_exit" => Some(ULTRA_EXIT_LABEL),
+                _ => None,
+            };
+            if let Some(effort) = effort {
+                out.push(AgentEvent::ModelInfo {
+                    agent_id,
+                    model: None,
+                    effort: Some(effort.to_string()),
+                });
+            }
+        }
+    }
+
+    let Some(message) = obj.get("message").and_then(|m| m.as_object()) else {
+        return Ok(out);
+    };
+    // Burn-tier model observation: every assistant line carries the model that
+    // produced it (per turn — a mid-session `/model` switch tracks naturally).
+    // `<synthetic>` is CC's marker for tool-generated/error turns, not a model.
+    // Capped at decode (CONTRIBUTING pitfall 3): transcript content persisting
+    // in slot state.
+    if ty == "assistant" {
+        if let Some(model) = message
+            .get("model")
+            .and_then(|m| m.as_str())
+            .filter(|m| !m.is_empty() && *m != "<synthetic>")
+        {
+            out.push(AgentEvent::ModelInfo {
+                agent_id,
+                model: Some(ellipsize(model, MAX_DECODED_FIELD_CHARS)),
+                effort: None,
+            });
+        }
+        // Token-meter usage observation (#632): every assistant line carries
+        // `message.usage` for its API call. FRESH spend only — new input +
+        // cache WRITES + output; `cache_read_input_tokens` is re-served
+        // context, not new spend (and is ~95% of the raw total, so including
+        // it would drown the signal). Sidechain lines carry usage too and key
+        // to the same session id — the meter is the SESSION's total burn,
+        // inline Task subagents included. Zero readings are skipped so
+        // synthetic/tool turns don't churn the slot.
+        if let Some(usage) = message.get("usage").and_then(|u| u.as_object()) {
+            let field = |k: &str| usage.get(k).and_then(|v| v.as_u64()).unwrap_or(0);
+            let fresh = field("input_tokens")
+                .saturating_add(field("cache_creation_input_tokens"))
+                .saturating_add(field("output_tokens"));
+            if fresh > 0 {
+                out.push(AgentEvent::Usage {
+                    agent_id,
+                    fresh_tokens: fresh,
+                });
+            }
+        }
+    }
+    let content = message.get("content");
+    match (ty, content) {
+        ("assistant", Some(Value::Array(blocks))) => {
+            for block in blocks {
+                let Some(bobj) = block.as_object() else {
+                    continue;
+                };
+                let btype = bobj.get("type").and_then(|s| s.as_str()).unwrap_or("");
+                if btype != "tool_use" {
+                    continue;
+                }
+                let id = bobj.get("id").and_then(|s| s.as_str()).map(String::from);
+                let name = bobj
+                    .get("name")
+                    .and_then(|s| s.as_str())
+                    .unwrap_or_else(|| {
+                        crate::source::drift::missing_field(SOURCE_NAME, "tool_use", "name");
+                        "?"
+                    });
+                out.push(AgentEvent::ActivityStart {
+                    agent_id,
+                    tool_use_id: id,
+                    detail: Some(make_tool_detail(SOURCE_NAME, name, bobj.get("input"))),
+                });
+            }
+        }
+        ("user", Some(Value::Array(blocks))) => {
+            for block in blocks {
+                let Some(bobj) = block.as_object() else {
+                    continue;
+                };
+                let btype = bobj.get("type").and_then(|s| s.as_str()).unwrap_or("");
+                if btype != "tool_result" {
+                    continue;
+                }
+                let id = bobj
+                    .get("tool_use_id")
+                    .and_then(|s| s.as_str())
+                    .map(String::from);
+                out.push(AgentEvent::ActivityEnd {
+                    agent_id,
+                    tool_use_id: id,
+                });
+            }
+        }
+        // No content arm: user-message content is user-controllable and must
+        // never drive session lifecycle (a message QUOTING the slash-command
+        // wrapper would false-positive), and modern CC persists no /exit
+        // marker in the transcript anyway. Lifecycle = the SessionEnd hook +
+        // the idle sweep.
+        _ => {}
+    }
+    Ok(out)
+}
+
+/// CC session-end checker: parses lines as JSON and checks for
+/// session lifecycle markers structurally (not byte scan).
+pub fn cc_session_ended(tail: &[u8]) -> bool {
+    // Uses the shared `parsed_tail_lines` scaffold for the per-line JSON parse,
+    // then keeps CC's STATEFUL last-marker-wins fold (a later session_start
+    // resets a session_end earlier in the window) — the one checker that can't
+    // reduce to a simple `.any(predicate)`.
+    let mut last_is_end = false;
+    for v in parsed_tail_lines(tail) {
+        let subtype = v.get("subtype").and_then(|s| s.as_str()).unwrap_or("");
+        let hook = v
+            .get("hook_event_name")
+            .and_then(|s| s.as_str())
+            .unwrap_or("");
+        if subtype == "session_start" {
+            last_is_end = false;
+        }
+        if subtype == "session_end" || hook == "SessionEnd" {
+            last_is_end = true;
+        }
+        // Only STRUCTURAL markers count. Message content is user-controllable
+        // and must never drive lifecycle (quoting the slash-command wrapper
+        // would false-positive), and modern CC persists no /exit marker at
+        // all — a session whose end hook dropped is reaped by the idle sweep.
+    }
+    last_is_end
+}
+
+/// CC label: subagent paths → "subagent", otherwise "cc·" + cwd basename.
+///
+/// When `cwd` is unknown (a seed line that carries no `cwd` — the JSONL Rename
+/// can fire on such a line), fall back to the CC **project dir** instead of a
+/// bare "cc": the project dir name encodes the cwd path with '/'→'-', so its
+/// last segment is the project basename. Without this, an empty-cwd Rename
+/// silently degrades a good hook-derived `cc·dotfiles` back to `cc`.
+pub fn cc_derive_label(path: &Path, source: &str, cwd: &Path) -> String {
+    // ONE shared predicate with `detect_parent_id` (both via the `SUBAGENTS_DIR` component)
+    // so the two can't diverge — a loose `"subagents"` substring once mislabeled a
+    // `subagents-paper` repo's parent transcript "subagent" with parent_id=None
+    // (bug_004); the slash-bounded predicate fixes that at a single source.
+    if crate::source::decoder::is_subagent_path(path) {
+        return "subagent".to_string();
+    }
+    // The `cc` prefix is a registry fact, not a literal (invariant #3) — read it
+    // from the same authority the shared derivers use.
+    let prefix = crate::source::decoder::label_prefix_for(source);
+    if let Some(label) = cwd_basename_label(prefix, cwd) {
+        return label;
+    }
+    if let Some(base) = path
+        .parent()
+        .and_then(|p| p.file_name())
+        .and_then(|n| n.to_str())
+        .and_then(|proj| proj.rsplit('-').find(|s| !s.is_empty()))
+    {
+        return format!("{prefix}·{base}");
+    }
+    prefix.to_string()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use serde_json::json;
+
+    // ---- burn-tier observations (ModelInfo) ----
+
+    #[test]
+    fn assistant_line_model_becomes_a_model_info_observation() {
+        let v = json!({
+            "type": "assistant",
+            "message": {"model": "claude-fable-5", "content": []}
+        });
+        let evs = decode_cc_line("/p/ses-1.jsonl", "claude-code", v).unwrap();
+        assert!(
+            evs.iter().any(|e| matches!(e, AgentEvent::ModelInfo { model: Some(m), effort: None, .. } if m == "claude-fable-5")),
+            "assistant model must surface, got {evs:?}"
+        );
+    }
+
+    #[test]
+    fn assistant_usage_becomes_a_fresh_token_observation() {
+        // Live-transcript shape (CC 2.x): fresh = input + cache WRITES +
+        // output; cache READS are re-served context and MUST be excluded
+        // (they are ~95% of the raw total and would drown the meter).
+        let v = json!({
+            "type": "assistant",
+            "message": {"model": "claude-fable-5", "content": [], "usage": {
+                "input_tokens": 1200, "cache_creation_input_tokens": 50000,
+                "cache_read_input_tokens": 940000, "output_tokens": 5300}}
+        });
+        let evs = decode_cc_line("/p/ses-1.jsonl", "claude-code", v).unwrap();
+        assert!(
+            evs.iter().any(|e| matches!(
+                e,
+                AgentEvent::Usage {
+                    fresh_tokens: 56500,
+                    ..
+                }
+            )),
+            "expected fresh=1200+50000+5300 (cache reads excluded), got {evs:?}"
+        );
+    }
+
+    #[test]
+    fn usage_free_and_zero_usage_assistant_lines_stay_silent() {
+        // No usage object at all.
+        let v = json!({"type": "assistant", "message": {"content": []}});
+        let evs = decode_cc_line("/p/ses-1.jsonl", "claude-code", v).unwrap();
+        assert!(!evs.iter().any(|e| matches!(e, AgentEvent::Usage { .. })));
+        // An all-zero reading (synthetic/tool turns) must not churn the slot.
+        let v = json!({
+            "type": "assistant",
+            "message": {"content": [], "usage": {
+                "input_tokens": 0, "cache_read_input_tokens": 123456, "output_tokens": 0}}
+        });
+        let evs = decode_cc_line("/p/ses-1.jsonl", "claude-code", v).unwrap();
+        assert!(
+            !evs.iter().any(|e| matches!(e, AgentEvent::Usage { .. })),
+            "cache-read-only reading must be silent, got {evs:?}"
+        );
+    }
+
+    #[test]
+    fn synthetic_and_empty_models_are_not_observations() {
+        // `<synthetic>` is CC's tool/error-turn marker, not a model.
+        for model in ["<synthetic>", ""] {
+            let v = json!({
+                "type": "assistant",
+                "message": {"model": model, "content": []}
+            });
+            let evs = decode_cc_line("/p/ses-1.jsonl", "claude-code", v).unwrap();
+            assert!(
+                !evs.iter()
+                    .any(|e| matches!(e, AgentEvent::ModelInfo { .. })),
+                "{model:?} must not emit ModelInfo, got {evs:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn ultra_effort_attachments_become_effort_observations() {
+        // The periodic ultra reminder carries no wire VALUE — the arm
+        // synthesizes the marker's own label.
+        for (kind, label) in [
+            ("ultra_effort_enter", "ultra"),
+            ("ultrathink_effort", "ultrathink"),
+            // The exit marker synthesizes a NON-max label so last-seen-wins
+            // kills the flame immediately (no TTL wait).
+            ("ultra_effort_exit", "ultra_exit"),
+        ] {
+            let v = json!({
+                "type": "attachment",
+                "attachment": {"type": kind}
+            });
+            let evs = decode_cc_line("/p/ses-1.jsonl", "claude-code", v).unwrap();
+            assert!(
+                evs.iter().any(|e| matches!(e, AgentEvent::ModelInfo { model: None, effort: Some(f), .. } if f == label)),
+                "{kind} must synthesize effort {label:?}, got {evs:?}"
+            );
+        }
+        // Any other attachment type stays silent.
+        let v = json!({"type": "attachment", "attachment": {"type": "task_reminder"}});
+        let evs = decode_cc_line("/p/ses-1.jsonl", "claude-code", v).unwrap();
+        assert!(
+            evs.is_empty(),
+            "unrelated attachments are inert, got {evs:?}"
+        );
+    }
+
+    // The custom-decoder contract (mirrors the codex twin): claim our two
+    // events FULLY — a malformed instance must be Err, never Ok(None) (which
+    // would silently fall through to the shared session-keyed arms). Happy
+    // paths are pinned end-to-end in tests/sources/decode/mod.rs and against
+    // the captured fixture in tests/sources/claude/mod.rs.
+    #[test]
+    fn subagent_hooks_with_empty_ids_are_err_not_fallthrough() {
+        for event in ["SubagentStart", "SubagentStop"] {
+            let no_session = json!({"hook_event_name": event, "agent_id": "abc"});
+            assert!(
+                decode_cc_hook_custom(&no_session).is_err(),
+                "{event} without session_id must Err (claim-fully), not fall through"
+            );
+            let empty_child = json!({"hook_event_name": event, "session_id": "s", "agent_id": ""});
+            assert!(
+                decode_cc_hook_custom(&empty_child).is_err(),
+                "{event} with empty agent_id must Err — a phantom child never coalesces"
+            );
+        }
+    }
+
+    /// The SubagentStop stem↔wire-id drift alarm fires EXACTLY on
+    /// disagreement: silent when the transcript stem matches the prefixed
+    /// wire id (every real payload today), loud when upstream changes the
+    /// filename scheme or prefix — an `!=`→`==` flip inverts it into
+    /// per-stop noise plus a silent real drift.
+    #[test]
+    fn subagent_stop_warns_only_when_stem_and_wire_id_disagree() {
+        let capture = |payload: serde_json::Value| {
+            crate::test_capture::capture_logs(|| {
+                decode_cc_hook_custom(&payload)
+                    .expect("decodes")
+                    .expect("claimed");
+            })
+        };
+        let matched = capture(json!({
+            "hook_event_name": "SubagentStop",
+            "session_id": "s",
+            "agent_id": "abc123",
+            "agent_transcript_path": "/p/parent/subagents/agent-abc123.jsonl"
+        }));
+        assert!(
+            !matched.contains("shape_drift"),
+            "an agreeing stem must stay silent, got:\n{matched}"
+        );
+        let drifted = capture(json!({
+            "hook_event_name": "SubagentStop",
+            "session_id": "s",
+            "agent_id": "abc123",
+            "agent_transcript_path": "/p/parent/subagents/agent-zzz999.jsonl"
+        }));
+        assert!(
+            drifted.contains("shape_drift") && drifted.contains("agent-zzz999"),
+            "a disagreeing stem must fire the drift alarm, got:\n{drifted}"
+        );
+    }
+
+    #[test]
+    fn non_subagent_events_fall_through_to_shared_arms() {
+        let start = json!({"hook_event_name": "SessionStart", "session_id": "s"});
+        assert!(matches!(decode_cc_hook_custom(&start), Ok(None)));
+        // Non-object payload: defensive fall-through — the dispatcher
+        // pre-validates object-ness, so the shared path owns the error.
+        assert!(matches!(decode_cc_hook_custom(&json!("nope")), Ok(None)));
+    }
+
+    // When the SubagentStop transcript STEM disagrees with the prefixed wire
+    // `agent_id`, the stem wins (it is the watcher's authoritative key) and a
+    // shape-drift breadcrumb fires. No fixture makes the two disagree — every
+    // captured payload has stem == `agent-<wire>`. A mutation that dropped the
+    // path_key branch (keeping the prefixed form) would key on `agent-abc`.
+    #[test]
+    fn subagent_stop_keys_on_stem_when_it_disagrees_with_prefixed_wire_id() {
+        let evs = decode_cc_hook_custom(&json!({
+            "hook_event_name": "SubagentStop",
+            "session_id": "s",
+            "agent_id": "abc",
+            "agent_transcript_path": "/p/q/01-deadbeef/subagents/agent-zzz.jsonl"
+        }))
+        .unwrap()
+        .unwrap();
+        assert_eq!(evs.len(), 1, "SubagentStop emits exactly one event");
+        match &evs[0] {
+            AgentEvent::SessionEnd { agent_id, as_child } => {
+                assert!(*as_child, "a SubagentStop end is stamped as_child");
+                assert_eq!(
+                    *agent_id,
+                    AgentId::from_parts(SOURCE_NAME, "agent-zzz"),
+                    "the transcript STEM agent-zzz must win over the prefixed wire id agent-abc"
+                );
+                assert_ne!(
+                    *agent_id,
+                    AgentId::from_parts(SOURCE_NAME, "agent-abc"),
+                    "the prefixed wire id must NOT be the key when the stem differs"
+                );
+            }
+            other => panic!("expected SessionEnd, got {other:?}"),
+        }
+    }
+
+    // A present agent_transcript_path whose stem is EMPTY (degenerate path)
+    // must fall back to the prefixed wire id, never mint AgentId("").
+    #[test]
+    fn subagent_stop_with_stemless_path_falls_back_to_prefixed_id() {
+        let evs = decode_cc_hook_custom(&json!({
+            "hook_event_name": "SubagentStop",
+            "session_id": "s",
+            "agent_id": "abc",
+            "agent_transcript_path": "/"
+        }))
+        .unwrap()
+        .unwrap();
+        assert_eq!(
+            evs[0].agent_id(),
+            crate::AgentId::from_parts(SOURCE_NAME, "agent-abc")
+        );
+    }
+
+    #[test]
+    fn label_prefers_cwd_basename_when_present() {
+        let path = Path::new("/x/.claude/projects/-Users-me-repo/abc.jsonl");
+        assert_eq!(
+            cc_derive_label(path, "claude-code", Path::new("/Users/me/work/myrepo")),
+            "cc·myrepo"
+        );
+    }
+
+    #[test]
+    fn label_falls_back_to_project_dir_when_cwd_empty() {
+        // Regression: an empty-cwd Rename must not degrade `cc·dotfiles` to `cc`.
+        let path = Path::new("/Users/me/.claude/projects/-Users-me-dotfiles/abc.jsonl");
+        assert_eq!(
+            cc_derive_label(path, "claude-code", Path::new("")),
+            "cc·dotfiles"
+        );
+    }
+
+    #[test]
+    fn label_marks_subagent_paths() {
+        let path = Path::new("/x/projects/proj/subagents/agent-1.jsonl");
+        assert_eq!(
+            cc_derive_label(path, "claude-code", Path::new("/repo")),
+            "subagent"
+        );
+    }
+
+    #[test]
+    fn label_does_not_false_positive_on_subagents_in_project_name() {
+        // A parent transcript for a repo named `subagents-paper` encodes to a
+        // project dir containing the substring "subagents" but no `/subagents/`
+        // segment — it must NOT be mislabeled "subagent".
+        let path = Path::new("/Users/me/.claude/projects/-Users-me-subagents-paper/abc.jsonl");
+        assert_eq!(
+            cc_derive_label(path, "claude-code", Path::new("/Users/me/subagents-paper")),
+            "cc·subagents-paper"
+        );
+    }
+
+    #[test]
+    fn label_uses_project_dir_when_cwd_is_root() {
+        // cwd = "/" fails the non-empty/non-root guard → falls to the project-dir
+        // branch rather than the cwd basename.
+        let path = Path::new("/Users/me/.claude/projects/-Users-me-dotfiles/abc.jsonl");
+        assert_eq!(
+            cc_derive_label(path, "claude-code", Path::new("/")),
+            "cc·dotfiles"
+        );
+    }
+
+    #[test]
+    fn label_uses_project_dir_when_cwd_has_no_basename() {
+        // A non-empty, non-root cwd whose file_name() is None (e.g. "..") enters
+        // the cwd block but can't return → falls through to the project-dir branch.
+        let path = Path::new("/Users/me/.claude/projects/-Users-me-dotfiles/abc.jsonl");
+        assert_eq!(
+            cc_derive_label(path, "claude-code", Path::new("..")),
+            "cc·dotfiles"
+        );
+    }
+
+    #[test]
+    fn label_final_fallback_to_cc_when_no_project_dir() {
+        // Degenerate path with no parent dir to decode AND empty cwd → bare "cc".
+        assert_eq!(
+            cc_derive_label(Path::new("abc.jsonl"), "claude-code", Path::new("")),
+            "cc"
+        );
+    }
+
+    // The socket-path / default-paths env-precedence tests live with the
+    // runtime half in `native.rs`.
+
+    // CC on Windows slugs an absolute path like `C:\Users\foo\bar` into a project
+    // dir name using `[^a-zA-Z0-9]→'-'` (regex from upstream CC source, drive
+    // letter kept, no leading dash): `C--Users-foo-bar`. The fallback path in
+    // `cc_derive_label` (empty cwd → rsplit on '-' → last non-empty segment)
+    // must extract the project-basename `bar` and produce `cc·bar`. Verified
+    // against upstream CC; real hook-payload fixture lands post-tester (PR 5).
+    #[test]
+    fn label_falls_back_to_project_dir_for_windows_slug() {
+        // Windows slug: C:\Users\foo\bar  →  C--Users-foo-bar
+        let path = Path::new("/Users/me/.claude/projects/C--Users-foo-bar/abc.jsonl");
+        assert_eq!(
+            cc_derive_label(path, "claude-code", Path::new("")),
+            "cc·bar"
+        );
+    }
+
+    // CC writes `message.content` as a plain STRING (not a block array) for
+    // simple text turns — 4709 such lines in a local 2379-session / 822 MB
+    // corpus. The tool-event match only fires on `Value::Array`, so a
+    // string-content turn must decode to NOTHING (no events, no panic) — even
+    // a slash-command wrapper line: content never drives lifecycle. A fuzz of
+    // all 291k real lines through decode_cc_line confirmed zero panics; this
+    // pins the common string-content shape the array-only fixtures never
+    // exercise.
+    // Coalescing guard: `cc_id_from_path` is invoked in multiple places that
+    // must agree — the per-line decode (here), the watcher's `with_id_deriver`
+    // (ClaudeCodeSource::run), and the hook decoder's session-id key. If the
+    // per-line decode ever keys differently from the deriver, one CC session
+    // splits into two sprites. Mirrors codex's
+    // `decode_line_keys_agent_id_on_codex_id_from_path`.
+    #[test]
+    fn decode_cc_line_keys_agent_id_on_cc_id_from_path() {
+        let path = "/Users/me/.claude/projects/p/01000000-0000-7000-8000-0000000000cc.jsonl";
+        let events = decode_cc_line(
+            path,
+            "claude-code",
+            serde_json::json!({"type":"assistant","attributionAgent":"explorer","message":{"content":[]}}),
+        )
+        .unwrap();
+        let expected =
+            AgentId::from_parts("claude-code", &cc_id_from_path(std::path::Path::new(path)));
+        assert_eq!(
+            events[0].agent_id(),
+            expected,
+            "decode_cc_line must key its AgentId on cc_id_from_path (the deriver)"
+        );
+    }
+
+    // Lifecycle must never read chat content: a user message QUOTING the CC
+    // slash-command wrapper mid-prose (common in sessions discussing CC
+    // internals) is user-controllable text, not a lifecycle signal. Neither
+    // the live decode nor the tail scan may treat it as a session end.
+    #[test]
+    fn quoted_exit_wrapper_in_user_content_never_ends_the_session() {
+        let prose =
+            "the transcript shows <command-name>/exit</command-name> as a wrapped line — why?";
+        let v = serde_json::json!({
+            "type": "user",
+            "message": { "role": "user", "content": prose }
+        });
+        let events = decode_cc_line("/x/.claude/projects/p/s.jsonl", "claude-code", v).unwrap();
+        assert!(
+            events.is_empty(),
+            "quoting the wrapper must not emit SessionEnd: {events:?}"
+        );
+
+        let tail = serde_json::json!({
+            "type": "user",
+            "message": { "role": "user", "content": prose }
+        })
+        .to_string();
+        assert!(
+            !cc_session_ended(tail.as_bytes()),
+            "tail scan must not end a session on quoted wrapper text"
+        );
+    }
+
+    #[test]
+    fn string_content_turns_emit_no_tool_events() {
+        for ty in ["assistant", "user"] {
+            let v = serde_json::json!({
+                "type": ty,
+                "message": { "role": ty, "content": "just some prose, no tool blocks" }
+            });
+            let out = decode_cc_line("/x/.claude/projects/p/s.jsonl", "claude-code", v).unwrap();
+            assert!(
+                out.is_empty(),
+                "{ty} turn with string content must emit no events"
+            );
+        }
+        // Even an exact slash-command wrapper decodes to nothing — the old
+        // content-based /exit → SessionEnd matcher is gone (zero true
+        // positives in a 135-transcript corpus; lifecycle is hooks + sweep).
+        let exit = serde_json::json!({
+            "type": "user",
+            "message": { "role": "user", "content": "<command-name>/exit</command-name>" }
+        });
+        let out = decode_cc_line("/x/.claude/projects/p/s.jsonl", "claude-code", exit).unwrap();
+        assert!(
+            out.is_empty(),
+            "slash-command content must not emit lifecycle events: {out:?}"
+        );
+    }
+
+    // A transcript line whose top-level JSON value is NOT an object (a bare
+    // array or string) must decode to NOTHING — the `as_object()` guard at the
+    // top of decode_cc_line returns early. Real transcripts are line-delimited
+    // objects, but a corrupt/foreign line must never panic or synthesize.
+    #[test]
+    fn decode_cc_line_non_object_value_decodes_to_nothing() {
+        let path = "/x/.claude/projects/p/s.jsonl";
+        assert!(
+            decode_cc_line(path, "claude-code", serde_json::json!([1, 2, 3]))
+                .unwrap()
+                .is_empty(),
+            "a bare array line must emit no events"
+        );
+        assert!(
+            decode_cc_line(path, "claude-code", serde_json::json!("raw string line"))
+                .unwrap()
+                .is_empty(),
+            "a bare string line must emit no events"
+        );
+    }
+
+    /// The top-level `type` breadcrumb: a brand-new pseudo-type fires the drift
+    /// signal (CC's ONLY drift instrument — no fetchable schema), while every
+    /// KNOWN current type stays SILENT, INCLUDING an `attachment` line carrying a
+    /// brand-new inner `attachment.type` (the high-cardinality axis that streams
+    /// per tool-call — guarding it would flood).
+    #[test]
+    fn unknown_top_level_type_breadcrumbs_but_known_and_inner_attachment_stay_silent() {
+        let path = "/x/.claude/projects/p/s.jsonl";
+        // novel top-level type → breadcrumb.
+        let logs = crate::test_capture::capture_logs(|| {
+            let out = decode_cc_line(
+                path,
+                "claude-code",
+                json!({"type": "quantum-line", "foo": 1}),
+            )
+            .unwrap();
+            assert!(
+                out.is_empty(),
+                "an unknown top-level type decodes to no events"
+            );
+        });
+        assert!(
+            logs.contains("unknown_event") && logs.contains("quantum-line"),
+            "a brand-new CC top-level type must fire the drift breadcrumb, got:\n{logs}"
+        );
+
+        // silent-real: every KNOWN current type — the session-metadata sidecar
+        // lines we ignore + the decoded shapes — stays silent (a KNOWN_TYPES
+        // omission would breadcrumb these at session-frequency). The last case is a
+        // real `attachment` line whose INNER attachment.type is brand-new: only the
+        // top-level `type` is guarded, so the per-tool-call inner axis never floods.
+        let quiet = crate::test_capture::capture_logs(|| {
+            for v in [
+                json!({"type": "mode", "mode": "acceptEdits"}),
+                json!({"type": "last-prompt", "prompt": "hi"}),
+                json!({"type": "worktree-state"}),
+                json!({"type": "frame-link", "url": "x"}),
+                json!({"type": "pr-link"}),
+                json!({"type": "bridge-session"}),
+                json!({"type": "system", "subtype": "brand_new_subtype_2027"}),
+                json!({"type": "attachment", "attachment": {"type": "brand_new_kind_2027"}}),
+            ] {
+                decode_cc_line(path, "claude-code", v).unwrap();
+            }
+        });
+        assert!(
+            !quiet.contains("unknown_event"),
+            "known top-level types + a novel inner attachment.type must NOT breadcrumb, got:\n{quiet}"
+        );
+    }
+
+    // An assistant tool_use block missing its `name` field substitutes "?"
+    // (and fires a missing_field drift breadcrumb), still emitting exactly one
+    // ActivityStart whose detail is the "?"-derived Generic ToolDetail. A
+    // mutation that changed the "?" fallback or skipped the block would fail.
+    #[test]
+    fn tool_use_without_name_emits_activity_start_with_question_mark_detail() {
+        let out = decode_cc_line(
+            "/x/.claude/projects/p/s.jsonl",
+            "claude-code",
+            json!({"type":"assistant","message":{"content":[{"type":"tool_use","id":"tu1"}]}}),
+        )
+        .unwrap();
+        assert_eq!(out.len(), 1, "one tool_use block → one ActivityStart");
+        match &out[0] {
+            AgentEvent::ActivityStart {
+                tool_use_id,
+                detail,
+                ..
+            } => {
+                assert_eq!(tool_use_id.as_deref(), Some("tu1"));
+                assert_eq!(
+                    detail.as_ref(),
+                    Some(&make_tool_detail(SOURCE_NAME, "?", None)),
+                    "a name-less tool_use substitutes the \"?\" fallback name"
+                );
+            }
+            other => panic!("expected ActivityStart, got {other:?}"),
+        }
+    }
+
+    // The assistant content-array loop skips a non-object element AND a block
+    // whose type != "tool_use", so a mixed array yields ONLY the real tool_use
+    // ActivityStart. A mutation removing either `continue` would panic or emit
+    // extra/garbage events.
+    #[test]
+    fn assistant_content_skips_non_object_and_non_tool_use_blocks() {
+        let out = decode_cc_line(
+            "/x/.claude/projects/p/s.jsonl",
+            "claude-code",
+            json!({"type":"assistant","message":{"content":[
+                42,
+                {"type":"text","text":"hi"},
+                {"type":"tool_use","id":"tu","name":"Read","input":{"file_path":"/a"}}
+            ]}}),
+        )
+        .unwrap();
+        assert_eq!(
+            out.len(),
+            1,
+            "only the real tool_use block decodes; the int + text block are skipped: {out:?}"
+        );
+        match &out[0] {
+            AgentEvent::ActivityStart {
+                tool_use_id,
+                detail,
+                ..
+            } => {
+                assert_eq!(tool_use_id.as_deref(), Some("tu"));
+                assert_eq!(
+                    detail.as_ref(),
+                    Some(&make_tool_detail(
+                        SOURCE_NAME,
+                        "Read",
+                        Some(&json!({"file_path":"/a"}))
+                    )),
+                    "the surviving block is the Read tool_use"
+                );
+            }
+            other => panic!("expected ActivityStart, got {other:?}"),
+        }
+    }
+
+    // The user content-array loop skips a non-object element AND a block whose
+    // type != "tool_result", so a mixed array yields ONLY the real tool_result
+    // ActivityEnd. A mutation removing either `continue` would panic or emit
+    // extra/garbage events.
+    #[test]
+    fn user_content_skips_non_object_and_non_tool_result_blocks() {
+        let out = decode_cc_line(
+            "/x/.claude/projects/p/s.jsonl",
+            "claude-code",
+            json!({"type":"user","message":{"content":[
+                "str",
+                {"type":"text","text":"hi"},
+                {"type":"tool_result","tool_use_id":"tu"}
+            ]}}),
+        )
+        .unwrap();
+        assert_eq!(
+            out.len(),
+            1,
+            "only the real tool_result block decodes; the string + text block are skipped: {out:?}"
+        );
+        match &out[0] {
+            AgentEvent::ActivityEnd { tool_use_id, .. } => {
+                assert_eq!(tool_use_id.as_deref(), Some("tu"));
+            }
+            other => panic!("expected ActivityEnd, got {other:?}"),
+        }
+    }
+}
+
+#[cfg(test)]
+mod cc_id_tests {
+    use super::*;
+    use std::path::Path;
+
+    #[test]
+    fn cc_id_from_path_root_is_filename_uuid() {
+        let p = Path::new(
+            "/Users/me/.claude/projects/-Users-me-proj/01000000-0000-7000-8000-0000000000cc.jsonl",
+        );
+        assert_eq!(cc_id_from_path(p), "01000000-0000-7000-8000-0000000000cc");
+    }
+
+    #[test]
+    fn cc_id_from_path_subagent_is_agent_stem() {
+        let p = Path::new("/Users/me/.claude/projects/-Users-me-proj/01000000-0000-7000-8000-0000000000cc/subagents/agent-a0a7dc28dd772bd0d.jsonl");
+        assert_eq!(cc_id_from_path(p), "agent-a0a7dc28dd772bd0d");
+    }
+
+    #[test]
+    fn cc_id_from_path_empty_for_no_stem() {
+        assert_eq!(cc_id_from_path(Path::new("")), "");
+    }
+
+    #[test]
+    fn cc_id_from_path_is_stable_across_path_separators() {
+        // The first-sight deriver gets a raw &Path; the per-line decoder gets the
+        // normalize_path_key'd string (lowercased + forward-slashed on Windows).
+        // Both must yield the SAME stem for a lowercase-hex CC id, or one session
+        // splits into two sprites (same assumption codex_id_from_path relies on).
+        let raw =
+            Path::new("/Users/me/.claude/projects/p/01000000-0000-7000-8000-0000000000cc.jsonl");
+        let normalized =
+            Path::new("/users/me/.claude/projects/p/01000000-0000-7000-8000-0000000000cc.jsonl");
+        assert_eq!(cc_id_from_path(raw), cc_id_from_path(normalized));
+    }
+
+    // conf-35 (#262 item 5): `attributionAgent` is transcript content — the
+    // Rename label it produces persists in slot state, so it is capped where
+    // it enters (pitfall 3); a legitimate short name stays untouched.
+    #[test]
+    fn attribution_agent_label_is_capped_at_the_decode_boundary() {
+        let path = "/p/x/s.jsonl";
+        let long = "é".repeat(MAX_DECODED_FIELD_CHARS * 10);
+        let events = decode_cc_line(
+            path,
+            "claude-code",
+            serde_json::json!({"type":"assistant","attributionAgent": long, "message":{"content":[]}}),
+        )
+        .unwrap();
+        match &events[0] {
+            AgentEvent::Rename { label, .. } => {
+                assert_eq!(label.chars().count(), MAX_DECODED_FIELD_CHARS + 1);
+                assert!(label.ends_with('…'));
+            }
+            other => panic!("expected Rename, got {other:?}"),
+        }
+
+        let events = decode_cc_line(
+            path,
+            "claude-code",
+            serde_json::json!({"type":"assistant","attributionAgent":"explorer","message":{"content":[]}}),
+        )
+        .unwrap();
+        assert!(
+            matches!(&events[0], AgentEvent::Rename { label, .. } if label == "explorer"),
+            "a short label must pass through unchanged, got {events:?}"
+        );
+    }
+}
