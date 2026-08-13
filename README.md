@@ -1,40 +1,53 @@
 <h1 align="center">Maple Agent Market</h1>
 
 <p align="center">
-  把 Codex 與其他 coding agents 的工作狀態，呈現在會擺攤、移動、等待與練功的 2D 浮動視窗。
+  將本機 coding agents 的執行、等待、閒置與子代理關係，映射成 2D MMORPG 風格的桌面場景。
 </p>
 
 <p align="center">
   <strong>非官方社群 side project</strong> · Windows 優先 · Rust · 本機運作 · 無遙測
 </p>
 
-![Maple Agent Market 內建雙地圖畫面](assets/readme/maple-agent-market-overview.png)
+![Maple Agent Market 雙地圖實機畫面](assets/readme/maple-agent-market-overview.png)
 
-> 這張圖由目前原始碼的 `floating_snapshot` 直接渲染。沒有載入私人素材包，也沒有使用遊戲截圖、拆包圖像或遊戲音樂。朋友乾淨 clone 後即可編譯出同一套內建畫面。
+_市場與訓練場可並列顯示；畫面由 Maple Agent Market 的即時 renderer 產生。_
 
-## 這是什麼
+## 專案概覽
 
-Maple Agent Market 是桌面上的 agents orchestration visualizer。每個本機 agent session 會被映射成一名 2D 角色，讓你看出誰正在執行、等待回覆、閒置或離場；來源若提供可靠的 `parent_id`，畫面也會呈現主 task 與子代理關係。
+Maple Agent Market 是桌面上的 agents orchestration visualizer。它把 Codex 與其他已支援來源的本機 agent session 轉換成場景中的角色，讓執行狀態、等待點、父子代理關係和進退場過程一眼可見。
 
-目前有兩張可共存的地圖：
+目前包含兩種可獨立或並列顯示的場景：
 
-- 市場：工作中的 agent 開店，等待或閒置時切換為相應狀態。
-- 訓練場：以走路、爬梯、怪物巡邏和泛用程式化技能呈現活動。
+- **自由市場**：工作中的 agent 會開設攤位；商店框顯示短任務名稱、來源與父子關係。
+- **訓練場**：角色會走路、爬梯、攻擊巡邏怪物，並依工作週期輪替泛用技能特效。
 
-本程式只讀取本機 agent 事件與 transcript，不會控制 agent，也不會上傳 session 內容。
+應用程式只讀取本機 agent 事件與 transcript，不會控制 agent，也不會上傳 session 內容。
 
-## 乾淨 clone 會得到什麼
+## 核心功能
 
-- 原創的程序化雙地圖、角色、商店框、怪物、傳送點與泛用特效。
-- 浮動視窗、狀態映射、進退場、角色移動、主從 task 標示與訊息列。
-- Codex 與其他已支援 agent source 的 hook、事件解碼和診斷工具。
-- 可選的本機 sprite pack 匯入與 SHA-256 驗證介面。
+- 將執行中、等待、閒置、完成與離場狀態轉換成不同角色行為。
+- 角色由傳送點進場，沿平台移動；上層位置會使用梯繩路線，離場時反向返回傳送點。
+- 以 `parent_id` 保留主 task 與子代理的群組關係，並在字卡中標示角色層級。
+- 自由市場與訓練場可並列顯示，也能只展開其中一張地圖。
+- 浮動視窗支援三段尺寸、自由縮放、跨螢幕拖曳、靜音與音量調整。
+- 內建程序化地圖、角色、商店框、怪物、傳送點與泛用特效，不依賴外部媒體即可啟動。
+- 支援具合法使用權的本機 sprite pack 與 BGM，並提供 pack 驗證及 SHA-256 fingerprint。
+- 提供 Codex source 連接、移除與唯讀診斷指令。
 
-內建畫面不依賴外部圖片包，因此不需要 `assets install`、下載器或私有素材才能開啟。不同電腦上的視窗尺寸、DPI、時間與實際 session 狀態可能讓即時畫面不同；相同 commit 的固定 snapshot 則可重現。
+### 狀態呈現
+
+| Agent 狀態 | 場景行為 |
+|---|---|
+| 執行中 | 市場持續開店；訓練場進入攻擊與技能循環 |
+| 等待回覆 | 停留在角色位置，顯示等待提示與任務字卡 |
+| 閒置 | 關閉攤位，在可行走區域內漫遊 |
+| 任務完成 | 播放完成特效，保留角色供狀態確認 |
+| Session 結束 | 沿場景路線走回傳送點後離場 |
+| 子代理 | 與主 task 保持群組關係，字卡顯示對應層級 |
 
 ## 快速開始
 
-需求：Git、[Rust](https://www.rust-lang.org/tools/install) 1.89 或更新版本。Maple 浮動視窗目前主要在 Windows 驗證。
+需求：Git、[Rust](https://www.rust-lang.org/tools/install) 1.89 或更新版本。浮動視窗目前主要在 Windows 驗證。
 
 ```powershell
 git clone https://github.com/SaM-runtime/maple-agent-market.git C:\dev\maple-agent-market
@@ -43,7 +56,7 @@ cargo build --locked -p pixtuoid
 .\target\debug\maple-agent-market.exe
 ```
 
-`pixtuoid` 是為了保留上游相容契約而維持的內部 crate 名；使用者執行檔是 `maple-agent-market.exe`。不帶子命令時會直接開啟浮動視窗，等同：
+`pixtuoid` 是為了保留上游相容契約而維持的內部 crate 名；對外執行檔是 `maple-agent-market.exe`。不帶子命令時會直接開啟浮動視窗，等同：
 
 ```powershell
 .\target\debug\maple-agent-market.exe floating
@@ -63,13 +76,13 @@ cargo build --locked -p pixtuoid
 .\target\debug\maple-agent-market.exe connect codex
 ```
 
-要移除時執行：
+移除連接：
 
 ```powershell
 .\target\debug\maple-agent-market.exe disconnect codex
 ```
 
-若角色沒有出現，可執行唯讀診斷：
+角色未出現時，可執行唯讀診斷：
 
 ```powershell
 .\target\debug\maple-agent-market.exe doctor
@@ -90,7 +103,7 @@ cargo build --locked -p pixtuoid
 
 ## 自訂本機素材
 
-公開版不需要素材包。若你擁有可合法使用的 sprite pack，可先驗證，再以 `--pack-dir` 載入：
+若你擁有可合法使用的 sprite pack，可先驗證，再以 `--pack-dir` 載入：
 
 ```powershell
 .\target\debug\maple-agent-market.exe validate-pack C:\team\authorized-pack
@@ -105,7 +118,7 @@ cargo build --locked -p pixtuoid
 .\target\debug\maple-agent-market.exe assets list
 ```
 
-匯入只會複製使用者指定的本機 pack，不會下載、上傳或改變素材授權。協作方式見 [`docs/ASSET_COLLABORATION.md`](docs/ASSET_COLLABORATION.md)。
+匯入只會複製使用者指定的本機 pack，不會下載、上傳或改變素材授權。Pack 格式與協作流程見 [`docs/ASSET_COLLABORATION.md`](docs/ASSET_COLLABORATION.md)。
 
 本機 BGM 可在相容設定檔 `~/.config/pixtuoid/config.toml` 指向你有權播放的 MP3、WAV、OGG 或 FLAC：
 
@@ -118,9 +131,22 @@ bgm-path = "C:/Music/your-licensed-track.mp3"
 
 專案不含 YouTube downloader、內嵌 web player 或音樂檔。
 
-## 公開素材邊界
+## 專案結構
 
-GitHub 版只包含可再散布的內容：
+| 路徑 | 用途 |
+|---|---|
+| `crates/pixtuoid` | CLI、來源連接、浮動視窗與音訊入口 |
+| `crates/pixtuoid-core` | Agent 事件、狀態 reducer、來源解碼與 session 監看 |
+| `crates/pixtuoid-scene` | 地圖配置、角色動作、標籤、程序化 renderer 與特效 |
+| `crates/pixtuoid-hook` | 供支援來源呼叫的輕量 hook 執行檔 |
+| `docs` | 架構、設定、素材協作與發布政策 |
+| `scripts` | 公開發布稽核與建置工具 |
+
+更完整的設計說明見 [`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md) 與 [`docs/CONFIGURATION.md`](docs/CONFIGURATION.md)。
+
+## 素材與發布邊界
+
+Repository 只包含具有再散布依據的內容：
 
 | 內容 | 來源 / 授權 |
 |---|---|
@@ -128,15 +154,15 @@ GitHub 版只包含可再散布的內容：
 | 保留的 Pixtuoid 核心程式與小型 parser 測試 fixture | Ivan Wang / Pixtuoid，MIT |
 | Monaspace Neon 字型 | GitHub Next，SIL OFL 1.1 |
 
-下列內容不會隨 repo、release、binary、README 截圖或 CI artifact 發布：
+下列內容不會隨 repository、release、binary、README 圖片或 CI artifact 發布：
 
 - NEXON / MapleStory 的背景、角色、怪物、傳送點、商店框、技能影格或音樂；
 - 遊戲截圖、WZ / client 拆包、Open API 紙娃娃及其裁切或轉檔衍生物；
 - 使用者的皮膚、BGM、private pack、cache 或本機測試截圖。
 
-GitHub 設為 public 或 private、只有朋友能 clone、以及是否營利，都不會自動產生再散布授權。詳細邊界見 [`FORK_NOTICE.md`](FORK_NOTICE.md) 與 [`docs/OPEN_SOURCE_RELEASE.md`](docs/OPEN_SOURCE_RELEASE.md)。這是保守的工程發布政策，不是法律意見。
+Repository 的可見性、用途是否營利或使用人數，都不會自動產生第三方素材的再散布授權。詳細政策見 [`FORK_NOTICE.md`](FORK_NOTICE.md) 與 [`docs/OPEN_SOURCE_RELEASE.md`](docs/OPEN_SOURCE_RELEASE.md)。這是保守的工程發布政策，不是法律意見。
 
-可在提交前執行：
+提交前可執行：
 
 ```powershell
 python scripts\public-release-audit.py --selftest
@@ -145,15 +171,15 @@ python scripts\public-release-audit.py
 
 ## 與 Pixtuoid 的關係
 
-本專案是 [IvanWng97/pixtuoid](https://github.com/IvanWng97/pixtuoid) 的 source-code fork，基準為 Pixtuoid `v0.16.0` commit [`ac06cc00c3cf18f3f67eab730a37f0c7e5787fc8`](https://github.com/IvanWng97/pixtuoid/commit/ac06cc00c3cf18f3f67eab730a37f0c7e5787fc8)。本 repo 保留 Ivan Wang 的 MIT 版權與授權聲明。
+本專案源自 [IvanWng97/pixtuoid](https://github.com/IvanWng97/pixtuoid)，基準為 Pixtuoid `v0.16.0` commit [`ac06cc00c3cf18f3f67eab730a37f0c7e5787fc8`](https://github.com/IvanWng97/pixtuoid/commit/ac06cc00c3cf18f3f67eab730a37f0c7e5787fc8)。Repository 保留 Ivan Wang 的 MIT 版權與授權聲明。
 
-目前仍依賴的上游部分包括 agent event / source / hook 架構、reducer、場景模擬與路徑資料、RGB buffer / sprite pack 基礎，以及既有相容識別碼。這些不是只改名就能刪除的舊檔；浮動視窗會直接呼叫它們。
+Maple Agent Market 延用並擴充上游的 agent event / source / hook 架構、reducer、場景模擬、路徑資料、RGB buffer 與 sprite pack 基礎。這些元件仍是目前 runtime 的一部分，因此內部 crate、設定鍵與部分相容識別碼繼續沿用 `pixtuoid` 名稱。
 
-已從本 fork 移除的上游產品面包括終端 TUI、舊辦公室 sprite、robot / skeleton 範例 pack、`run`、`init-pack`、`public-classic` 安裝器，以及上游 Homebrew completion / man-page 產生器。乾淨 clone 不再顯示 Pixtuoid 辦公室素材。
+目前產品介面已移除上游終端 TUI、舊辦公室 sprite、robot / skeleton 範例 pack、`run`、`init-pack`、`public-classic` 安裝器，以及 Homebrew completion / man-page 產生器。
 
-更多範圍與逐項來源見 [`THIRD_PARTY_NOTICES.md`](THIRD_PARTY_NOTICES.md) 與 [`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md)。
+逐項來源與授權見 [`THIRD_PARTY_NOTICES.md`](THIRD_PARTY_NOTICES.md)。
 
-## 共同開發
+## 開發與驗證
 
 ```powershell
 git switch -c feature/my-change
@@ -162,7 +188,7 @@ cargo test --locked --workspace
 python scripts\public-release-audit.py
 ```
 
-完整 gate 為 `just preflight`。架構、設定與貢獻規則分別在 [`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md)、[`docs/CONFIGURATION.md`](docs/CONFIGURATION.md) 與 [`docs/CONTRIBUTING.md`](docs/CONTRIBUTING.md)。
+完整 gate 為 `just preflight`。貢獻規則見 [`docs/CONTRIBUTING.md`](docs/CONTRIBUTING.md)。
 
 ## 非官方聲明與授權
 
