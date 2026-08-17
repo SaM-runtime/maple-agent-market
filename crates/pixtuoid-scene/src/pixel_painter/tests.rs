@@ -3554,6 +3554,26 @@ fn market_backdrop_nearest_neighbor_covers_the_entire_scene_buffer() {
 }
 
 #[test]
+fn public_market_fallback_spans_the_native_720px_panel_without_u16_overflow() {
+    let sentinel = Rgb { r: 1, g: 2, b: 3 };
+    let mut buf = RgbBuffer::filled(720, 480, sentinel);
+    let layout = MarketBackdropLayout::from_buffer(&buf);
+
+    paint_market_platforms(&mut buf, layout);
+
+    assert_ne!(
+        buf.get(690, layout.upper),
+        sentinel,
+        "the authored 96% upper platform must reach the right side of a 720px map panel"
+    );
+    assert_eq!(
+        buf.get(691, layout.upper),
+        sentinel,
+        "the platform's percentage endpoint remains exclusive"
+    );
+}
+
+#[test]
 fn market_portal_animates_without_touching_the_surrounding_map() {
     let base = Rgb {
         r: 20,

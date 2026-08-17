@@ -1293,6 +1293,13 @@ fn paint_original_market_stall(buf: &mut RgbBuffer, foot: Point, scale: u16) {
     );
 }
 
+fn market_percent(value: u16, percent: u16) -> u16 {
+    debug_assert!(percent <= 100);
+    // Promote before multiplying: a native 720 px panel already makes
+    // `720_u16 * 96` overflow even though the final percentage fits in u16.
+    ((u32::from(value) * u32::from(percent)) / 100) as u16
+}
+
 #[derive(Clone, Copy)]
 struct MarketBackdropLayout {
     width: u16,
@@ -1309,9 +1316,9 @@ impl MarketBackdropLayout {
         Self {
             width,
             height,
-            upper: height * 28 / 100,
-            middle: height * 57 / 100,
-            lower: height * 87 / 100,
+            upper: market_percent(height, 28),
+            middle: market_percent(height, 57),
+            lower: market_percent(height, 87),
         }
     }
 }
@@ -1380,7 +1387,7 @@ fn paint_market_hills(buf: &mut RgbBuffer, layout: MarketBackdropLayout) {
         b: 76,
     };
     for x in 0..layout.width {
-        let ridge = layout.height * 54 / 100 - ((x.wrapping_mul(7) % 29) / 5);
+        let ridge = market_percent(layout.height, 54) - ((x.wrapping_mul(7) % 29) / 5);
         for y in ridge..layout.height {
             buf.put(x, y, far);
         }
@@ -1388,7 +1395,7 @@ fn paint_market_hills(buf: &mut RgbBuffer, layout: MarketBackdropLayout) {
     for x in (0..layout.width).step_by((layout.width / 18).max(5) as usize) {
         market_circle(
             buf,
-            (i32::from(x), i32::from(layout.height * 70 / 100)),
+            (i32::from(x), i32::from(market_percent(layout.height, 70))),
             i32::from((layout.height / 14).max(3)),
             near,
         );
@@ -1422,8 +1429,8 @@ fn paint_market_tree_canopy(
 }
 
 fn paint_market_tree(buf: &mut RgbBuffer, layout: MarketBackdropLayout) {
-    let tree_x = layout.width * 67 / 100;
-    let tree_top = layout.height * 18 / 100;
+    let tree_x = market_percent(layout.width, 67);
+    let tree_top = market_percent(layout.height, 18);
     let trunk = Rgb {
         r: 116,
         g: 73,
@@ -1474,8 +1481,10 @@ fn paint_market_tree(buf: &mut RgbBuffer, layout: MarketBackdropLayout) {
 }
 
 fn paint_market_booth(buf: &mut RgbBuffer, layout: MarketBackdropLayout) {
-    let booth_x = layout.width * 18 / 100;
-    let booth_y = layout.upper.saturating_sub(layout.height * 14 / 100);
+    let booth_x = market_percent(layout.width, 18);
+    let booth_y = layout
+        .upper
+        .saturating_sub(market_percent(layout.height, 14));
     let wood = Rgb {
         r: 137,
         g: 84,
@@ -1495,12 +1504,12 @@ fn paint_market_booth(buf: &mut RgbBuffer, layout: MarketBackdropLayout) {
         buf,
         booth_x,
         booth_y,
-        layout.width * 20 / 100,
+        market_percent(layout.width, 20),
         (layout.height / 32).max(2),
         canvas,
     );
-    for x in
-        (booth_x..booth_x + layout.width * 20 / 100).step_by((layout.width / 35).max(2) as usize)
+    for x in (booth_x..booth_x + market_percent(layout.width, 20))
+        .step_by((layout.width / 35).max(2) as usize)
     {
         fill_rect(
             buf,
@@ -1511,7 +1520,7 @@ fn paint_market_booth(buf: &mut RgbBuffer, layout: MarketBackdropLayout) {
             stripe,
         );
     }
-    for x in [booth_x, booth_x + layout.width * 20 / 100] {
+    for x in [booth_x, booth_x + market_percent(layout.width, 20)] {
         fill_rect(
             buf,
             x,
@@ -1523,9 +1532,9 @@ fn paint_market_booth(buf: &mut RgbBuffer, layout: MarketBackdropLayout) {
     }
     fill_rect(
         buf,
-        booth_x + layout.width * 4 / 100,
+        booth_x + market_percent(layout.width, 4),
         layout.upper.saturating_sub(layout.height / 18),
-        layout.width * 12 / 100,
+        market_percent(layout.width, 12),
         layout.height / 18,
         wood,
     );
@@ -1534,22 +1543,32 @@ fn paint_market_booth(buf: &mut RgbBuffer, layout: MarketBackdropLayout) {
 fn paint_market_platforms(buf: &mut RgbBuffer, layout: MarketBackdropLayout) {
     paint_original_platform(
         buf,
-        layout.width * 5 / 100,
-        layout.width * 96 / 100,
+        market_percent(layout.width, 5),
+        market_percent(layout.width, 96),
         layout.upper,
     );
     paint_original_platform(
         buf,
-        layout.width * 2 / 100,
-        layout.width * 91 / 100,
+        market_percent(layout.width, 2),
+        market_percent(layout.width, 91),
         layout.middle,
     );
     paint_original_platform(buf, 0, layout.width, layout.lower);
 }
 
 fn paint_market_ladders(buf: &mut RgbBuffer, layout: MarketBackdropLayout) {
-    paint_original_ladder(buf, layout.width * 39 / 100, layout.upper, layout.middle);
-    paint_original_ladder(buf, layout.width * 58 / 100, layout.middle, layout.lower);
+    paint_original_ladder(
+        buf,
+        market_percent(layout.width, 39),
+        layout.upper,
+        layout.middle,
+    );
+    paint_original_ladder(
+        buf,
+        market_percent(layout.width, 58),
+        layout.middle,
+        layout.lower,
+    );
 }
 
 fn paint_market_portal_arch(buf: &mut RgbBuffer, layout: MarketBackdropLayout) {
