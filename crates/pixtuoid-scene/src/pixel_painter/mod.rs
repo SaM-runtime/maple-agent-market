@@ -295,6 +295,8 @@ pub struct PixelCtx<'a> {
     pub buf: &'a mut RgbBuffer,
     /// The live scene state to render.
     pub scene: &'a SceneState,
+    /// Optional fixed-slot roster and presentation-only actor overrides.
+    pub character_appearances: Option<&'a crate::characters::CharacterAppearances>,
     /// The computed office geometry for this frame.
     pub layout: &'a Layout,
     /// The character/furniture sprite pack.
@@ -327,6 +329,7 @@ pub struct PixelCtx<'a> {
 /// the world — see the `sim` module docs for the classification.
 struct PaintCtx<'a> {
     scene: &'a SceneState,
+    character_appearances: Option<&'a crate::characters::CharacterAppearances>,
     layout: &'a Layout,
     pack: &'a Pack,
     now: SystemTime,
@@ -389,6 +392,7 @@ fn render_to_rgb_buffer_for_map(
     let (pet_pos, mascots) = paint_frame_for_map(
         &mut PaintCtx {
             scene: ctx.scene,
+            character_appearances: ctx.character_appearances,
             layout: ctx.layout,
             pack: ctx.pack,
             now: ctx.now,
@@ -575,6 +579,16 @@ fn paint_market_backdrop(buf: &mut RgbBuffer, backdrop: &Frame, fallback: Rgb) {
     let (src_w, src_h) = (backdrop.width(), backdrop.height());
     let (dst_w, dst_h) = (buf.width(), buf.height());
     if src_w == 0 || src_h == 0 || dst_w == 0 || dst_h == 0 {
+        return;
+    }
+    // The local classic plates are authored at the normal per-map viewport
+    // size. Avoid treating that 1:1 case as a scale operation: the generic
+    // loop below would otherwise perform two integer divisions per pixel on
+    // both maps, thirty times a second.
+    if src_w == dst_w && src_h == dst_h {
+        for (destination, source) in buf.as_mut_slice().iter_mut().zip(backdrop.as_slice()) {
+            *destination = source.unwrap_or(fallback);
+        }
         return;
     }
     for y in 0..dst_h {
@@ -1742,6 +1756,45 @@ const TRAINING_SKILL_LOGICAL_SIZE: u16 = 32;
 const TRAINING_SKILL_LOGICAL_ORIGIN_X: u16 = 16;
 const TRAINING_SKILL_LOGICAL_ORIGIN_Y: u16 = 27;
 
+fn training_skill_geometry(
+    kind: crate::training::TrainingSkillKind,
+    scale: u16,
+) -> (Size, u16, u16) {
+    let (width, height, origin_x, origin_y) = match kind {
+        crate::training::TrainingSkillKind::MagicClaw => (
+            TRAINING_SKILL_LOGICAL_SIZE,
+            TRAINING_SKILL_LOGICAL_SIZE,
+            TRAINING_SKILL_LOGICAL_ORIGIN_X,
+            TRAINING_SKILL_LOGICAL_ORIGIN_Y,
+        ),
+        // Local packs may map this generic slot to the pre-BB falling-light
+        // column. Keep enough screen area for the authored vertical shape.
+        crate::training::TrainingSkillKind::HolyLight => (80, 80, 40, 70),
+        // The pre-BB radial warrior pulse is centred around the caster rather
+        // than squeezed into the compact projectile canvas.
+        crate::training::TrainingSkillKind::DragonPulse => (72, 72, 36, 54),
+    };
+    (
+        Size {
+            w: width.saturating_mul(scale),
+            h: height.saturating_mul(scale),
+        },
+        origin_x.saturating_mul(scale),
+        origin_y.saturating_mul(scale),
+    )
+}
+
+fn training_skill_animation_frame<'a>(
+    pack: &'a Pack,
+    animation_key: &str,
+    elapsed_ms: u64,
+) -> Option<&'a Frame> {
+    pack.animation(animation_key).and_then(|animation| {
+        let frame_ms = u64::from(animation.frame_ms.max(1));
+        animation.frames.get((elapsed_ms / frame_ms) as usize)
+    })
+}
+
 fn paint_training_skill_effect(
     buf: &mut RgbBuffer,
     pack: &Pack,
@@ -1756,29 +1809,26 @@ fn paint_training_skill_effect(
         crate::training::TrainingSkillKind::HolyLight => "training_skill_holy_light",
         crate::training::TrainingSkillKind::DragonPulse => "training_skill_dragon_pulse",
     };
+    let public_frame_index =
+        ((effect.elapsed_ms.saturating_mul(4) / effect.kind.duration_ms().max(1)) as usize).min(3);
     // Always keep the original zero-asset silhouette as a readability halo.
     // The installed local pack may add a licensed/custom frame on top, but a
-    // sparse first frame must not make the whole 960 ms cast disappear.
+    // sparse first frame must not make the full one-shot cast disappear.
     effects::paint_public_training_skill(
         buf,
         actor.foot_px,
         effect.kind,
-        effect.frame_index,
+        public_frame_index,
         scale,
     );
 
-    if let Some(frame) = pack
-        .animation(animation_key)
-        .and_then(|animation| animation.frames.get(effect.frame_index))
-    {
-        let size = TRAINING_SKILL_LOGICAL_SIZE.saturating_mul(scale);
+    if let Some(frame) = training_skill_animation_frame(pack, animation_key, effect.elapsed_ms) {
+        let (size, origin_x, origin_y) = training_skill_geometry(effect.kind, scale);
         blit_frame_nearest_to_size_clipped(
             frame,
-            i32::from(actor.foot_px.x)
-                - i32::from(TRAINING_SKILL_LOGICAL_ORIGIN_X.saturating_mul(scale)),
-            i32::from(actor.foot_px.y)
-                - i32::from(TRAINING_SKILL_LOGICAL_ORIGIN_Y.saturating_mul(scale)),
-            Size { w: size, h: size },
+            i32::from(actor.foot_px.x) - i32::from(origin_x),
+            i32::from(actor.foot_px.y) - i32::from(origin_y),
+            size,
             buf,
         );
     }
@@ -1811,7 +1861,16 @@ fn paint_training_frame(
         viewport,
         now: ctx.now,
     };
-    let placements = crate::training::build_training_placements(ctx.scene, viewport);
+    let placements = ctx.character_appearances.map_or_else(
+        || crate::training::build_training_placements(ctx.scene, viewport),
+        |appearances| {
+            crate::training::build_training_placements_with_appearances(
+                ctx.scene,
+                viewport,
+                appearances,
+            )
+        },
+    );
     let paperdolls = crate::market::market_avatar_animation(ctx.pack);
     let standing = crate::market::market_avatar_stand_animation(ctx.pack);
     let walking = crate::market::market_avatar_walk_animation(ctx.pack);
@@ -2226,7 +2285,16 @@ fn paint_market_frame(
         width: ctx.buf.width(),
         height: ctx.buf.height(),
     };
-    let placements = crate::market::build_market_placements(ctx.scene, viewport);
+    let placements = ctx.character_appearances.map_or_else(
+        || crate::market::build_market_placements(ctx.scene, viewport),
+        |appearances| {
+            crate::market::build_market_placements_with_appearances(
+                ctx.scene,
+                viewport,
+                appearances,
+            )
+        },
+    );
     let sprite_scale = crate::market::market_sprite_scale(viewport.height);
     let market_frame = crate::market::MarketFrameContext {
         viewport,

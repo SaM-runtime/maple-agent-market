@@ -20,6 +20,16 @@ const ACTIVE_FPS: u32 = 30;
 /// active path. Never 0fps: a frozen clock reads as a dead/broken window.
 const IDLE_AMBIENT_FPS: u32 = 1;
 
+/// Decide whether the renderer may use its slow ambient tick. Presentation-only
+/// actors animate like monitored Agents even though they do not enter `SceneState`.
+pub(crate) const fn uses_ambient_tick(
+    has_agents: bool,
+    all_daemons_down: bool,
+    showcase_active: bool,
+) -> bool {
+    !has_agents && all_daemons_down && !showcase_active
+}
+
 /// The gap between animation frames for the current scene state.
 fn tick(scene_idle: bool) -> Duration {
     Duration::from_secs(1)
@@ -120,6 +130,14 @@ mod tests {
             "an agent arriving mid-ambient-tick must pull the deadline in to the \
              active cadence, not sit out the remaining ~990ms"
         );
+    }
+
+    #[test]
+    fn showcase_actor_prevents_the_one_fps_ambient_mode_without_agents() {
+        assert!(uses_ambient_tick(false, true, false));
+        assert!(!uses_ambient_tick(false, true, true));
+        assert!(!uses_ambient_tick(true, true, false));
+        assert!(!uses_ambient_tick(false, false, false));
     }
 
     #[test]

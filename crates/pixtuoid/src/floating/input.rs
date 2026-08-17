@@ -20,10 +20,38 @@ pub(crate) fn map_switch_requested(key: &Key, repeat: bool) -> bool {
     !repeat && matches!(key, Key::Named(NamedKey::Tab))
 }
 
-/// `z` cycles the compact/medium/large floating-window presets.  It is kept
+/// `z` cycles the mini/small/medium/large floating-window presets. It is kept
 /// lowercase and non-repeating like the discrete `m` and `Tab` actions.
 pub(crate) fn size_switch_requested(key: &Key, repeat: bool) -> bool {
     !repeat && matches!(key, Key::Character(value) if value.as_str() == "z")
+}
+
+/// `t` toggles whether the floating companion stays above normal windows.
+/// Like every discrete toggle, one physical press produces one state change.
+pub(crate) fn topmost_toggle_requested(key: &Key, repeat: bool) -> bool {
+    !repeat && matches!(key, Key::Character(value) if value.as_str() == "t")
+}
+
+/// `c` opens/closes the character roster and manual showcase panel.
+pub(crate) fn character_panel_toggle_requested(key: &Key, repeat: bool) -> bool {
+    !repeat && matches!(key, Key::Character(value) if value.as_str() == "c")
+}
+
+/// Page the open character catalog with the physical arrow keys.
+pub(crate) fn character_panel_page_delta(key: &Key, repeat: bool) -> Option<isize> {
+    if repeat {
+        return None;
+    }
+    match key {
+        Key::Named(NamedKey::ArrowLeft) | Key::Named(NamedKey::PageUp) => Some(-1),
+        Key::Named(NamedKey::ArrowRight) | Key::Named(NamedKey::PageDown) => Some(1),
+        _ => None,
+    }
+}
+
+/// `a` toggles the per-user Windows startup entry managed by this app.
+pub(crate) fn startup_toggle_requested(key: &Key, repeat: bool) -> bool {
+    !repeat && matches!(key, Key::Character(value) if value.as_str() == "a")
 }
 
 /// Direct map selection: `1` = both maps, `2` = Free Market, `3` = training.
@@ -139,6 +167,47 @@ mod tests {
         assert!(!size_switch_requested(&key("z"), true));
         assert!(!size_switch_requested(&key("Z"), false));
         assert!(!size_switch_requested(&key("m"), false));
+    }
+
+    #[test]
+    fn t_requests_one_topmost_toggle_without_claiming_shift_or_repeat() {
+        assert!(topmost_toggle_requested(&key("t"), false));
+        assert!(!topmost_toggle_requested(&key("t"), true));
+        assert!(!topmost_toggle_requested(&key("T"), false));
+        assert!(!topmost_toggle_requested(&key("z"), false));
+    }
+
+    #[test]
+    fn c_requests_one_character_panel_toggle() {
+        assert!(character_panel_toggle_requested(&key("c"), false));
+        assert!(!character_panel_toggle_requested(&key("c"), true));
+        assert!(!character_panel_toggle_requested(&key("C"), false));
+        assert!(!character_panel_toggle_requested(&key("t"), false));
+    }
+
+    #[test]
+    fn arrow_keys_page_the_open_character_catalog_without_repeating() {
+        assert_eq!(
+            character_panel_page_delta(&Key::Named(NamedKey::ArrowLeft), false),
+            Some(-1)
+        );
+        assert_eq!(
+            character_panel_page_delta(&Key::Named(NamedKey::ArrowRight), false),
+            Some(1)
+        );
+        assert_eq!(
+            character_panel_page_delta(&Key::Named(NamedKey::ArrowRight), true),
+            None
+        );
+        assert_eq!(character_panel_page_delta(&key("c"), false), None);
+    }
+
+    #[test]
+    fn a_requests_one_startup_toggle_without_claiming_shift_or_repeat() {
+        assert!(startup_toggle_requested(&key("a"), false));
+        assert!(!startup_toggle_requested(&key("a"), true));
+        assert!(!startup_toggle_requested(&key("A"), false));
+        assert!(!startup_toggle_requested(&key("c"), false));
     }
 
     #[test]

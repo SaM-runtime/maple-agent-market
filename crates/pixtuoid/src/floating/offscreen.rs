@@ -29,6 +29,93 @@ pub(crate) fn pack_xrgb(c: Rgb) -> u32 {
     (c.r as u32) << 16 | (c.g as u32) << 8 | c.b as u32
 }
 
+/// Expand one packed-XRGB scene buffer into the native window surface without
+/// doing an integer division for every destination pixel. Each source pixel is
+/// written as one contiguous run and each completed row is copied vertically.
+/// Remainder edges repeat the final source pixel/row, matching the original
+/// nearest-neighbour projection used by the floating window.
+#[allow(clippy::too_many_arguments)] // the two explicit buffer geometries prevent stride drift
+pub(crate) fn upscale_xrgb_nearest(
+    source: &[u32],
+    source_width: usize,
+    source_height: usize,
+    destination: &mut [u32],
+    destination_width: usize,
+    destination_height: usize,
+    scale: usize,
+) -> bool {
+    let Some(source_len) = source_width.checked_mul(source_height) else {
+        return false;
+    };
+    let Some(destination_len) = destination_width.checked_mul(destination_height) else {
+        return false;
+    };
+    if scale == 0
+        || source_width == 0
+        || source_height == 0
+        || destination_width == 0
+        || destination_height == 0
+        || source.len() < source_len
+        || destination.len() < destination_len
+    {
+        return false;
+    }
+
+    let mut destination_y = 0usize;
+    for source_y in 0..source_height {
+        if destination_y >= destination_height {
+            break;
+        }
+        let source_start = source_y * source_width;
+        let source_row = &source[source_start..source_start + source_width];
+        let destination_start = destination_y * destination_width;
+        let destination_row =
+            &mut destination[destination_start..destination_start + destination_width];
+
+        if scale == 1 {
+            let copied = source_width.min(destination_width);
+            destination_row[..copied].copy_from_slice(&source_row[..copied]);
+            if copied < destination_width {
+                destination_row[copied..].fill(source_row[source_width - 1]);
+            }
+        } else {
+            let mut destination_x = 0usize;
+            for &pixel in source_row {
+                if destination_x >= destination_width {
+                    break;
+                }
+                let run_end = destination_x.saturating_add(scale).min(destination_width);
+                destination_row[destination_x..run_end].fill(pixel);
+                destination_x = run_end;
+            }
+            if destination_x < destination_width {
+                destination_row[destination_x..].fill(source_row[source_width - 1]);
+            }
+        }
+
+        let repeated_rows = scale.min(destination_height - destination_y);
+        for repeat in 1..repeated_rows {
+            destination.copy_within(
+                destination_start..destination_start + destination_width,
+                (destination_y + repeat) * destination_width,
+            );
+        }
+        destination_y += repeated_rows;
+    }
+
+    if destination_y < destination_height {
+        let last_row_start = (destination_y - 1) * destination_width;
+        while destination_y < destination_height {
+            destination.copy_within(
+                last_row_start..last_row_start + destination_width,
+                destination_y * destination_width,
+            );
+            destination_y += 1;
+        }
+    }
+    true
+}
+
 /// Owns the two persistent Maple map sessions and their reusable RGB buffers.
 /// One renderer lives for the window's lifetime, which keeps entry, exit and
 /// activity animation continuous across frames.
@@ -42,6 +129,20 @@ pub struct MapleRenderer {
     composite: RgbBuffer,
     /// Sticky root-party routing and the camera's selected Maple map.
     maple_world: pixtuoid_scene::maple_world::MapleWorldSession,
+    /// User-selected real-Agent roster plus explicit showcase appearances.
+    character_appearances: pixtuoid_scene::characters::CharacterAppearances,
+    /// Presentation-only Free Market actors. Never written into the watched
+    /// authoritative scene, footer statistics or Agent lineage.
+    market_showcase: super::characters::ShowcaseRoster,
+    /// Presentation-only training actors, isolated from both the monitored
+    /// scene and the market roster.
+    training_showcase: super::characters::ShowcaseRoster,
+    /// Exact augmented market scene painted by the last frame, retained so
+    /// native-surface labels use the same actors and anchors.
+    last_market_scene: Option<SceneState>,
+    /// Exact augmented training scene painted by the last frame. Native label
+    /// placement must consume this same render-only projection.
+    last_training_scene: Option<SceneState>,
     /// User-selected camera mode. Dual is the default; compact buffers render
     /// the selected single map without mutating this preference.
     view_mode: MapleViewMode,
@@ -101,6 +202,16 @@ impl MapleRenderer {
             training_session: FloorSession::new(),
             composite: RgbBuffer::filled(1, 1, Rgb { r: 0, g: 0, b: 0 }),
             maple_world: pixtuoid_scene::maple_world::MapleWorldSession::default(),
+            character_appearances: pixtuoid_scene::characters::CharacterAppearances::default(),
+            market_showcase: super::characters::ShowcaseRoster::default(),
+            training_showcase: super::characters::ShowcaseRoster::from_slots_for_destination(
+                [],
+                pixtuoid_scene::characters::CHARACTER_SLOT_COUNT,
+                super::characters::ShowcaseDestination::ForestTraining,
+                SystemTime::UNIX_EPOCH,
+            ),
+            last_market_scene: None,
+            last_training_scene: None,
             view_mode: MapleViewMode::Dual,
             dual_rendered: false,
             market_viewport: None,
@@ -112,6 +223,149 @@ impl MapleRenderer {
 
     pub(crate) fn set_audio(&mut self, audio: crate::audio::AudioHandle) {
         self.audio = audio;
+    }
+
+    /// Apply persisted character choices before the first frame.
+    pub(crate) fn configure_characters(
+        &mut self,
+        config: crate::config::CharacterConfig,
+        now: SystemTime,
+    ) {
+        let available_count = config.agent_roster.available_count();
+        self.character_appearances.set_roster(config.agent_roster);
+        self.market_showcase = super::characters::ShowcaseRoster::from_slots_for_destination(
+            config.showcase_slots,
+            available_count,
+            super::characters::ShowcaseDestination::FreeMarket,
+            now,
+        );
+        self.training_showcase = super::characters::ShowcaseRoster::from_slots_for_destination(
+            config.training_showcase_slots,
+            available_count,
+            super::characters::ShowcaseDestination::ForestTraining,
+            now,
+        );
+    }
+
+    /// Number of character appearances exposed by the active pack.
+    pub(crate) fn available_character_count(&self) -> usize {
+        self.character_appearances.roster().available_count()
+    }
+
+    /// Canonical real-Agent appearance slots selected by the user.
+    pub(crate) fn selected_character_slots(&self) -> &[usize] {
+        self.character_appearances.roster().slots()
+    }
+
+    /// Canonical persistable showcase slots (with withdrawing actors omitted).
+    pub(crate) fn selected_market_showcase_slots(&self) -> Vec<usize> {
+        self.market_showcase.selected_slots()
+    }
+
+    /// Canonical persistable training showcase slots.
+    pub(crate) fn selected_training_showcase_slots(&self) -> Vec<usize> {
+        self.training_showcase.selected_slots()
+    }
+
+    /// Toggle one real-Agent appearance while preserving at least one slot.
+    pub(crate) fn toggle_character_slot(&mut self, slot: usize) -> bool {
+        let before = self.character_appearances.roster().clone();
+        let after = before.toggled(slot);
+        let changed = before != after;
+        self.character_appearances.set_roster(after);
+        changed
+    }
+
+    /// Enter/withdraw one presentation-only character. The current routed
+    /// Free Market Agent count is evaluated first so a guest never evicts one.
+    pub(crate) fn toggle_market_showcase_slot(
+        &mut self,
+        scene: &SceneState,
+        slot: usize,
+        now: SystemTime,
+    ) -> super::characters::ShowcaseToggle {
+        self.maple_world.reconcile(scene);
+        let real_count = self
+            .maple_world
+            .project_scene(scene, pixtuoid_scene::maple_world::MapleMapId::FreeMarket)
+            .agents
+            .len()
+            .min(pixtuoid_scene::market::MARKET_MAX_AGENTS);
+        self.market_showcase.toggle(slot, real_count, now)
+    }
+
+    /// Enter/withdraw one presentation-only training character without
+    /// displacing a routed Agent.
+    pub(crate) fn toggle_training_showcase_slot(
+        &mut self,
+        scene: &SceneState,
+        slot: usize,
+        now: SystemTime,
+    ) -> super::characters::ShowcaseToggle {
+        self.maple_world.reconcile(scene);
+        let real_count = self
+            .maple_world
+            .project_scene(
+                scene,
+                pixtuoid_scene::maple_world::MapleMapId::ForestTraining,
+            )
+            .agents
+            .len()
+            .min(pixtuoid_scene::training::TRAINING_MAX_AGENTS);
+        self.training_showcase.toggle(slot, real_count, now)
+    }
+
+    /// Number of real monitored Agents currently routed to the Free Market.
+    pub(crate) fn real_market_agent_count(&self, scene: &SceneState) -> usize {
+        self.maple_world
+            .agents_on(pixtuoid_scene::maple_world::MapleMapId::FreeMarket)
+            .iter()
+            .filter(|id| scene.agents.contains_key(id))
+            .count()
+            .min(pixtuoid_scene::market::MARKET_MAX_AGENTS)
+    }
+
+    /// Number of real monitored Agents currently routed to the training map.
+    pub(crate) fn real_training_agent_count(&self, scene: &SceneState) -> usize {
+        self.maple_world
+            .agents_on(pixtuoid_scene::maple_world::MapleMapId::ForestTraining)
+            .iter()
+            .filter(|id| scene.agents.contains_key(id))
+            .count()
+            .min(pixtuoid_scene::training::TRAINING_MAX_AGENTS)
+    }
+
+    /// Entering/strolling/leaving state for one showcase row.
+    pub(crate) fn market_showcase_visible_state(&self, slot: usize) -> Option<bool> {
+        self.market_showcase.visible_state(slot)
+    }
+
+    /// Entering/training/leaving state for one training showcase row.
+    pub(crate) fn training_showcase_visible_state(&self, slot: usize) -> Option<bool> {
+        self.training_showcase.visible_state(slot)
+    }
+
+    /// Whether showcase motion needs the window's active animation cadence.
+    pub(crate) fn showcase_needs_active_animation(&self) -> bool {
+        self.market_showcase.needs_active_animation()
+            || self.training_showcase.needs_active_animation()
+    }
+
+    fn project_market_scene(&mut self, scene: &SceneState, now: SystemTime) -> SceneState {
+        let base = self
+            .maple_world
+            .project_scene(scene, pixtuoid_scene::maple_world::MapleMapId::FreeMarket);
+        self.market_showcase
+            .project_into_market(&base, &mut self.character_appearances, now)
+    }
+
+    fn project_training_scene(&mut self, scene: &SceneState, now: SystemTime) -> SceneState {
+        let base = self.maple_world.project_scene(
+            scene,
+            pixtuoid_scene::maple_world::MapleMapId::ForestTraining,
+        );
+        self.training_showcase
+            .project_into(&base, &mut self.character_appearances, now)
     }
 
     /// The Maple map currently selected by the floating camera.
@@ -276,18 +530,14 @@ impl MapleRenderer {
         self.maple_world.reconcile(scene);
         if self.view_mode == MapleViewMode::Dual {
             if let Some((market_panel, training_panel)) = split_map_panels(buf_w, buf_h) {
-                let market_scene = self
-                    .maple_world
-                    .project_scene(scene, pixtuoid_scene::maple_world::MapleMapId::FreeMarket);
-                let training_scene = self.maple_world.project_scene(
-                    scene,
-                    pixtuoid_scene::maple_world::MapleMapId::ForestTraining,
-                );
+                let market_scene = self.project_market_scene(scene, now);
+                let training_scene = self.project_training_scene(scene, now);
                 let market_rendered = self
                     .session
                     .render_maple(
                         FrameInputs {
                             scene: &market_scene,
+                            character_appearances: Some(&self.character_appearances),
                             pack,
                             theme,
                             now,
@@ -308,6 +558,7 @@ impl MapleRenderer {
                     .render_maple(
                         FrameInputs {
                             scene: &training_scene,
+                            character_appearances: Some(&self.character_appearances),
                             pack,
                             theme,
                             now,
@@ -340,6 +591,8 @@ impl MapleRenderer {
                 self.training_viewport = training_rendered.then_some(training_panel);
                 self.market_avatars = market_rendered;
                 self.dual_rendered = market_rendered && training_rendered;
+                self.last_market_scene = market_rendered.then_some(market_scene.clone());
+                self.last_training_scene = training_rendered.then_some(training_scene.clone());
 
                 let market_audio =
                     self.session
@@ -356,9 +609,17 @@ impl MapleRenderer {
 
         self.dual_rendered = false;
         let map = self.maple_world.current_map();
-        let projected = self.maple_world.project_scene(scene, map);
+        let projected = match map {
+            pixtuoid_scene::maple_world::MapleMapId::FreeMarket => {
+                self.project_market_scene(scene, now)
+            }
+            pixtuoid_scene::maple_world::MapleMapId::ForestTraining => {
+                self.project_training_scene(scene, now)
+            }
+        };
         let inputs = FrameInputs {
             scene: &projected,
+            character_appearances: Some(&self.character_appearances),
             pack,
             theme,
             now,
@@ -389,6 +650,8 @@ impl MapleRenderer {
             .then_some(viewport)
             .flatten();
         self.market_avatars = self.market_viewport.is_some();
+        self.last_market_scene = self.market_viewport.map(|_| projected.clone());
+        self.last_training_scene = self.training_viewport.map(|_| projected.clone());
         let audio_frame = match map {
             pixtuoid_scene::maple_world::MapleMapId::FreeMarket => {
                 self.session
@@ -429,12 +692,16 @@ impl MapleRenderer {
     ) -> Vec<MapleOverlayBatch> {
         let mut batches = Vec::with_capacity(2);
         if let Some(viewport) = self.market_viewport {
-            let projected = self
-                .maple_world
-                .project_scene(scene, pixtuoid_scene::maple_world::MapleMapId::FreeMarket);
+            let projected = self.last_market_scene.clone().unwrap_or_else(|| {
+                self.maple_world
+                    .project_scene(scene, pixtuoid_scene::maple_world::MapleMapId::FreeMarket)
+            });
             let market_scene = &projected;
-            let placements =
-                pixtuoid_scene::market::build_market_placements(market_scene, viewport);
+            let placements = pixtuoid_scene::market::build_market_placements_with_appearances(
+                market_scene,
+                viewport,
+                &self.character_appearances,
+            );
             let market_frame = pixtuoid_scene::market::MarketFrameContext { viewport, now };
             let labels = if self.market_avatars {
                 pixtuoid_scene::market::build_market_avatar_overlay(
@@ -472,12 +739,17 @@ impl MapleRenderer {
             });
         }
         if let Some(viewport) = self.training_viewport {
-            let projected = self.maple_world.project_scene(
-                scene,
-                pixtuoid_scene::maple_world::MapleMapId::ForestTraining,
+            let projected = self.last_training_scene.clone().unwrap_or_else(|| {
+                self.maple_world.project_scene(
+                    scene,
+                    pixtuoid_scene::maple_world::MapleMapId::ForestTraining,
+                )
+            });
+            let placements = pixtuoid_scene::training::build_training_placements_with_appearances(
+                &projected,
+                viewport,
+                &self.character_appearances,
             );
-            let placements =
-                pixtuoid_scene::training::build_training_placements(&projected, viewport);
             let labels = pixtuoid_scene::training::build_training_overlay(
                 &projected,
                 &placements,
@@ -503,11 +775,16 @@ impl MapleRenderer {
         let Some(viewport) = self.market_viewport else {
             return Vec::new();
         };
-        let projected = self
-            .maple_world
-            .project_scene(scene, pixtuoid_scene::maple_world::MapleMapId::FreeMarket);
+        let projected = self.last_market_scene.clone().unwrap_or_else(|| {
+            self.maple_world
+                .project_scene(scene, pixtuoid_scene::maple_world::MapleMapId::FreeMarket)
+        });
         let market_scene = &projected;
-        let placements = pixtuoid_scene::market::build_market_placements(market_scene, viewport);
+        let placements = pixtuoid_scene::market::build_market_placements_with_appearances(
+            market_scene,
+            viewport,
+            &self.character_appearances,
+        );
         let market_frame = pixtuoid_scene::market::MarketFrameContext { viewport, now };
         if self.market_avatars {
             pixtuoid_scene::market::build_market_avatar_player_ids(
@@ -614,14 +891,11 @@ impl Default for MapleRenderer {
     }
 }
 
-/// Integer upscale factor: render the scene at `win_h / SCALE` so the buffer stays around
-/// `OFFICE_TARGET_H` px tall, keeping pixel-art sprites chunky + legible (a native 1:1 blit
-/// renders 8×12 sprites at 8×12 px — unreadably tiny). Min 1 (never downscale-and-blur).
-/// Shared by `window::redraw` and the `floating_snapshot` example so their downscale —
-/// and thus the label `anchor_px × scale` placement — can't drift.
-fn default_maple_scale(win_h: u32) -> u32 {
-    const OFFICE_TARGET_H: u32 = 180;
-    (win_h as f64 / OFFICE_TARGET_H as f64).round().max(1.0) as u32
+/// Native-resolution rendering is the default for direct EXE and launcher
+/// starts. An explicit `PIXTUOID_FLOATING_SCALE=2..8` remains available as a
+/// low-render-resolution mode for unusually constrained machines.
+const fn default_maple_scale(_win_h: u32) -> u32 {
+    1
 }
 
 const FLOATING_SCALE_ENV: &str = "PIXTUOID_FLOATING_SCALE";
@@ -651,7 +925,7 @@ fn window_buffer_geometry_with_scale_override(
 }
 
 /// The window→scene-buffer projection for a `win_w`×`win_h` PHYSICAL-px window: the
-/// integer `maple_scale` plus the downscaled buffer dims (`window / scale`,
+/// integer `maple_scale` plus the render-buffer dims (`window / scale`,
 /// clamped non-zero, NO footer row). The ONE place this geometry lives — shared
 /// by `window::redraw` (which needs `scale` for the upscale blit and the buffer
 /// dims for `sync_floor_caps` + the render) and the boot seed
@@ -668,18 +942,11 @@ pub(crate) fn window_buffer_geometry(win_w: u32, win_h: u32) -> (u32, u16, u16) 
 /// (immutable → invisible-but-alive until a resize). A floor whose layout rejects
 /// the size falls back to a conservative agent capacity.
 ///
-/// Known residual: this path intentionally keeps the historical boot seed.
-/// The only caller, `floating::run`, has just the
-/// `[floating]` config size, which is LOGICAL — so on a HiDPI display the seed is
-/// still computed for a window the redraw will not measure (default 360×240
-/// logical seeds floor 0 at 70; at 2× the real 720×480 buffer holds 30). It
-/// cannot be fixed here: winit 0.30 exposes `primary_monitor` only on
-/// `ActiveEventLoop`, which does not exist until `run_app` is already driving the
-/// window, and no conservative logical-side seed is sound either — `maple_scale`
-/// ROUNDS, so the buffer for one logical size is not monotone in the scale factor
-/// (360×240 logical yields buffers 360×240 / 225×150 / 315×210 / 240×160 at
-/// 1×/1.25×/1.75×/2×). The sound fix is to seed the pipeline from the real
-/// `window.inner_size()` in `resumed`, which means moving `spawn_pipeline` there.
+/// Known residual: this path intentionally keeps the historical boot seed. The
+/// caller has only the configured LOGICAL size, while the first redraw sees the
+/// real physical-pixel `window.inner_size()` on HiDPI displays. The redraw
+/// corrects capacity immediately; eliminating the brief seed mismatch requires
+/// moving `spawn_pipeline` into `resumed`, where `ActiveEventLoop` exists.
 pub(crate) fn boot_capacities_for_window(
     win_w: u32,
     win_h: u32,
@@ -805,11 +1072,34 @@ fn draw_badge_text(
     });
 }
 
+/// Rasterize dark text on the roster's opaque light controls.  Unlike a badge
+/// floating over a busy map, this surface already supplies contrast: adding a
+/// shifted shadow here doubles small CJK strokes and makes them look blurred.
+#[allow(clippy::too_many_arguments)]
+fn draw_panel_text(
+    sb: &mut [u32],
+    win_w: usize,
+    win_h: usize,
+    text: &str,
+    x: i32,
+    top_y: i32,
+    px: f32,
+    color: u32,
+) {
+    crate::aa_text::draw_label_text_at(text, x, top_y, px, |gx, gy, cov| {
+        blend_xrgb(sb, win_w, win_h, gx, gy, color, cov)
+    });
+}
+
 const MAP_SELECTOR_MARGIN_PX: i32 = 8;
 const MAP_SELECTOR_PAD_X: i32 = 8;
 const MAP_SELECTOR_PAD_Y: i32 = 4;
 const MAP_SELECTOR_GAP_PX: i32 = 4;
 const MAP_SELECTOR_FONT_SCALE: f32 = 0.9;
+const TOPMOST_SELECTOR_MIN_HEIGHT: usize = 120;
+const CHARACTER_SELECTOR_MIN_HEIGHT: usize = 156;
+const STARTUP_SELECTOR_MIN_HEIGHT: usize = 192;
+const ESCAPE_HINT_MIN_HEIGHT: usize = 228;
 const MAP_SELECTOR_BG: Rgb = Rgb {
     r: 248,
     g: 243,
@@ -835,6 +1125,26 @@ const SIZE_SELECTOR_ACCENT: Rgb = Rgb {
     g: 0x9f,
     b: 0x54,
 };
+const TOPMOST_SELECTOR_ACCENT: Rgb = Rgb {
+    r: 0xd6,
+    g: 0x96,
+    b: 0x38,
+};
+const CHARACTER_SELECTOR_ACCENT: Rgb = Rgb {
+    r: 0x9a,
+    g: 0x6f,
+    b: 0xb0,
+};
+const STARTUP_SELECTOR_ACCENT: Rgb = Rgb {
+    r: 0x4f,
+    g: 0x9f,
+    b: 0x9a,
+};
+const ESCAPE_HINT_ACCENT: Rgb = Rgb {
+    r: 0x85,
+    g: 0x7f,
+    b: 0x76,
+};
 
 fn selector_rect(text: &str, font_px: f32, win_w: usize, win_h: usize, row: i32) -> LabelCardRect {
     let selector_font = font_px * MAP_SELECTOR_FONT_SCALE;
@@ -858,6 +1168,45 @@ fn map_selector_rect(text: &str, font_px: f32, win_w: usize, win_h: usize) -> La
 
 fn size_selector_rect(text: &str, font_px: f32, win_w: usize, win_h: usize) -> LabelCardRect {
     selector_rect(text, font_px, win_w, win_h, 1)
+}
+
+fn topmost_selector_rect(text: &str, font_px: f32, win_w: usize, win_h: usize) -> LabelCardRect {
+    selector_rect(text, font_px, win_w, win_h, 2)
+}
+
+fn character_selector_rect(text: &str, font_px: f32, win_w: usize, win_h: usize) -> LabelCardRect {
+    selector_rect(text, font_px, win_w, win_h, 3)
+}
+
+fn startup_selector_rect(text: &str, font_px: f32, win_w: usize, win_h: usize) -> LabelCardRect {
+    selector_rect(text, font_px, win_w, win_h, 4)
+}
+
+#[cfg(test)]
+fn escape_hint_rect(text: &str, font_px: f32, win_w: usize, win_h: usize) -> LabelCardRect {
+    selector_rect(text, font_px, win_w, win_h, 5)
+}
+
+/// The third control row would collide with the Maple chat footer at the
+/// 160×96 extreme. Keep map/size visible there and leave `T` as the compact
+/// topmost control; at 120px and above the full stack fits without overlap.
+pub(crate) const fn topmost_selector_visible(win_h: usize) -> bool {
+    win_h >= TOPMOST_SELECTOR_MIN_HEIGHT
+}
+
+/// The fourth compact row is hidden at tiny heights; `C` remains available.
+pub(crate) const fn character_selector_visible(win_h: usize) -> bool {
+    win_h >= CHARACTER_SELECTOR_MIN_HEIGHT
+}
+
+/// The fifth row is the optional Windows sign-in startup toggle.
+pub(crate) const fn startup_selector_visible(win_h: usize) -> bool {
+    win_h >= STARTUP_SELECTOR_MIN_HEIGHT
+}
+
+/// Keep the non-clickable Escape reminder visible only when all six rows fit.
+pub(crate) const fn escape_hint_visible(win_h: usize) -> bool {
+    win_h >= ESCAPE_HINT_MIN_HEIGHT
 }
 
 fn selector_contains(rect: LabelCardRect, cursor: (f64, f64)) -> bool {
@@ -889,6 +1238,39 @@ pub(crate) fn size_selector_hit_test(
     selector_contains(size_selector_rect(text, font_px, win_w, win_h), cursor)
 }
 
+/// Whether a physical-window cursor press lands on the always-on-top toggle.
+pub(crate) fn topmost_selector_hit_test(
+    cursor: (f64, f64),
+    text: &str,
+    font_px: f32,
+    win_w: usize,
+    win_h: usize,
+) -> bool {
+    selector_contains(topmost_selector_rect(text, font_px, win_w, win_h), cursor)
+}
+
+/// Whether a physical-window cursor press lands on the character-list tab.
+pub(crate) fn character_selector_hit_test(
+    cursor: (f64, f64),
+    text: &str,
+    font_px: f32,
+    win_w: usize,
+    win_h: usize,
+) -> bool {
+    selector_contains(character_selector_rect(text, font_px, win_w, win_h), cursor)
+}
+
+/// Whether a physical-window cursor press lands on the per-user startup toggle.
+pub(crate) fn startup_selector_hit_test(
+    cursor: (f64, f64),
+    text: &str,
+    font_px: f32,
+    win_w: usize,
+    win_h: usize,
+) -> bool {
+    selector_contains(startup_selector_rect(text, font_px, win_w, win_h), cursor)
+}
+
 /// Paint a parchment-like, clickable map tab above the pixel scene.
 #[doc(hidden)]
 pub fn paint_map_selector_into_surface(
@@ -901,7 +1283,7 @@ pub fn paint_map_selector_into_surface(
     paint_selector_into_surface(sb, win_w, win_h, text, font_px, 0, MAP_SELECTOR_ACCENT);
 }
 
-/// Paint the adjacent compact/medium/large size control.
+/// Paint the adjacent mini/small/medium/large size control.
 #[doc(hidden)]
 pub fn paint_size_selector_into_surface(
     sb: &mut [u32],
@@ -911,6 +1293,759 @@ pub fn paint_size_selector_into_surface(
     font_px: f32,
 ) {
     paint_selector_into_surface(sb, win_w, win_h, text, font_px, 1, SIZE_SELECTOR_ACCENT);
+}
+
+/// Paint the persisted always-on-top toggle in the same compact control stack.
+#[doc(hidden)]
+pub fn paint_topmost_selector_into_surface(
+    sb: &mut [u32],
+    win_w: usize,
+    win_h: usize,
+    text: &str,
+    font_px: f32,
+) {
+    paint_selector_into_surface(sb, win_w, win_h, text, font_px, 2, TOPMOST_SELECTOR_ACCENT);
+}
+
+/// Paint the character roster/showcase control in the compact stack.
+#[doc(hidden)]
+pub fn paint_character_selector_into_surface(
+    sb: &mut [u32],
+    win_w: usize,
+    win_h: usize,
+    text: &str,
+    font_px: f32,
+) {
+    paint_selector_into_surface(
+        sb,
+        win_w,
+        win_h,
+        text,
+        font_px,
+        3,
+        CHARACTER_SELECTOR_ACCENT,
+    );
+}
+
+/// Paint the Windows sign-in startup toggle in the compact control stack.
+#[doc(hidden)]
+pub fn paint_startup_selector_into_surface(
+    sb: &mut [u32],
+    win_w: usize,
+    win_h: usize,
+    text: &str,
+    font_px: f32,
+) {
+    paint_selector_into_surface(sb, win_w, win_h, text, font_px, 4, STARTUP_SELECTOR_ACCENT);
+}
+
+/// Paint a quiet, non-clickable reminder for the frameless close gesture.
+#[doc(hidden)]
+pub fn paint_escape_hint_into_surface(
+    sb: &mut [u32],
+    win_w: usize,
+    win_h: usize,
+    text: &str,
+    font_px: f32,
+) {
+    paint_selector_into_surface(sb, win_w, win_h, text, font_px, 5, ESCAPE_HINT_ACCENT);
+}
+
+/// Presentation state shown on the right side of a character row.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum CharacterShowcaseState {
+    Absent,
+    Present,
+    Leaving,
+}
+
+/// One fixed runtime character slot in the roster panel.
+#[derive(Debug, Clone)]
+pub(crate) struct CharacterPanelRow {
+    pub name: String,
+    /// Slot in the currently loaded active pack. The preview must use the same
+    /// appearance index the world renderer assigns to this row.
+    pub appearance_index: usize,
+    pub agent_enabled: bool,
+    /// Only install-local imported appearances may be removed. The eight
+    /// required built-ins stay visible as fixed catalog rows.
+    pub deletable: bool,
+    /// The first delete click arms this row; a second click performs the
+    /// recoverable removal.
+    pub delete_confirmation: bool,
+    pub market_showcase: CharacterShowcaseState,
+    pub training_showcase: CharacterShowcaseState,
+}
+
+/// Complete panel copy/state, built from the renderer after each scene frame.
+#[derive(Debug, Clone)]
+pub(crate) struct CharacterPanelModel {
+    pub real_market_agents: usize,
+    pub real_training_agents: usize,
+    pub market_showcase_count: usize,
+    pub training_showcase_count: usize,
+    pub rows: Vec<CharacterPanelRow>,
+    /// Zero-based visible catalog page.
+    pub page: usize,
+    pub notice: Option<String>,
+}
+
+pub(crate) const CHARACTER_PANEL_PAGE_SIZE: usize = 8;
+
+fn character_panel_page_count(row_count: usize) -> usize {
+    row_count.div_ceil(CHARACTER_PANEL_PAGE_SIZE).max(1)
+}
+
+fn normalized_character_panel_page(page: usize, row_count: usize) -> usize {
+    page.min(character_panel_page_count(row_count).saturating_sub(1))
+}
+
+/// Click action returned by [`character_panel_hit_test`].
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum CharacterPanelAction {
+    ClosePanel,
+    ToggleAgentSlot(usize),
+    RequestDeleteSlot(usize),
+    ToggleMarketShowcaseSlot(usize),
+    ToggleTrainingShowcaseSlot(usize),
+    /// Begin the install-local helper that reads a Maple Atelier appearance
+    /// from the Windows clipboard. This is intentionally separate from the
+    /// catalog row actions so it can never toggle a current character.
+    StartMapleAtelierClipboardImport,
+    PreviousPage,
+    NextPage,
+}
+
+#[derive(Debug, Clone, Copy)]
+struct CharacterPanelRowLayout {
+    agent_toggle: LabelCardRect,
+    delete: LabelCardRect,
+    market_showcase_toggle: LabelCardRect,
+    training_showcase_toggle: LabelCardRect,
+    preview: LabelCardRect,
+}
+
+#[derive(Debug, Clone)]
+struct CharacterPanelLayout {
+    panel: LabelCardRect,
+    rows: Vec<CharacterPanelRowLayout>,
+    title_y: i32,
+    subtitle_y: i32,
+    footer_y: i32,
+    close: LabelCardRect,
+    import_from_clipboard: LabelCardRect,
+    previous_page: LabelCardRect,
+    next_page: LabelCardRect,
+    font_px: f32,
+}
+
+fn character_panel_layout(
+    win_w: usize,
+    win_h: usize,
+    font_px: f32,
+) -> Option<CharacterPanelLayout> {
+    const EDGE: i32 = 10;
+    const PAD: i32 = 9;
+    const COLUMN_GAP: i32 = 8;
+    const ROW_GAP: i32 = 4;
+    if win_w < 560 || win_h < 176 {
+        return None;
+    }
+    // This panel is painted at the native window resolution.  Do not apply the
+    // old compact-control shrink to CJK text: the launcher's default 15 px
+    // label should remain roughly 16 px here, with enough room for Noto Sans TC.
+    let panel_font = (font_px * 1.05).clamp(13.0, 18.0);
+    let line = crate::aa_text::label_line_height(panel_font);
+    let row_h = (line + 9).max(36);
+    let header_h = line * 2 + 13;
+    let footer_h = line + 12;
+    let required_h = PAD * 2 + header_h + row_h * 4 + ROW_GAP * 3 + footer_h;
+    let panel_w = (win_w as i32 - EDGE * 2).min(780);
+    let panel_h = required_h.min(win_h as i32 - EDGE * 2);
+    if panel_w < 340 || panel_h < required_h {
+        return None;
+    }
+    let panel = LabelCardRect {
+        x: (win_w as i32 - panel_w) / 2,
+        y: (win_h as i32 - panel_h) / 2,
+        width: panel_w,
+        height: panel_h,
+    };
+    let content_x = panel.x + PAD;
+    let content_w = panel.width - PAD * 2;
+    let column_w = (content_w - COLUMN_GAP) / 2;
+    let rows_top = panel.y + PAD + header_h;
+    let mut rows = Vec::with_capacity(CHARACTER_PANEL_PAGE_SIZE);
+    for slot in 0..CHARACTER_PANEL_PAGE_SIZE {
+        let column = (slot / 4) as i32;
+        let row = (slot % 4) as i32;
+        let row_rect = LabelCardRect {
+            x: content_x + column * (column_w + COLUMN_GAP),
+            y: rows_top + row * (row_h + ROW_GAP),
+            width: column_w,
+            height: row_h,
+        };
+        let action_gap = 4;
+        let showcase_w = (row_rect.width * 15 / 100).clamp(42, 58);
+        let delete_w = (row_rect.width * 10 / 100).clamp(30, 38);
+        let agent_toggle = LabelCardRect {
+            x: row_rect.x,
+            y: row_rect.y,
+            width: row_rect.width - showcase_w * 2 - delete_w - action_gap * 3,
+            height: row_rect.height,
+        };
+        let delete = LabelCardRect {
+            x: agent_toggle.right() + action_gap,
+            y: row_rect.y,
+            width: delete_w,
+            height: row_rect.height,
+        };
+        let market_showcase_toggle = LabelCardRect {
+            x: delete.right() + action_gap,
+            y: row_rect.y,
+            width: showcase_w,
+            height: row_rect.height,
+        };
+        rows.push(CharacterPanelRowLayout {
+            preview: LabelCardRect {
+                x: agent_toggle.x + 22,
+                y: agent_toggle.y + (agent_toggle.height - 28) / 2,
+                width: 36,
+                height: 28,
+            },
+            agent_toggle,
+            delete,
+            market_showcase_toggle,
+            training_showcase_toggle: LabelCardRect {
+                x: market_showcase_toggle.right() + action_gap,
+                y: row_rect.y,
+                width: showcase_w,
+                height: row_rect.height,
+            },
+        });
+    }
+    let nav_width = 52;
+    let nav_gap = 5;
+    let nav_height = line + 6;
+    let nav_y = panel.bottom() - PAD - nav_height;
+    let next_page = LabelCardRect {
+        x: panel.right() - PAD - nav_width,
+        y: nav_y,
+        width: nav_width,
+        height: nav_height,
+    };
+    let previous_page = LabelCardRect {
+        x: next_page.x - nav_gap - nav_width,
+        y: nav_y,
+        width: nav_width,
+        height: nav_height,
+    };
+    let import_font = (panel_font * 0.8).max(12.0);
+    let import_text = "＋ 新增造型（剪貼簿）";
+    let import_width =
+        (crate::aa_text::label_text_width(import_text, import_font) + 12).clamp(150, 190);
+    let import_height = crate::aa_text::label_line_height(import_font) + 6;
+    let close = LabelCardRect {
+        x: panel.right() - PAD - import_height,
+        y: panel.y + PAD - 2,
+        width: import_height,
+        height: import_height,
+    };
+    Some(CharacterPanelLayout {
+        panel,
+        rows,
+        title_y: panel.y + PAD,
+        subtitle_y: panel.y + PAD + line,
+        footer_y: panel.bottom() - PAD - line,
+        close,
+        import_from_clipboard: LabelCardRect {
+            x: close.x - 5 - import_width,
+            y: panel.y + PAD - 2,
+            width: import_width,
+            height: import_height,
+        },
+        previous_page,
+        next_page,
+        font_px: panel_font,
+    })
+}
+
+/// Resolve a roster-panel click into the independent left/right row action.
+pub(crate) fn character_panel_hit_test(
+    cursor: (f64, f64),
+    font_px: f32,
+    win_w: usize,
+    win_h: usize,
+    page: usize,
+    row_count: usize,
+) -> Option<CharacterPanelAction> {
+    let layout = character_panel_layout(win_w, win_h, font_px)?;
+    if selector_contains(layout.close, cursor) {
+        return Some(CharacterPanelAction::ClosePanel);
+    }
+    if selector_contains(layout.import_from_clipboard, cursor) {
+        return Some(CharacterPanelAction::StartMapleAtelierClipboardImport);
+    }
+    if selector_contains(layout.previous_page, cursor) {
+        return Some(CharacterPanelAction::PreviousPage);
+    }
+    if selector_contains(layout.next_page, cursor) {
+        return Some(CharacterPanelAction::NextPage);
+    }
+    let page = normalized_character_panel_page(page, row_count);
+    let start = page * CHARACTER_PANEL_PAGE_SIZE;
+    for (local_slot, row) in layout.rows.iter().enumerate() {
+        let slot = start + local_slot;
+        if slot >= row_count {
+            break;
+        }
+        if selector_contains(row.agent_toggle, cursor) {
+            return Some(CharacterPanelAction::ToggleAgentSlot(slot));
+        }
+        if slot >= pixtuoid_scene::characters::CHARACTER_SLOT_COUNT
+            && selector_contains(row.delete, cursor)
+        {
+            return Some(CharacterPanelAction::RequestDeleteSlot(slot));
+        }
+        if selector_contains(row.market_showcase_toggle, cursor) {
+            return Some(CharacterPanelAction::ToggleMarketShowcaseSlot(slot));
+        }
+        if selector_contains(row.training_showcase_toggle, cursor) {
+            return Some(CharacterPanelAction::ToggleTrainingShowcaseSlot(slot));
+        }
+    }
+    None
+}
+
+fn paint_panel_button(
+    canvas: &mut LabelCardCanvas<'_>,
+    rect: LabelCardRect,
+    fill: Rgb,
+    text: &str,
+    font_px: f32,
+) {
+    paint_panel_button_shell(canvas, rect, fill);
+    let text_y = rect.y + (rect.height - crate::aa_text::label_line_height(font_px)) / 2;
+    draw_panel_text(
+        canvas.pixels,
+        canvas.width,
+        canvas.height,
+        text,
+        rect.x + 5,
+        text_y,
+        font_px,
+        pack_xrgb(MAP_SELECTOR_INK),
+    );
+}
+
+fn paint_panel_button_shell(canvas: &mut LabelCardCanvas<'_>, rect: LabelCardRect, fill: Rgb) {
+    canvas.fill_rect(rect, pack_xrgb(fill), 0.9);
+    for edge in [
+        LabelCardRect { height: 1, ..rect },
+        LabelCardRect {
+            y: rect.bottom() - 1,
+            height: 1,
+            ..rect
+        },
+        LabelCardRect { width: 1, ..rect },
+        LabelCardRect {
+            x: rect.right() - 1,
+            width: 1,
+            ..rect
+        },
+    ] {
+        canvas.fill_rect(edge, pack_xrgb(MAP_SELECTOR_BORDER), 0.85);
+    }
+}
+
+fn paint_character_preview(
+    canvas: &mut LabelCardCanvas<'_>,
+    rect: LabelCardRect,
+    pack: &Pack,
+    appearance_index: usize,
+) {
+    let Some(frame) = pixtuoid_scene::market::market_avatar_animation(pack)
+        .and_then(|animation| animation.frames.get(appearance_index))
+    else {
+        return;
+    };
+    for dy in 0..rect.height.max(0) {
+        let source_y = (dy as u32 * u32::from(frame.height()) / rect.height.max(1) as u32) as u16;
+        for dx in 0..rect.width.max(0) {
+            let source_x = (dx as u32 * u32::from(frame.width()) / rect.width.max(1) as u32) as u16;
+            let Some(rgb) = frame.get(source_x, source_y).copied().flatten() else {
+                continue;
+            };
+            let x = rect.x + dx;
+            let y = rect.y + dy;
+            if x >= 0 && y >= 0 && x < canvas.width as i32 && y < canvas.height as i32 {
+                canvas.pixels[y as usize * canvas.width + x as usize] = pack_xrgb(rgb);
+            }
+        }
+    }
+}
+
+fn paint_character_panel_fallback(canvas: &mut LabelCardCanvas<'_>, font_px: f32) {
+    let message = "角色清單需要較大視窗｜按 Z 放大";
+    let px = (font_px * 1.05).clamp(13.0, 18.0);
+    let width = (crate::aa_text::label_text_width(message, px) + 20)
+        .min(canvas.width.saturating_sub(12) as i32)
+        .max(1);
+    let height = crate::aa_text::label_line_height(px) + 16;
+    let rect = LabelCardRect {
+        x: (canvas.width as i32 - width) / 2,
+        y: (canvas.height as i32 - height) / 2,
+        width,
+        height,
+    };
+    canvas.fill_rect(rect, pack_xrgb(MAP_SELECTOR_BG), 0.96);
+    draw_panel_text(
+        canvas.pixels,
+        canvas.width,
+        canvas.height,
+        message,
+        rect.x + 10,
+        rect.y + 8,
+        px,
+        pack_xrgb(MAP_SELECTOR_INK),
+    );
+}
+
+fn paint_character_panel_shell(canvas: &mut LabelCardCanvas<'_>, layout: &CharacterPanelLayout) {
+    let shadow = LabelCardRect {
+        x: layout.panel.x + 3,
+        y: layout.panel.y + 3,
+        ..layout.panel
+    };
+    canvas.fill_rect(
+        shadow,
+        pack_xrgb(Rgb {
+            r: 18,
+            g: 22,
+            b: 27,
+        }),
+        0.58,
+    );
+    canvas.fill_rect(layout.panel, pack_xrgb(MAP_SELECTOR_BG), 0.97);
+    canvas.paint_frame(
+        layout.panel,
+        pack_xrgb(MAP_SELECTOR_BG),
+        pack_xrgb(MAP_SELECTOR_BORDER),
+    );
+}
+
+fn paint_character_panel_header(
+    canvas: &mut LabelCardCanvas<'_>,
+    layout: &CharacterPanelLayout,
+    model: &CharacterPanelModel,
+) {
+    let title = format!(
+        "角色 {} 款｜市 A{}／展{}｜訓 A{}／展{}",
+        model.rows.len(),
+        model.real_market_agents,
+        model.market_showcase_count,
+        model.real_training_agents,
+        model.training_showcase_count
+    );
+    draw_panel_text(
+        canvas.pixels,
+        canvas.width,
+        canvas.height,
+        &title,
+        layout.panel.x + 10,
+        layout.title_y,
+        layout.font_px,
+        pack_xrgb(MAP_SELECTOR_INK),
+    );
+    paint_panel_button(
+        canvas,
+        layout.import_from_clipboard,
+        Rgb {
+            r: 243,
+            g: 215,
+            b: 161,
+        },
+        "＋ 新增造型（剪貼簿）",
+        (layout.font_px * 0.8).max(12.0),
+    );
+    paint_panel_button(
+        canvas,
+        layout.close,
+        Rgb {
+            r: 231,
+            g: 186,
+            b: 173,
+        },
+        "X",
+        (layout.font_px * 0.88).max(12.5),
+    );
+    let secondary_font = (layout.font_px * 0.9).max(12.5);
+    draw_panel_text(
+        canvas.pixels,
+        canvas.width,
+        canvas.height,
+        "綠勾：真 Agent 可用造型　右側：逛街／練功（非 Agent）",
+        layout.panel.x + 10,
+        layout.subtitle_y,
+        secondary_font,
+        pack_xrgb(Rgb {
+            r: 68,
+            g: 76,
+            b: 82,
+        }),
+    );
+}
+
+fn showcase_button_style(
+    state: CharacterShowcaseState,
+    absent_text: &'static str,
+) -> (&'static str, Rgb) {
+    match state {
+        CharacterShowcaseState::Absent => (
+            absent_text,
+            Rgb {
+                r: 198,
+                g: 218,
+                b: 237,
+            },
+        ),
+        CharacterShowcaseState::Present => (
+            "撤回",
+            Rgb {
+                r: 244,
+                g: 205,
+                b: 151,
+            },
+        ),
+        CharacterShowcaseState::Leaving => (
+            "退場中",
+            Rgb {
+                r: 214,
+                g: 205,
+                b: 225,
+            },
+        ),
+    }
+}
+
+fn paint_character_panel_rows(
+    canvas: &mut LabelCardCanvas<'_>,
+    layout: &CharacterPanelLayout,
+    model: &CharacterPanelModel,
+    pack: &Pack,
+) {
+    let page = normalized_character_panel_page(model.page, model.rows.len());
+    let start = page * CHARACTER_PANEL_PAGE_SIZE;
+    for (row_model, row_layout) in model
+        .rows
+        .iter()
+        .skip(start)
+        .take(CHARACTER_PANEL_PAGE_SIZE)
+        .zip(layout.rows.iter())
+    {
+        let checked = if row_model.agent_enabled { "✓" } else { " " };
+        let agent_fill = if row_model.agent_enabled {
+            Rgb {
+                r: 206,
+                g: 229,
+                b: 190,
+            }
+        } else {
+            Rgb {
+                r: 224,
+                g: 221,
+                b: 209,
+            }
+        };
+        paint_panel_button_shell(canvas, row_layout.agent_toggle, agent_fill);
+        let text_y = row_layout.agent_toggle.y
+            + (row_layout.agent_toggle.height - crate::aa_text::label_line_height(layout.font_px))
+                / 2;
+        draw_panel_text(
+            canvas.pixels,
+            canvas.width,
+            canvas.height,
+            checked,
+            row_layout.agent_toggle.x + 5,
+            text_y,
+            layout.font_px,
+            pack_xrgb(MAP_SELECTOR_INK),
+        );
+        paint_character_preview(canvas, row_layout.preview, pack, row_model.appearance_index);
+        let name_x = row_layout.preview.right() + 7;
+        let name = truncate_label_to_px(
+            &row_model.name,
+            (row_layout.agent_toggle.right() - name_x - 5).max(1),
+            layout.font_px,
+        );
+        draw_panel_text(
+            canvas.pixels,
+            canvas.width,
+            canvas.height,
+            &name,
+            name_x,
+            text_y,
+            layout.font_px,
+            pack_xrgb(MAP_SELECTOR_INK),
+        );
+        let (delete_text, delete_fill) = if row_model.delete_confirmation {
+            (
+                "確認",
+                Rgb {
+                    r: 224,
+                    g: 128,
+                    b: 116,
+                },
+            )
+        } else if row_model.deletable {
+            (
+                "刪除",
+                Rgb {
+                    r: 235,
+                    g: 185,
+                    b: 173,
+                },
+            )
+        } else {
+            (
+                "固定",
+                Rgb {
+                    r: 224,
+                    g: 221,
+                    b: 209,
+                },
+            )
+        };
+        paint_panel_button(
+            canvas,
+            row_layout.delete,
+            delete_fill,
+            delete_text,
+            (layout.font_px * 0.72).max(11.5),
+        );
+        let (market_text, market_fill) = showcase_button_style(row_model.market_showcase, "逛街");
+        paint_panel_button(
+            canvas,
+            row_layout.market_showcase_toggle,
+            market_fill,
+            market_text,
+            (layout.font_px * 0.82).max(12.0),
+        );
+        let (training_text, training_fill) =
+            showcase_button_style(row_model.training_showcase, "練功");
+        paint_panel_button(
+            canvas,
+            row_layout.training_showcase_toggle,
+            training_fill,
+            training_text,
+            (layout.font_px * 0.9).max(12.5),
+        );
+    }
+}
+
+fn paint_character_panel_footer(
+    canvas: &mut LabelCardCanvas<'_>,
+    layout: &CharacterPanelLayout,
+    model: &CharacterPanelModel,
+) {
+    let footer = model
+        .notice
+        .as_deref()
+        .unwrap_or("[C]／右上 X 關閉｜自訂角色連按兩次「刪除」｜至少保留 1 個 Agent 外觀");
+    let secondary_font = (layout.font_px * 0.9).max(12.5);
+    draw_panel_text(
+        canvas.pixels,
+        canvas.width,
+        canvas.height,
+        footer,
+        layout.panel.x + 10,
+        layout.footer_y,
+        secondary_font,
+        pack_xrgb(Rgb {
+            r: 89,
+            g: 62,
+            b: 45,
+        }),
+    );
+
+    let page = normalized_character_panel_page(model.page, model.rows.len());
+    let page_count = character_panel_page_count(model.rows.len());
+    let page_text = format!("{}/{}", page + 1, page_count);
+    let page_width = crate::aa_text::label_text_width(&page_text, secondary_font);
+    draw_panel_text(
+        canvas.pixels,
+        canvas.width,
+        canvas.height,
+        &page_text,
+        layout.previous_page.x - page_width - 8,
+        layout.footer_y,
+        secondary_font,
+        pack_xrgb(MAP_SELECTOR_INK),
+    );
+    let previous_fill = if page > 0 {
+        Rgb {
+            r: 198,
+            g: 218,
+            b: 237,
+        }
+    } else {
+        Rgb {
+            r: 224,
+            g: 221,
+            b: 209,
+        }
+    };
+    let next_fill = if page + 1 < page_count {
+        Rgb {
+            r: 198,
+            g: 218,
+            b: 237,
+        }
+    } else {
+        Rgb {
+            r: 224,
+            g: 221,
+            b: 209,
+        }
+    };
+    paint_panel_button(
+        canvas,
+        layout.previous_page,
+        previous_fill,
+        "上一頁",
+        secondary_font,
+    );
+    paint_panel_button(
+        canvas,
+        layout.next_page,
+        next_fill,
+        "下一頁",
+        secondary_font,
+    );
+}
+
+/// Paint the two-column character roster and manual showcase panel.
+#[doc(hidden)]
+pub(crate) fn paint_character_panel_into_surface(
+    sb: &mut [u32],
+    win_w: usize,
+    win_h: usize,
+    model: &CharacterPanelModel,
+    pack: &Pack,
+    font_px: f32,
+) {
+    if sb.len() < win_w.saturating_mul(win_h) || win_w == 0 || win_h == 0 {
+        return;
+    }
+    let mut canvas = LabelCardCanvas::new(sb, win_w, win_h);
+    let Some(layout) = character_panel_layout(win_w, win_h, font_px) else {
+        paint_character_panel_fallback(&mut canvas, font_px);
+        return;
+    };
+    paint_character_panel_shell(&mut canvas, &layout);
+    paint_character_panel_header(&mut canvas, &layout, model);
+    paint_character_panel_rows(&mut canvas, &layout, model, pack);
+    paint_character_panel_footer(&mut canvas, &layout, model);
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -1393,9 +2528,17 @@ fn build_training_label_card_text_with_relation(
     tone: pixtuoid_scene::overlay::LabelTone,
     relation: Option<&pixtuoid_scene::overlay::AgentRelation>,
 ) -> LabelCardText {
-    let (fake_id, task) = text
-        .split_once('\u{00b7}')
-        .map_or(("Agent", text), |(fake_id, task)| (fake_id, task));
+    let Some((fake_id, task)) = text.split_once('\u{00b7}') else {
+        // Presentation-only training actors intentionally use one bare label
+        // ("練功中").  Keeping that representation single-line prevents the
+        // renderer from inventing Agent/work metadata for a non-Agent actor.
+        return build_label_card_text_with_layout(
+            text,
+            font_px,
+            TRAINING_CARD_TITLE_WIDTH_EM,
+            Some(TRAINING_CARD_MAX_TITLE_LINES),
+        );
+    };
     let normalized = format!("{fake_id}\u{00b7}{task}");
     let mut card = build_label_card_text_with_layout(
         &normalized,
@@ -1565,7 +2708,11 @@ fn training_label_card_metrics(card: &LabelCardText, font_px: f32) -> LabelCardM
     let source_font_px =
         (font_px * TRAINING_CARD_SOURCE_FONT_SCALE).max(TRAINING_CARD_SOURCE_FONT_MIN_PX);
     let source_line_height = (source_font_px * 1.18).ceil() as i32;
-    let source_band_height = source_line_height + 3;
+    let source_band_height = if card.source.is_empty() {
+        0
+    } else {
+        source_line_height + 3
+    };
     let title_width = card
         .title_lines
         .iter()
@@ -3136,6 +4283,36 @@ mod tests {
     }
 
     #[test]
+    fn nearest_xrgb_upscale_repeats_pixels_and_clamps_remainder_edges() {
+        let source = [1, 2, 3, 4];
+        let mut scaled = [0; 7 * 5];
+
+        assert!(upscale_xrgb_nearest(&source, 2, 2, &mut scaled, 7, 5, 3));
+        assert_eq!(
+            scaled,
+            [
+                1, 1, 1, 2, 2, 2, 2, // first source row, repeated vertically
+                1, 1, 1, 2, 2, 2, 2, //
+                1, 1, 1, 2, 2, 2, 2, //
+                3, 3, 3, 4, 4, 4, 4, // second source row
+                3, 3, 3, 4, 4, 4, 4, //
+            ]
+        );
+
+        let mut one_to_one = [0; 3 * 3];
+        assert!(upscale_xrgb_nearest(
+            &source,
+            2,
+            2,
+            &mut one_to_one,
+            3,
+            3,
+            1,
+        ));
+        assert_eq!(one_to_one, [1, 2, 2, 3, 4, 4, 3, 4, 4]);
+    }
+
+    #[test]
     fn embedded_public_runtime_opens_the_maple_dual_world_without_a_custom_pack() {
         let scene = SceneState::new([8; pixtuoid_core::state::MAX_FLOORS]);
         let pack =
@@ -3157,6 +4334,63 @@ mod tests {
             renderer.market_avatars,
             "the original built-in chibi renderer uses the paperdoll-sized label geometry"
         );
+    }
+
+    #[test]
+    fn dual_map_showcases_render_independently_without_changing_agent_stats() {
+        use pixtuoid_scene::maple_world::MapleMapId;
+
+        let scene = SceneState::uniform(8);
+        let pack =
+            pixtuoid_scene::embedded_pack::load_sprite_pack(None).expect("embedded pack loads");
+        let theme = pixtuoid_scene::theme::theme_by_name("maple").expect("maple theme exists");
+        let created = std::time::UNIX_EPOCH + std::time::Duration::from_secs(1_700_000_000);
+        let now = created + std::time::Duration::from_secs(20);
+        let mut renderer = MapleRenderer::new();
+        renderer.configure_characters(
+            crate::config::CharacterConfig {
+                agent_roster: pixtuoid_scene::characters::CharacterRoster::default(),
+                showcase_slots: vec![1],
+                training_showcase_slots: vec![2],
+            },
+            created,
+        );
+
+        renderer.render(&scene, &pack, theme, now, 640, 240, FloorMeta::ground());
+        let batches = renderer.maple_overlay_batches(&scene, now);
+        let market = batches
+            .iter()
+            .find(|batch| batch.map == MapleMapId::FreeMarket)
+            .expect("market batch");
+        let training = batches
+            .iter()
+            .find(|batch| batch.map == MapleMapId::ForestTraining)
+            .expect("training batch");
+
+        assert!(market.labels.iter().any(|label| label.text == "逛街中"));
+        assert!(
+            training.labels.iter().any(|label| label.text == "練功中"),
+            "training overlays must use the same augmented scene as the pixel pass"
+        );
+        assert_eq!(pixtuoid_scene::board::scene_stats(&scene).total, 0);
+    }
+
+    #[test]
+    fn training_only_showcase_keeps_the_active_animation_cadence() {
+        let created = std::time::UNIX_EPOCH + std::time::Duration::from_secs(1_700_000_000);
+        let mut renderer = MapleRenderer::new();
+        renderer.configure_characters(
+            crate::config::CharacterConfig {
+                agent_roster: pixtuoid_scene::characters::CharacterRoster::default(),
+                showcase_slots: Vec::new(),
+                training_showcase_slots: vec![3],
+            },
+            created,
+        );
+
+        assert!(renderer.selected_market_showcase_slots().is_empty());
+        assert_eq!(renderer.selected_training_showcase_slots(), vec![3]);
+        assert!(renderer.showcase_needs_active_animation());
     }
 
     #[test]
@@ -3182,14 +4416,18 @@ mod tests {
     }
 
     #[test]
-    fn maple_scale_keeps_the_scene_chunky_and_never_zero() {
-        // Downscale so the scene buffer stays near the 180px target height.
+    fn default_maple_scale_keeps_every_window_at_native_resolution() {
         assert_eq!(maple_scale(180), 1);
-        assert_eq!(maple_scale(360), 2);
-        assert_eq!(maple_scale(720), 4);
-        // A short window still renders at scale 1 — never 0 (redraw divides by it).
+        assert_eq!(maple_scale(360), 1);
+        assert_eq!(maple_scale(480), 1);
+        assert_eq!(maple_scale(720), 1);
         assert_eq!(maple_scale(90), 1);
         assert_eq!(maple_scale(0), 1);
+        assert_eq!(
+            window_buffer_geometry_with_scale_override(1_440, 480, None),
+            (1, 1_440, 480),
+            "direct EXE launches must not blur a large private map pack"
+        );
     }
 
     #[test]
@@ -3253,7 +4491,7 @@ mod tests {
         assert_eq!(
             window_buffer_geometry_with_scale_override(720, 480, Some(0)),
             window_buffer_geometry_with_scale_override(720, 480, None),
-            "zero is invalid and must retain the normal chunky-scene scale"
+            "zero is invalid and must retain the native-resolution default"
         );
     }
 
@@ -3363,13 +4601,18 @@ mod tests {
     }
 
     #[test]
-    fn map_and_size_selectors_have_separate_click_targets_in_one_compact_stack() {
+    fn map_size_and_topmost_selectors_have_separate_click_targets_in_one_compact_stack() {
+        assert!(!topmost_selector_visible(96));
+        assert!(topmost_selector_visible(120));
         let map_text = "地圖：雙圖 [Tab]";
         let size_text = "大小：小 [Z]";
+        let topmost_text = "置頂：開 [T]";
         let map = map_selector_rect(map_text, 12.0, 640, 360);
         let size = size_selector_rect(size_text, 12.0, 640, 360);
+        let topmost = topmost_selector_rect(topmost_text, 12.0, 640, 360);
 
         assert!(size.y >= map.bottom() + MAP_SELECTOR_GAP_PX);
+        assert!(topmost.y >= size.bottom() + MAP_SELECTOR_GAP_PX);
         assert!(map_selector_hit_test(
             (f64::from(map.x + 2), f64::from(map.y + 2)),
             map_text,
@@ -3391,6 +4634,330 @@ mod tests {
             640,
             360,
         ));
+        assert!(!topmost_selector_hit_test(
+            (f64::from(size.x + 2), f64::from(size.y + 2)),
+            topmost_text,
+            12.0,
+            640,
+            360,
+        ));
+        assert!(topmost_selector_hit_test(
+            (f64::from(topmost.x + 2), f64::from(topmost.y + 2)),
+            topmost_text,
+            12.0,
+            640,
+            360,
+        ));
+    }
+
+    #[test]
+    fn startup_toggle_and_escape_hint_extend_the_control_stack_without_overlap() {
+        assert!(!startup_selector_visible(191));
+        assert!(startup_selector_visible(192));
+        assert!(!escape_hint_visible(227));
+        assert!(escape_hint_visible(228));
+
+        let character = character_selector_rect("角色：8｜展示：1 [C]", 12.0, 640, 360);
+        let startup = startup_selector_rect("開機啟動：關 [A]", 12.0, 640, 360);
+        let escape = escape_hint_rect("ESC：關閉程式", 12.0, 640, 360);
+        assert!(startup.y >= character.bottom() + MAP_SELECTOR_GAP_PX);
+        assert!(escape.y >= startup.bottom() + MAP_SELECTOR_GAP_PX);
+        assert!(startup_selector_hit_test(
+            (f64::from(startup.x + 2), f64::from(startup.y + 2)),
+            "開機啟動：關 [A]",
+            12.0,
+            640,
+            360,
+        ));
+
+        let mut surface = vec![0u32; 640 * 360];
+        paint_escape_hint_into_surface(&mut surface, 640, 360, "ESC：關閉程式", 12.0);
+        assert!(surface.iter().any(|pixel| *pixel != 0));
+    }
+
+    #[test]
+    fn character_panel_uses_three_clear_actions_per_character_and_hides_when_too_small() {
+        assert!(character_panel_layout(160, 96, 12.0).is_none());
+        let layout = character_panel_layout(640, 360, 12.0).expect("room for roster panel");
+        assert_eq!(layout.rows.len(), 8);
+        let first = layout.rows[0];
+        let agent_action = character_panel_hit_test(
+            (
+                f64::from(first.agent_toggle.x + 2),
+                f64::from(first.agent_toggle.y + 2),
+            ),
+            12.0,
+            640,
+            360,
+            0,
+            26,
+        );
+        let market_action = character_panel_hit_test(
+            (
+                f64::from(first.market_showcase_toggle.x + 2),
+                f64::from(first.market_showcase_toggle.y + 2),
+            ),
+            12.0,
+            640,
+            360,
+            0,
+            26,
+        );
+        let training_action = character_panel_hit_test(
+            (
+                f64::from(first.training_showcase_toggle.x + 2),
+                f64::from(first.training_showcase_toggle.y + 2),
+            ),
+            12.0,
+            640,
+            360,
+            0,
+            26,
+        );
+        assert_eq!(agent_action, Some(CharacterPanelAction::ToggleAgentSlot(0)));
+        assert_eq!(
+            market_action,
+            Some(CharacterPanelAction::ToggleMarketShowcaseSlot(0))
+        );
+        assert_eq!(
+            training_action,
+            Some(CharacterPanelAction::ToggleTrainingShowcaseSlot(0))
+        );
+
+        let second_page = character_panel_hit_test(
+            (
+                f64::from(first.agent_toggle.x + 2),
+                f64::from(first.agent_toggle.y + 2),
+            ),
+            12.0,
+            640,
+            360,
+            1,
+            26,
+        );
+        assert_eq!(
+            second_page,
+            Some(CharacterPanelAction::ToggleAgentSlot(8)),
+            "the first row on page two must target appearance 8"
+        );
+
+        let next_page = character_panel_hit_test(
+            (
+                f64::from(layout.next_page.x + 2),
+                f64::from(layout.next_page.y + 2),
+            ),
+            12.0,
+            640,
+            360,
+            0,
+            26,
+        );
+        assert_eq!(next_page, Some(CharacterPanelAction::NextPage));
+    }
+
+    #[test]
+    fn character_panel_exposes_a_separate_clipboard_import_action_without_stealing_paging() {
+        let layout = character_panel_layout(640, 360, 12.0).expect("room for roster panel");
+        let import_action = character_panel_hit_test(
+            (
+                f64::from(layout.import_from_clipboard.x + 2),
+                f64::from(layout.import_from_clipboard.y + 2),
+            ),
+            12.0,
+            640,
+            360,
+            0,
+            26,
+        );
+        assert_eq!(
+            import_action,
+            Some(CharacterPanelAction::StartMapleAtelierClipboardImport)
+        );
+        assert_eq!(
+            character_panel_hit_test(
+                (
+                    f64::from(layout.next_page.x + 2),
+                    f64::from(layout.next_page.y + 2),
+                ),
+                12.0,
+                640,
+                360,
+                0,
+                26,
+            ),
+            Some(CharacterPanelAction::NextPage),
+            "the import control must not consume the existing paging target"
+        );
+    }
+
+    #[test]
+    fn character_panel_exposes_a_top_right_close_button() {
+        let layout = character_panel_layout(640, 360, 12.0).expect("room for roster panel");
+
+        let close_action = character_panel_hit_test(
+            (
+                f64::from(layout.close.x + layout.close.width / 2),
+                f64::from(layout.close.y + layout.close.height / 2),
+            ),
+            12.0,
+            640,
+            360,
+            0,
+            26,
+        );
+
+        assert_eq!(close_action, Some(CharacterPanelAction::ClosePanel));
+        assert!(
+            layout.import_from_clipboard.right() < layout.close.x,
+            "the import and close targets must remain independent"
+        );
+    }
+
+    #[test]
+    fn character_panel_only_exposes_delete_for_imported_characters() {
+        let layout = character_panel_layout(640, 360, 12.0).expect("room for roster panel");
+        let first = layout.rows[0];
+        let cursor = (
+            f64::from(first.delete.x + first.delete.width / 2),
+            f64::from(first.delete.y + first.delete.height / 2),
+        );
+
+        assert_eq!(
+            character_panel_hit_test(cursor, 12.0, 640, 360, 0, 26),
+            None,
+            "the eight built-in paperdolls are required assets"
+        );
+        assert_eq!(
+            character_panel_hit_test(cursor, 12.0, 640, 360, 1, 26),
+            Some(CharacterPanelAction::RequestDeleteSlot(8)),
+            "the first catalog import is appearance eight"
+        );
+    }
+
+    #[test]
+    fn character_panel_keeps_traditional_chinese_readable_at_large_window_size() {
+        // The zh-TW launcher defaults to a 1440x480 window with 125% labels,
+        // which reaches this function as a 15 px native-surface font.  The
+        // roster must not shrink that already-small CJK face or leave most of
+        // the wide dual-map window unused.
+        let layout = character_panel_layout(1440, 480, 15.0).expect("large roster panel");
+        assert!(
+            layout.font_px >= 15.5,
+            "the roster CJK face stays at a legible native size: {} px",
+            layout.font_px
+        );
+        assert!(
+            layout.panel.width >= 760,
+            "the roster uses the available width instead of compressing labels: {} px",
+            layout.panel.width
+        );
+        assert!(
+            layout.rows[0].agent_toggle.height >= 36,
+            "CJK rows retain enough vertical breathing room: {} px",
+            layout.rows[0].agent_toggle.height
+        );
+    }
+
+    #[test]
+    fn character_panel_text_uses_one_crisp_raster_pass() {
+        let background = 0x00f4_efdc;
+        let ink = pack_xrgb(MAP_SELECTOR_INK);
+        let mut expected = vec![background; 180 * 48];
+        crate::aa_text::draw_label_text_at(
+            "角色名單｜展示逛街",
+            7,
+            8,
+            16.0,
+            |x, y, cov| blend_xrgb(&mut expected, 180, 48, x, y, ink, cov),
+        );
+
+        let mut actual = vec![background; 180 * 48];
+        draw_panel_text(&mut actual, 180, 48, "角色名單｜展示逛街", 7, 8, 16.0, ink);
+
+        assert_eq!(
+            actual, expected,
+            "opaque roster controls must not add the shifted badge shadow that doubles CJK strokes"
+        );
+    }
+
+    #[test]
+    fn character_panel_paints_the_loaded_pack_appearance_next_to_each_name() {
+        const PACK_TOML: &str = r##"
+[pack]
+name = "roster-preview-test"
+version = "0.0.0"
+
+[palette]
+"B" = "#101112"
+"H" = "#202122"
+"S" = "#303132"
+"P" = "#404142"
+"A" = "#ff3366"
+
+[animations.market_avatar]
+frames = [
+  "avatar_0.sprite", "avatar_1.sprite", "avatar_2.sprite", "avatar_3.sprite",
+  "avatar_4.sprite", "avatar_5.sprite", "avatar_6.sprite", "avatar_7.sprite",
+]
+frame_ms = 1000
+"##;
+        let row = std::iter::repeat_n("A", 32).collect::<Vec<_>>().join(" ");
+        let avatar = format!(
+            "@frame 0\n{}\n",
+            std::iter::repeat_n(row, 24).collect::<Vec<_>>().join("\n")
+        );
+        let names = [
+            "avatar_0.sprite",
+            "avatar_1.sprite",
+            "avatar_2.sprite",
+            "avatar_3.sprite",
+            "avatar_4.sprite",
+            "avatar_5.sprite",
+            "avatar_6.sprite",
+            "avatar_7.sprite",
+        ];
+        let sources = names.map(|name| (name, avatar.as_str()));
+        let pack = pixtuoid_core::sprite::format::load_pack_from_strings(PACK_TOML, &sources)
+            .expect("preview pack");
+        let model = CharacterPanelModel {
+            real_market_agents: 0,
+            real_training_agents: 0,
+            market_showcase_count: 0,
+            training_showcase_count: 0,
+            rows: pixtuoid_scene::characters::CHARACTER_NAMES_ZH_TW
+                .iter()
+                .enumerate()
+                .map(|(appearance_index, name)| CharacterPanelRow {
+                    name: (*name).to_owned(),
+                    appearance_index,
+                    agent_enabled: true,
+                    deletable: false,
+                    delete_confirmation: false,
+                    market_showcase: CharacterShowcaseState::Absent,
+                    training_showcase: CharacterShowcaseState::Absent,
+                })
+                .collect(),
+            page: 0,
+            notice: None,
+        };
+        let mut surface = vec![0u32; 640 * 360];
+        paint_character_panel_into_surface(&mut surface, 640, 360, &model, &pack, 12.0);
+
+        let layout = character_panel_layout(640, 360, 12.0).expect("panel layout");
+        let preview = layout.rows[0].preview;
+        assert!(
+            (preview.y..preview.bottom()).any(|y| {
+                (preview.x..preview.right()).any(|x| {
+                    surface[y as usize * 640 + x as usize]
+                        == pack_xrgb(Rgb {
+                            r: 255,
+                            g: 51,
+                            b: 102,
+                        })
+                })
+            }),
+            "the preview rectangle contains the selected active-pack paperdoll"
+        );
     }
 
     #[test]
@@ -3727,6 +5294,26 @@ mod tests {
             (55..=105).contains(&body),
             "the scene must remain visible through the dark card body; channel={body}"
         );
+    }
+
+    #[test]
+    fn training_showcase_card_never_claims_to_be_an_agent() {
+        use pixtuoid_scene::overlay::LabelTone;
+
+        let card = build_training_label_card_text("練功中", 12.0, LabelTone::Active);
+
+        assert_eq!(card.title_lines, vec!["練功中"]);
+        assert!(
+            card.source.is_empty(),
+            "presentation-only training actors must not render Agent or 工作中 metadata"
+        );
+        let showcase_metrics = training_label_card_metrics(&card, 12.0);
+        let agent_metrics = training_label_card_metrics(
+            &build_training_label_card_text("動作貓·整理代理站位", 12.0, LabelTone::Active),
+            12.0,
+        );
+        assert_eq!(showcase_metrics.source_band_height, 0);
+        assert!(showcase_metrics.height < agent_metrics.height);
     }
 
     #[test]

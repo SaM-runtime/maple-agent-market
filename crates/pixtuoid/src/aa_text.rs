@@ -159,6 +159,27 @@ pub fn line_height(px: f32) -> i32 {
     (sf.ascent() - sf.descent() + sf.line_gap()).round() as i32
 }
 
+/// Line height for mixed Latin/Traditional-Chinese labels.  The label baseline
+/// already uses the taller ascent of the primary and fallback faces; layout
+/// must reserve the matching full height or CJK glyphs can crowd adjacent rows.
+pub fn label_line_height(px: f32) -> i32 {
+    let scale = PxScale::from(px);
+    let face_height = |font: &FontArc| {
+        let scaled = font.as_scaled(scale);
+        scaled.ascent() - scaled.descent() + scaled.line_gap()
+    };
+    let primary = {
+        let scaled = FONT.as_scaled(scale);
+        scaled.ascent() - scaled.descent() + scaled.line_gap()
+    };
+    LABEL_FALLBACK_FONT
+        .as_ref()
+        .map(face_height)
+        .unwrap_or(primary)
+        .max(primary)
+        .round() as i32
+}
+
 /// Rasterize `s` in the AA face at pixel size `px`, top-left at `(x, top_y)`,
 /// calling `put(px_x, px_y, coverage)` for every lit pixel (`coverage` ∈ `[0,1]` is
 /// the AA grayscale strength). Backend-agnostic — the caller composites into its
@@ -264,6 +285,10 @@ mod tests {
     fn font_parses_and_metrics_are_positive() {
         assert!(text_width("M", 16.0) > 0, "a glyph has positive advance");
         assert!(line_height(16.0) > 0, "positive line height");
+        assert!(
+            label_line_height(16.0) >= line_height(16.0),
+            "mixed-script layout never reserves less height than the primary face"
+        );
     }
 
     #[test]

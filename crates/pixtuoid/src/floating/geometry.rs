@@ -5,11 +5,14 @@
 //! (and counted by coverage) while the surrounding event-loop glue stays codecov-ignored — the
 //! same split as `offscreen.rs` (testable render seam) vs `window.rs` (platform glue).
 
-/// User-facing logical window-size steps.  Single-map presets keep the classic
-/// 3:2 game viewport; dual-map presets use the minimum 3:1 plate needed to show
-/// both authored maps without squeezing either below 240×160 scene pixels.
+use winit::window::{ResizeDirection, WindowLevel};
+
+/// User-facing logical window-size steps. Single-map presets keep the classic
+/// 3:2 game viewport; the mini dual-map plate keeps each authored map at the
+/// established 240×160 floor while larger presets preserve the existing sizes.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum FloatingSizePreset {
+    Mini,
     Small,
     Medium,
     Large,
@@ -18,14 +21,16 @@ pub(crate) enum FloatingSizePreset {
 impl FloatingSizePreset {
     pub(crate) const fn next(self) -> Self {
         match self {
+            Self::Mini => Self::Small,
             Self::Small => Self::Medium,
             Self::Medium => Self::Large,
-            Self::Large => Self::Small,
+            Self::Large => Self::Mini,
         }
     }
 
     pub(crate) const fn title_zh_tw(self) -> &'static str {
         match self {
+            Self::Mini => "迷你",
             Self::Small => "小",
             Self::Medium => "中",
             Self::Large => "大",
@@ -34,6 +39,8 @@ impl FloatingSizePreset {
 
     pub(crate) const fn logical_size(self, dual_map: bool) -> (u32, u32) {
         match (self, dual_map) {
+            (Self::Mini, false) => (240, 160),
+            (Self::Mini, true) => (480, 160),
             (Self::Small, false) => (360, 240),
             (Self::Medium, false) => (540, 360),
             (Self::Large, false) => (720, 480),
@@ -45,19 +52,12 @@ impl FloatingSizePreset {
 
     pub(crate) fn from_logical_size(width: u32, height: u32) -> Self {
         let dual_map = width >= height.saturating_mul(2);
-        let small_distance =
-            logical_size_distance((width, height), Self::Small.logical_size(dual_map));
-        let medium_distance =
-            logical_size_distance((width, height), Self::Medium.logical_size(dual_map));
-        let large_distance =
-            logical_size_distance((width, height), Self::Large.logical_size(dual_map));
-        if small_distance <= medium_distance && small_distance <= large_distance {
-            Self::Small
-        } else if medium_distance <= large_distance {
-            Self::Medium
-        } else {
-            Self::Large
-        }
+        [Self::Mini, Self::Small, Self::Medium, Self::Large]
+            .into_iter()
+            .min_by_key(|preset| {
+                logical_size_distance((width, height), preset.logical_size(dual_map))
+            })
+            .expect("the authored size preset list is non-empty")
     }
 }
 
@@ -65,6 +65,17 @@ fn logical_size_distance(actual: (u32, u32), preset: (u32, u32)) -> u64 {
     let width_delta = u64::from(actual.0.abs_diff(preset.0));
     let height_delta = u64::from(actual.1.abs_diff(preset.1));
     width_delta * width_delta + height_delta * height_delta
+}
+
+/// Map the persisted boolean to winit's explicit stacking contract. Disabled
+/// means a normal window: it remains visible on the desktop but can sit behind
+/// the user's work instead of being forced above every application.
+pub(crate) const fn window_level(always_on_top: bool) -> WindowLevel {
+    if always_on_top {
+        WindowLevel::AlwaysOnTop
+    } else {
+        WindowLevel::Normal
+    }
 }
 
 /// Uniformly fit a logical target inside a fraction of the current monitor.
@@ -122,13 +133,41 @@ pub(crate) fn window_visible_on_monitors(
     !any_monitor
 }
 
-/// Is the cursor `(cx, cy)` within `corner_px` of the bottom-right corner of a `(w, h)`
-/// window? A left-press there resizes the frameless window (SouthEast); elsewhere it drags.
-/// Pure so the move-vs-resize split is testable without a real cursor.
-pub(crate) fn near_resize_corner(cursor: (f64, f64), size: (u32, u32), corner_px: f64) -> bool {
+/// Resolve a pointer inside the frameless resize border to the native direction.
+/// Corners win over straight edges; a point outside the client rect or in its
+/// interior returns `None` so the caller can use the same press for window move.
+pub(crate) fn resize_direction_at(
+    cursor: (f64, f64),
+    size: (u32, u32),
+    border_px: f64,
+) -> Option<ResizeDirection> {
     let (cx, cy) = cursor;
-    let (w, h) = size;
-    cx >= w as f64 - corner_px && cy >= h as f64 - corner_px
+    let (width, height) = (f64::from(size.0), f64::from(size.1));
+    if !cx.is_finite() || !cy.is_finite() || cx < 0.0 || cy < 0.0 || cx >= width || cy >= height {
+        return None;
+    }
+
+    let border = if border_px.is_finite() {
+        border_px.max(1.0)
+    } else {
+        1.0
+    };
+    let left = cx < border.min(width / 2.0);
+    let right = cx >= width - border.min(width / 2.0);
+    let top = cy < border.min(height / 2.0);
+    let bottom = cy >= height - border.min(height / 2.0);
+
+    match (left, right, top, bottom) {
+        (true, _, true, _) => Some(ResizeDirection::NorthWest),
+        (_, true, true, _) => Some(ResizeDirection::NorthEast),
+        (true, _, _, true) => Some(ResizeDirection::SouthWest),
+        (_, true, _, true) => Some(ResizeDirection::SouthEast),
+        (_, _, true, _) => Some(ResizeDirection::North),
+        (_, _, _, true) => Some(ResizeDirection::South),
+        (true, _, _, _) => Some(ResizeDirection::West),
+        (_, true, _, _) => Some(ResizeDirection::East),
+        _ => None,
+    }
 }
 
 /// Resolve one programmatic frameless-window drag step in physical pixels.
@@ -196,12 +235,32 @@ mod tests {
     }
 
     #[test]
-    fn near_resize_corner_only_in_the_bottom_right() {
+    fn every_frameless_edge_and_corner_maps_to_native_resize_direction() {
+        use winit::window::ResizeDirection::*;
+
         let size = (800, 600);
-        assert!(near_resize_corner((795.0, 595.0), size, 18.0)); // inside the corner band
-        assert!(!near_resize_corner((400.0, 300.0), size, 18.0)); // center → drag
-        assert!(!near_resize_corner((795.0, 100.0), size, 18.0)); // right edge, high up → drag
-        assert!(!near_resize_corner((100.0, 595.0), size, 18.0)); // bottom edge, far left → drag
+        for (cursor, expected) in [
+            ((2.0, 2.0), NorthWest),
+            ((400.0, 2.0), North),
+            ((797.0, 2.0), NorthEast),
+            ((797.0, 300.0), East),
+            ((797.0, 597.0), SouthEast),
+            ((400.0, 597.0), South),
+            ((2.0, 597.0), SouthWest),
+            ((2.0, 300.0), West),
+        ] {
+            assert_eq!(resize_direction_at(cursor, size, 8.0), Some(expected));
+        }
+        assert_eq!(resize_direction_at((400.0, 300.0), size, 8.0), None);
+        assert_eq!(resize_direction_at((-1.0, 2.0), size, 8.0), None);
+    }
+
+    #[test]
+    fn topmost_choice_maps_to_normal_window_level_when_disabled() {
+        use winit::window::WindowLevel;
+
+        assert_eq!(window_level(true), WindowLevel::AlwaysOnTop);
+        assert_eq!(window_level(false), WindowLevel::Normal);
     }
 
     #[test]
@@ -219,21 +278,30 @@ mod tests {
 
     #[test]
     fn size_presets_cycle_and_use_single_or_dual_map_aspect_ratios() {
+        assert_eq!(FloatingSizePreset::Mini.logical_size(false), (240, 160));
+        assert_eq!(FloatingSizePreset::Mini.logical_size(true), (480, 160));
         assert_eq!(FloatingSizePreset::Small.logical_size(false), (360, 240));
         assert_eq!(
             FloatingSizePreset::Small.logical_size(true),
             (960, 320),
             "two maps need a wide 3:1 plate even at the smallest preset"
         );
+        assert_eq!(FloatingSizePreset::Mini.next(), FloatingSizePreset::Small);
         assert_eq!(FloatingSizePreset::Small.next(), FloatingSizePreset::Medium);
         assert_eq!(FloatingSizePreset::Medium.next(), FloatingSizePreset::Large);
-        assert_eq!(FloatingSizePreset::Large.next(), FloatingSizePreset::Small);
+        assert_eq!(FloatingSizePreset::Large.next(), FloatingSizePreset::Mini);
     }
 
     #[test]
     fn preset_inference_round_trips_every_authored_single_and_dual_size() {
+        assert_eq!(
+            FloatingSizePreset::from_logical_size(160, 96),
+            FloatingSizePreset::Mini,
+            "a freely dragged ultra-compact window reports the nearest mini preset"
+        );
         for dual_map in [false, true] {
             for preset in [
+                FloatingSizePreset::Mini,
                 FloatingSizePreset::Small,
                 FloatingSizePreset::Medium,
                 FloatingSizePreset::Large,

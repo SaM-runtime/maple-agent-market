@@ -22,6 +22,8 @@ Fork 基準為 Pixtuoid `v0.16.0` commit [`ac06cc00c3cf18f3f67eab730a37f0c7e5787
 
 使用者可在自己電腦以 `--pack-dir` 載入有權使用的素材；載入行為不會把素材改成 MIT，也不代表本專案取得再散布權。
 
+Repository 可包含本專案自行撰寫的 downloader／converter、公開來源 ID、URL 模板與版本化配方，讓每位使用者在自己電腦明確同意後產生 install-local 素材。這些工具本身可以依 MIT 發布，但其網路回應、轉換結果、cache 與生成的 `.sprite` 不屬於 MIT repo，也不得提交到公開 release。
+
 ## 非官方聲明
 
 本專案未受 NEXON、遊戲橘子、OpenAI、Pixtuoid 維護者或其他第三方贊助、認可、核准或背書。MapleStory、NEXON 與相關名稱、角色及標誌屬各自權利人。

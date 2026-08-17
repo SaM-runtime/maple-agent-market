@@ -2492,6 +2492,7 @@ fn paint_frame_is_pure_and_byte_identical() {
         paint_frame(
             &mut PaintCtx {
                 scene: &scene,
+                character_appearances: None,
                 layout: &layout,
                 pack: &pack,
                 now,
@@ -3486,6 +3487,7 @@ fn paint_empty_office(buf_w: u16, buf_h: u16) -> (RgbBuffer, Layout, &'static cr
     paint_frame(
         &mut PaintCtx {
             scene: &scene,
+            character_appearances: None,
             layout: &layout,
             pack: &pack,
             now,
@@ -3540,6 +3542,14 @@ fn market_backdrop_nearest_neighbor_covers_the_entire_scene_buffer() {
     assert!(
         buf.as_slice().iter().all(|pixel| *pixel != sentinel),
         "no office/fallback pixel may survive beneath the market backdrop"
+    );
+
+    let mut exact_size = RgbBuffer::filled(2, 2, sentinel);
+    paint_market_backdrop(&mut exact_size, &backdrop, fallback);
+    assert_eq!(
+        exact_size.as_slice(),
+        &[red, green, fallback, cream],
+        "the 1:1 fast path must preserve opaque pixels and resolve transparency"
     );
 }
 
@@ -3676,7 +3686,7 @@ frame_ms = 1000
 
 [animations.training_skill_magic_claw]
 frames = ["skill-0.sprite", "skill-1.sprite", "skill-2.sprite", "skill-3.sprite"]
-frame_ms = 80
+frame_ms = 240
 "##;
     let pack = pixtuoid_core::sprite::format::load_pack_from_strings(
         PACK_TOML,
@@ -3698,7 +3708,7 @@ frame_ms = 80
         pose: crate::training::TrainingActorPose::Attack { frame_index: 0 },
         skill_effect: Some(crate::training::TrainingSkillEffect {
             kind: crate::training::TrainingSkillKind::MagicClaw,
-            frame_index: 2,
+            elapsed_ms: 480,
         }),
         question_bubble: false,
     };
@@ -3737,6 +3747,96 @@ frame_ms = 80
 }
 
 #[test]
+fn optional_skill_pack_plays_every_authored_frame_once_without_looping() {
+    const PACK_TOML: &str = r##"
+[pack]
+name = "complete-skill-test"
+version = "0.0.0"
+
+[palette]
+"A" = "#101112"
+"B" = "#202122"
+"C" = "#303132"
+"D" = "#404142"
+"E" = "#505152"
+"F" = "#606162"
+
+[animations.training_skill_dragon_pulse]
+frames = ["all.sprite"]
+frame_ms = 80
+"##;
+    const ALL_FRAMES: &str =
+        "@frame 0\nA\n@frame 1\nB\n@frame 2\nC\n@frame 3\nD\n@frame 4\nE\n@frame 5\nF\n";
+    let pack = pixtuoid_core::sprite::format::load_pack_from_strings(
+        PACK_TOML,
+        &[("all.sprite", ALL_FRAMES)],
+    )
+    .expect("six-frame skill pack");
+
+    let color_at = |elapsed_ms| {
+        training_skill_animation_frame(&pack, "training_skill_dragon_pulse", elapsed_ms)
+            .and_then(|frame| frame.get(0, 0).copied().flatten())
+    };
+    assert_eq!(
+        color_at(0),
+        Some(Rgb {
+            r: 0x10,
+            g: 0x11,
+            b: 0x12
+        })
+    );
+    assert_eq!(
+        color_at(79),
+        Some(Rgb {
+            r: 0x10,
+            g: 0x11,
+            b: 0x12
+        })
+    );
+    assert_eq!(
+        color_at(80),
+        Some(Rgb {
+            r: 0x20,
+            g: 0x21,
+            b: 0x22
+        })
+    );
+    assert_eq!(
+        color_at(400),
+        Some(Rgb {
+            r: 0x60,
+            g: 0x61,
+            b: 0x62
+        })
+    );
+    assert_eq!(
+        color_at(479),
+        Some(Rgb {
+            r: 0x60,
+            g: 0x61,
+            b: 0x62
+        })
+    );
+    assert_eq!(
+        color_at(480),
+        None,
+        "one-shot skills must not loop back to frame zero"
+    );
+}
+
+#[test]
+fn classic_area_skill_overlays_keep_their_larger_game_silhouettes() {
+    let magic = training_skill_geometry(crate::training::TrainingSkillKind::MagicClaw, 1);
+    let holy = training_skill_geometry(crate::training::TrainingSkillKind::HolyLight, 1);
+    let dragon = training_skill_geometry(crate::training::TrainingSkillKind::DragonPulse, 1);
+
+    assert_eq!(magic, (Size { w: 32, h: 32 }, 16, 27));
+    assert_eq!(holy, (Size { w: 80, h: 80 }, 40, 70));
+    assert_eq!(dragon, (Size { w: 72, h: 72 }, 36, 54));
+    assert!(holy.0.w > magic.0.w && dragon.0.h > magic.0.h);
+}
+
+#[test]
 fn public_pack_renders_every_training_skill_without_external_art() {
     const PACK_TOML: &str = r##"
 [pack]
@@ -3770,7 +3870,7 @@ frame_ms = 1000
             pose: crate::training::TrainingActorPose::Attack { frame_index: 0 },
             skill_effect: Some(crate::training::TrainingSkillEffect {
                 kind,
-                frame_index: 2,
+                elapsed_ms: kind.duration_ms() / 2,
             }),
             question_bubble: false,
         };
@@ -3837,6 +3937,7 @@ frame_ms = 1000
     paint_frame(
         &mut PaintCtx {
             scene: &scene,
+            character_appearances: None,
             layout: &layout,
             pack: &pack,
             now,
@@ -3947,6 +4048,7 @@ frame_ms = 1000
     paint_frame(
         &mut PaintCtx {
             scene: &scene,
+            character_appearances: None,
             layout: &layout,
             pack: &pack,
             now,
@@ -4077,6 +4179,7 @@ frame_ms = 1000
     paint_frame(
         &mut PaintCtx {
             scene: &scene,
+            character_appearances: None,
             layout: &layout,
             pack: &pack,
             now,
@@ -4219,6 +4322,7 @@ frame_ms = 1000
     paint_frame(
         &mut PaintCtx {
             scene: &scene,
+            character_appearances: None,
             layout: &layout,
             pack: &pack,
             now,
@@ -4250,6 +4354,7 @@ frame_ms = 1000
     paint_frame(
         &mut PaintCtx {
             scene: &baseline_scene,
+            character_appearances: None,
             layout: &layout,
             pack: &pack,
             now,
@@ -4395,6 +4500,7 @@ frame_ms = 1000
     paint_frame(
         &mut PaintCtx {
             scene: &scene,
+            character_appearances: None,
             layout: &layout,
             pack: &pack,
             now,
@@ -4565,6 +4671,7 @@ frame_ms = 1000
     paint_frame(
         &mut PaintCtx {
             scene: &scene,
+            character_appearances: None,
             layout: &layout,
             pack: &pack,
             now,
@@ -4702,6 +4809,7 @@ frame_ms = 1000
         paint_frame(
             &mut PaintCtx {
                 scene: &scene,
+                character_appearances: None,
                 layout: &layout,
                 pack: &pack,
                 now,
@@ -4808,6 +4916,7 @@ fn a_roaming_creature_is_never_sliced_by_the_canvas_edge() {
             let mut cache = FrameCache::new();
             let ctx = PaintCtx {
                 scene: &scene,
+                character_appearances: None,
                 layout: &layout,
                 pack: &pack,
                 now,

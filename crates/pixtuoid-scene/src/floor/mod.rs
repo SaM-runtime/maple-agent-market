@@ -364,6 +364,9 @@ pub fn frame_epilogue(
 pub struct FrameInputs<'a> {
     /// The scene to render (the full live scene, or a projected single-floor one).
     pub scene: &'a SceneState,
+    /// Optional floating-window appearance authority. Other painters retain
+    /// the historical desk-index mapping by passing `None`.
+    pub character_appearances: Option<&'a crate::characters::CharacterAppearances>,
     /// The character sprite pack.
     pub pack: &'a Pack,
     /// The active color theme.
@@ -437,6 +440,7 @@ fn render_floor_for_map(
 ) -> Option<FloorFrame> {
     let FrameInputs {
         scene,
+        character_appearances,
         pack,
         theme,
         now,
@@ -453,6 +457,7 @@ fn render_floor_for_map(
         store: &mut *fctx,
         buf,
         scene,
+        character_appearances,
         layout: &layout,
         pack,
         now,

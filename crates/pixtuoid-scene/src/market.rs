@@ -90,6 +90,12 @@ pub(crate) const MARKET_COMMAND_SUCCESS_MS: u64 = 1_200;
 pub(crate) const MARKET_TURN_COMPLETE_MS: u64 = 2_200;
 const MARKET_IDLE_STALL_PAUSE_MS: u64 = 4_500;
 const MARKET_IDLE_AWAY_PAUSE_MS: u64 = 2_000;
+const MARKET_IDLE_TOTAL_PAUSE_MS: u64 = MARKET_IDLE_STALL_PAUSE_MS + MARKET_IDLE_AWAY_PAUSE_MS;
+const MARKET_WAITING_ACTION_SEGMENT_MS: u64 = 4_200;
+const MARKET_IDLE_TRACK_SALT: u64 = 0x4d41_524b_4554_5452;
+const MARKET_IDLE_STALL_POSE_SALT: u64 = 0x4d41_524b_4554_5354;
+const MARKET_IDLE_AWAY_POSE_SALT: u64 = 0x4d41_524b_4554_4157;
+const MARKET_WAITING_POSE_SALT: u64 = 0x4d41_524b_4554_5741;
 /// Authored rows by which the fixed stall overlaps a merchant's foot line.
 pub const MARKET_STALL_FOOT_OVERLAP: u16 = 2;
 /// Authored row at which the clean lower nameplate interior begins.
@@ -136,6 +142,14 @@ pub fn market_avatar_animation(pack: &Pack) -> Option<&Sprite> {
         })
 }
 
+/// Number of paperdoll identities supplied by the active pack. Packs without
+/// a complete custom set retain the renderer's legacy eight-slot fallback.
+pub fn market_avatar_count(pack: &Pack) -> usize {
+    market_avatar_animation(pack)
+        .map(|animation| animation.frames.len())
+        .unwrap_or(crate::characters::CHARACTER_SLOT_COUNT)
+}
+
 /// Resolve a complete high-resolution four-pose walk cycle for every market slot.
 ///
 /// Packs without all 32 fixed-canvas frames safely retain positional movement
@@ -145,7 +159,7 @@ pub fn market_avatar_walk_animation(pack: &Pack) -> Option<&Sprite> {
         .filter(|animation| {
             complete_fixed_canvas(
                 animation,
-                MARKET_MAX_AGENTS * MARKET_WALK_FRAMES,
+                market_avatar_count(pack) * MARKET_WALK_FRAMES,
                 MARKET_AVATAR_HIRES_WIDTH,
                 MARKET_AVATAR_HIRES_HEIGHT,
             )
@@ -158,7 +172,7 @@ pub fn market_avatar_stand_animation(pack: &Pack) -> Option<&Sprite> {
         .filter(|animation| {
             complete_fixed_canvas(
                 animation,
-                MARKET_MAX_AGENTS * MARKET_STAND_FRAMES,
+                market_avatar_count(pack) * MARKET_STAND_FRAMES,
                 MARKET_AVATAR_HIRES_WIDTH,
                 MARKET_AVATAR_HIRES_HEIGHT,
             )
@@ -171,7 +185,7 @@ pub fn market_avatar_climb_animation(pack: &Pack) -> Option<&Sprite> {
         .filter(|animation| {
             complete_fixed_canvas(
                 animation,
-                MARKET_MAX_AGENTS * MARKET_CLIMB_FRAMES,
+                market_avatar_count(pack) * MARKET_CLIMB_FRAMES,
                 MARKET_AVATAR_HIRES_WIDTH,
                 MARKET_AVATAR_HIRES_HEIGHT,
             )
@@ -184,7 +198,7 @@ pub fn market_avatar_stand2_animation(pack: &Pack) -> Option<&Sprite> {
         .filter(|animation| {
             complete_fixed_canvas(
                 animation,
-                MARKET_MAX_AGENTS * MARKET_STAND2_FRAMES,
+                market_avatar_count(pack) * MARKET_STAND2_FRAMES,
                 MARKET_AVATAR_HIRES_WIDTH,
                 MARKET_AVATAR_HIRES_HEIGHT,
             )
@@ -197,7 +211,7 @@ pub fn market_avatar_sit_animation(pack: &Pack) -> Option<&Sprite> {
         .filter(|animation| {
             complete_fixed_canvas(
                 animation,
-                MARKET_MAX_AGENTS * MARKET_SIT_FRAMES,
+                market_avatar_count(pack) * MARKET_SIT_FRAMES,
                 MARKET_AVATAR_HIRES_WIDTH,
                 MARKET_AVATAR_HIRES_HEIGHT,
             )
@@ -210,7 +224,7 @@ pub fn market_avatar_alert_animation(pack: &Pack) -> Option<&Sprite> {
         .filter(|animation| {
             complete_fixed_canvas(
                 animation,
-                MARKET_MAX_AGENTS * MARKET_ALERT_FRAMES,
+                market_avatar_count(pack) * MARKET_ALERT_FRAMES,
                 MARKET_AVATAR_HIRES_WIDTH,
                 MARKET_AVATAR_HIRES_HEIGHT,
             )
@@ -227,7 +241,7 @@ pub fn market_avatar_attack_animation(pack: &Pack) -> Option<&Sprite> {
         .filter(|animation| {
             complete_fixed_canvas(
                 animation,
-                MARKET_MAX_AGENTS * MARKET_ATTACK_FRAMES,
+                market_avatar_count(pack) * MARKET_ATTACK_FRAMES,
                 MARKET_AVATAR_ATTACK_HIRES_WIDTH,
                 MARKET_AVATAR_ATTACK_HIRES_HEIGHT,
             )
@@ -437,6 +451,10 @@ struct MarketIdleTrack {
     entry_total: u64,
     turnaround_progress: u64,
     travel_ms: u64,
+    cycle_ms: u64,
+    cycle_index: u64,
+    stall_pause_ms: u64,
+    away_pause_ms: u64,
     cycle_elapsed: u64,
     state_elapsed: u64,
 }
@@ -649,30 +667,69 @@ fn resolve_settled_motion(
             pose: stand_pose(now, geometry.phase_index),
             stall_open: true,
         },
-        ActivityState::Waiting { .. } => MarketMotionFrame {
-            foot_px: geometry.target_foot,
-            pose: MarketActorPose::Sit,
-            stall_open: false,
-        },
-        ActivityState::Idle => resolve_idle_motion(geometry, route, state_elapsed, now),
+        ActivityState::Waiting { .. } => waiting_motion(agent, geometry, state_elapsed, now),
+        ActivityState::Idle => {
+            resolve_idle_motion(agent.agent_id, geometry, route, state_elapsed, now)
+        }
+    }
+}
+
+fn waiting_motion(
+    agent: &AgentSlot,
+    geometry: MarketActorGeometry,
+    state_elapsed: u64,
+    now: SystemTime,
+) -> MarketMotionFrame {
+    let segment = state_elapsed / MARKET_WAITING_ACTION_SEGMENT_MS;
+    let elapsed = state_elapsed % MARKET_WAITING_ACTION_SEGMENT_MS;
+    let pose = if segment == 0 {
+        MarketActorPose::Sit
+    } else {
+        stationary_market_pose(
+            agent.agent_id,
+            segment,
+            MARKET_WAITING_POSE_SALT,
+            elapsed,
+            now,
+            geometry.phase_index,
+        )
+    };
+    MarketMotionFrame {
+        foot_px: geometry.target_foot,
+        pose,
+        stall_open: false,
     }
 }
 
 fn resolve_idle_motion(
+    agent_id: AgentId,
     geometry: MarketActorGeometry,
     route: &[MarketRouteSegment],
     state_elapsed: u64,
     now: SystemTime,
 ) -> MarketMotionFrame {
-    let track = market_idle_track(route, state_elapsed);
+    let track = market_idle_track(agent_id, route, state_elapsed);
     match market_idle_phase(track) {
-        MarketIdlePhase::AtStall(elapsed) => idle_stand_motion(geometry.target_foot, elapsed),
+        MarketIdlePhase::AtStall(elapsed) => idle_pause_motion(
+            geometry.target_foot,
+            agent_id,
+            track.cycle_index,
+            MARKET_IDLE_STALL_POSE_SALT,
+            elapsed,
+            now,
+            geometry.phase_index,
+        ),
         MarketIdlePhase::WalkingOut(elapsed) => {
             idle_route_motion(geometry, route, track, MarketIdleLeg::Out, elapsed, now)
         }
-        MarketIdlePhase::Away(elapsed) => idle_stand_motion(
+        MarketIdlePhase::Away(elapsed) => idle_pause_motion(
             market_route_foot(route, track.turnaround_progress, geometry, now),
+            agent_id,
+            track.cycle_index,
+            MARKET_IDLE_AWAY_POSE_SALT,
             elapsed,
+            now,
+            geometry.phase_index,
         ),
         MarketIdlePhase::WalkingBack(elapsed) => {
             idle_route_motion(geometry, route, track, MarketIdleLeg::Back, elapsed, now)
@@ -680,18 +737,32 @@ fn resolve_idle_motion(
     }
 }
 
-fn market_idle_track(route: &[MarketRouteSegment], state_elapsed: u64) -> MarketIdleTrack {
+fn market_idle_track(
+    agent_id: AgentId,
+    route: &[MarketRouteSegment],
+    state_elapsed: u64,
+) -> MarketIdleTrack {
     let entry_total = route_duration(route);
     let turnaround_progress = market_idle_turnaround_progress(route);
     let travel_ms = entry_total.saturating_sub(turnaround_progress).max(1);
-    let cycle_ms = MARKET_IDLE_STALL_PAUSE_MS
-        .saturating_add(travel_ms)
-        .saturating_add(MARKET_IDLE_AWAY_PAUSE_MS)
-        .saturating_add(travel_ms);
+    let cycle_ms = MARKET_IDLE_TOTAL_PAUSE_MS.saturating_add(travel_ms.saturating_mul(2));
+    let cycle_index = state_elapsed / cycle_ms;
+    let track_choice =
+        crate::characters::stable_motion_choice(agent_id, cycle_index, MARKET_IDLE_TRACK_SALT);
+    let stall_pause_ms = match track_choice % 3 {
+        0 => 3_200,
+        1 => MARKET_IDLE_STALL_PAUSE_MS,
+        _ => 5_200,
+    };
+    let away_pause_ms = MARKET_IDLE_TOTAL_PAUSE_MS.saturating_sub(stall_pause_ms);
     MarketIdleTrack {
         entry_total,
         turnaround_progress,
         travel_ms,
+        cycle_ms,
+        cycle_index,
+        stall_pause_ms,
+        away_pause_ms,
         cycle_elapsed: state_elapsed % cycle_ms,
         state_elapsed,
     }
@@ -699,25 +770,57 @@ fn market_idle_track(route: &[MarketRouteSegment], state_elapsed: u64) -> Market
 
 fn market_idle_phase(track: MarketIdleTrack) -> MarketIdlePhase {
     let mut elapsed = track.cycle_elapsed;
-    if elapsed < MARKET_IDLE_STALL_PAUSE_MS {
+    if elapsed < track.stall_pause_ms {
         return MarketIdlePhase::AtStall(elapsed);
     }
-    elapsed -= MARKET_IDLE_STALL_PAUSE_MS;
+    elapsed -= track.stall_pause_ms;
     if elapsed < track.travel_ms {
         return MarketIdlePhase::WalkingOut(elapsed);
     }
     elapsed -= track.travel_ms;
-    if elapsed < MARKET_IDLE_AWAY_PAUSE_MS {
+    if elapsed < track.away_pause_ms {
         return MarketIdlePhase::Away(elapsed);
     }
-    MarketIdlePhase::WalkingBack(elapsed - MARKET_IDLE_AWAY_PAUSE_MS)
+    MarketIdlePhase::WalkingBack(elapsed - track.away_pause_ms)
 }
 
-fn idle_stand_motion(foot_px: Point, elapsed: u64) -> MarketMotionFrame {
+#[allow(clippy::too_many_arguments)]
+fn idle_pause_motion(
+    foot_px: Point,
+    agent_id: AgentId,
+    cycle_index: u64,
+    salt: u64,
+    elapsed: u64,
+    now: SystemTime,
+    phase_index: usize,
+) -> MarketMotionFrame {
+    // Preserve the familiar stand2 arrival beat before the first complete
+    // idle cycle. Later cycles select among the other source-authored actions.
+    let pose = if cycle_index == 0 && salt == MARKET_IDLE_STALL_POSE_SALT {
+        stand2_pose(elapsed)
+    } else {
+        stationary_market_pose(agent_id, cycle_index, salt, elapsed, now, phase_index)
+    };
     MarketMotionFrame {
         foot_px,
-        pose: stand2_pose(elapsed),
+        pose,
         stall_open: false,
+    }
+}
+
+fn stationary_market_pose(
+    agent_id: AgentId,
+    segment: u64,
+    salt: u64,
+    elapsed: u64,
+    now: SystemTime,
+    phase_index: usize,
+) -> MarketActorPose {
+    match crate::characters::stable_motion_choice(agent_id, segment, salt) % 4 {
+        0 => MarketActorPose::Sit,
+        1 => stand2_pose(elapsed),
+        2 => alert_pose(elapsed),
+        _ => stand_pose(now, phase_index),
     }
 }
 
@@ -1201,12 +1304,37 @@ pub fn market_slots(viewport: Bounds, agent_count: usize) -> Vec<MarketSlot> {
 
 /// Assign the scene's first eight agents to stable desk-derived market slots.
 ///
-/// Allocation follows `AgentSlot::desk_index`, the reducer's immutable lifetime
-/// order, with `AgentId` as a deterministic tie-breaker for synthetic scenes.
-/// This avoids character reshuffles caused by map-key order.
+/// Real monitored Agents are ordered before presentation-only showcase actors.
+/// Within each kind, allocation follows `AgentSlot::desk_index`, the reducer's
+/// immutable lifetime order, with `AgentId` as a deterministic tie-breaker.
 pub fn build_market_placements(scene: &SceneState, viewport: Bounds) -> Vec<MarketPlacement> {
+    build_market_placements_for(scene, viewport, None)
+}
+
+/// Assign market slots while resolving appearance through the floating
+/// window's character roster and presentation-only overrides.
+#[doc(hidden)]
+pub fn build_market_placements_with_appearances(
+    scene: &SceneState,
+    viewport: Bounds,
+    appearances: &crate::characters::CharacterAppearances,
+) -> Vec<MarketPlacement> {
+    build_market_placements_for(scene, viewport, Some(appearances))
+}
+
+fn build_market_placements_for(
+    scene: &SceneState,
+    viewport: Bounds,
+    appearances: Option<&crate::characters::CharacterAppearances>,
+) -> Vec<MarketPlacement> {
     let mut agents = scene.agents.values().collect::<Vec<_>>();
-    agents.sort_by_key(|agent| (agent.desk_index, agent.agent_id));
+    agents.sort_by_key(|agent| {
+        (
+            agent.source.as_ref() == "showcase",
+            agent.desk_index,
+            agent.agent_id,
+        )
+    });
     let slots = market_slots(viewport, MARKET_MAX_AGENTS);
     if slots.len() != MARKET_MAX_AGENTS {
         return Vec::new();
@@ -1227,7 +1355,10 @@ pub fn build_market_placements(scene: &SceneState, viewport: Bounds) -> Vec<Mark
             Some(MarketPlacement {
                 agent_id: agent.agent_id,
                 slot,
-                appearance_index: agent.desk_index.0 % MARKET_MAX_AGENTS,
+                appearance_index: appearances
+                    .map_or(agent.desk_index.0 % MARKET_MAX_AGENTS, |resolver| {
+                        resolver.appearance_for(agent.agent_id, agent.desk_index)
+                    }),
                 avatar_anchor_px,
             })
         })
@@ -1379,7 +1510,8 @@ fn market_label_element(
         MarketActorShape::Merchant => resolve_market_merchant(agent, placement, request.frame),
         MarketActorShape::Paperdoll => resolve_market_paperdoll(agent, placement, request.frame),
     }?;
-    if !actor.stall_open {
+    let is_showcase = agent.source.as_ref() == "showcase";
+    if !actor.stall_open && !is_showcase {
         return None;
     }
     let text = market_label_text(agent, label_counts, placement.appearance_index);
@@ -1389,7 +1521,9 @@ fn market_label_element(
             .into_owned(),
         tone: market_label_tone(agent),
         hovered: request.hovered == Some(agent.agent_id),
-        relation: crate::maple_world::agent_relation(request.scene, agent.agent_id),
+        relation: (!is_showcase)
+            .then(|| crate::maple_world::agent_relation(request.scene, agent.agent_id))
+            .flatten(),
     })
 }
 
@@ -1398,6 +1532,9 @@ fn market_label_text(
     label_counts: &HashMap<&str, usize>,
     appearance_index: usize,
 ) -> String {
+    if agent.source.as_ref() == "showcase" {
+        return agent.label.to_string();
+    }
     const LABEL_SEP: char = '\u{b7}';
 
     let fake_id = MARKET_FAKE_PLAYER_IDS[appearance_index % MARKET_FAKE_PLAYER_IDS.len()];
@@ -1461,11 +1598,13 @@ mod tests {
 
     use super::{
         build_market_avatar_overlay, build_market_overlay, build_market_placements,
-        market_command_success_elapsed, market_slots, market_turn_completion_elapsed,
-        push_market_walk, resolve_market_paperdoll, MarketActorPose, MarketFacing,
-        MarketFrameContext, MarketLayer, MARKET_AVATAR_HEIGHT, MARKET_AVATAR_WIDTH,
-        MARKET_COMMAND_SUCCESS_MS, MARKET_MAX_AGENTS, MARKET_MAX_EXIT_MS, MARKET_TURN_COMPLETE_MS,
+        build_market_placements_with_appearances, market_command_success_elapsed, market_slots,
+        market_turn_completion_elapsed, push_market_walk, resolve_market_paperdoll,
+        MarketActorPose, MarketFacing, MarketFrameContext, MarketLayer, MARKET_AVATAR_HEIGHT,
+        MARKET_AVATAR_WIDTH, MARKET_COMMAND_SUCCESS_MS, MARKET_MAX_AGENTS, MARKET_MAX_EXIT_MS,
+        MARKET_TURN_COMPLETE_MS,
     };
+    use crate::characters::{CharacterAppearances, CharacterRoster};
     use crate::layout::{Bounds, Point};
     use crate::maple_world::MapleAgentRelation;
     use crate::overlay::{disambig_suffix, LabelTone};
@@ -1503,6 +1642,118 @@ mod tests {
             tokens_used: 0,
             last_usage: None,
         }
+    }
+
+    #[test]
+    fn selected_roster_and_explicit_override_drive_market_appearances() {
+        let real_id = AgentId::from_parts("codex", "real-roster");
+        let guest_id = AgentId::from_parts("showcase", "guest-6");
+        let mut scene = SceneState::uniform(8);
+        scene.agents.insert(
+            real_id,
+            agent(real_id, 0, "real", "real", ActivityState::Idle, false),
+        );
+        scene.agents.insert(
+            guest_id,
+            agent(guest_id, 1, "guest", "guest", ActivityState::Idle, false),
+        );
+        let mut appearances = CharacterAppearances::new(CharacterRoster::new([2, 7]));
+        appearances.set_override(guest_id, 6);
+        let placements = build_market_placements_with_appearances(
+            &scene,
+            Bounds {
+                x: 0,
+                y: 0,
+                width: 240,
+                height: 160,
+            },
+            &appearances,
+        );
+        assert_eq!(placements[0].appearance_index, 2);
+        assert_eq!(placements[1].appearance_index, 6);
+    }
+
+    #[test]
+    fn showcase_actor_never_displaces_a_real_agent_even_after_large_desk_indices() {
+        let mut scene = SceneState::uniform(8);
+        for index in 0..MARKET_MAX_AGENTS {
+            let id = AgentId::from_parts("codex", &format!("real-{index}"));
+            scene.agents.insert(
+                id,
+                agent(
+                    id,
+                    50_000 + index,
+                    "real",
+                    "real",
+                    ActivityState::Idle,
+                    false,
+                ),
+            );
+        }
+        let guest_id = AgentId::from_parts("showcase", "guest");
+        let mut guest = agent(
+            guest_id,
+            0,
+            "逛街中",
+            "showcase-guest",
+            ActivityState::Idle,
+            false,
+        );
+        guest.source = Arc::from("showcase");
+        scene.agents.insert(guest_id, guest);
+
+        let placements = build_market_placements(
+            &scene,
+            Bounds {
+                x: 0,
+                y: 0,
+                width: 240,
+                height: 160,
+            },
+        );
+        assert_eq!(placements.len(), MARKET_MAX_AGENTS);
+        assert!(placements
+            .iter()
+            .all(|placement| placement.agent_id != guest_id));
+    }
+
+    #[test]
+    fn strolling_showcase_actor_keeps_its_non_agent_card_without_a_fake_prefix() {
+        let id = AgentId::from_parts("showcase", "label");
+        let mut guest = agent(
+            id,
+            0,
+            "逛街中",
+            "showcase-label",
+            ActivityState::Idle,
+            false,
+        );
+        guest.source = Arc::from("showcase");
+        let mut scene = SceneState::uniform(8);
+        scene.agents.insert(id, guest);
+        let viewport = Bounds {
+            x: 0,
+            y: 0,
+            width: 240,
+            height: 160,
+        };
+        let placements = build_market_placements(&scene, viewport);
+        let labels = build_market_avatar_overlay(
+            &scene,
+            &placements,
+            None,
+            MarketFrameContext {
+                viewport,
+                now: SystemTime::UNIX_EPOCH,
+            },
+        );
+        assert_eq!(
+            labels.len(),
+            1,
+            "the walking guest needs a visible identity card"
+        );
+        assert_eq!(labels[0].text, "逛街中");
+        assert!(labels[0].relation.is_none());
     }
 
     #[test]
@@ -2643,6 +2894,74 @@ mod tests {
             second_exit.foot_px().x.abs_diff(first_exit.foot_px().x) <= 2
                 && second_exit.foot_px().y.abs_diff(first_exit.foot_px().y) <= 2,
             "the second exit frame must continue from the visible ladder foot"
+        );
+    }
+
+    #[test]
+    fn idle_market_actor_varies_complete_pause_actions_without_opening_a_shop() {
+        let viewport = Bounds {
+            x: 0,
+            y: 0,
+            width: 720,
+            height: 480,
+        };
+        let boot = SystemTime::UNIX_EPOCH + Duration::from_secs(1_700_000_000);
+        let id = AgentId::from_parts("showcase", "varied-market-actions");
+        let mut actor = agent(
+            id,
+            0,
+            "逛街中",
+            "varied-market-actions",
+            ActivityState::Idle,
+            false,
+        );
+        actor.created_at = boot;
+        actor.state_started_at = boot;
+        let mut scene = SceneState::uniform(8);
+        scene.agents.insert(id, actor.clone());
+        let placement = build_market_placements(&scene, viewport)[0];
+        let geometry = super::market_actor_geometry(
+            placement.avatar_anchor_px,
+            placement.slot.layer,
+            viewport,
+            MARKET_AVATAR_WIDTH,
+            MARKET_AVATAR_HEIGHT,
+            placement.appearance_index,
+        );
+        let route = super::market_entry_route(geometry);
+        let arrival_ms = super::route_duration(&route);
+        let cycle_ms = super::market_idle_track(id, &route, 0).cycle_ms;
+        let mut poses = std::collections::BTreeSet::new();
+
+        for cycle in 0..16 {
+            let frame = resolve_market_paperdoll(
+                &actor,
+                placement,
+                MarketFrameContext {
+                    viewport,
+                    now: boot
+                        + Duration::from_millis(arrival_ms + cycle_ms.saturating_mul(cycle) + 250),
+                },
+            )
+            .expect("a settled showcase actor remains visible");
+            let pose_name = match frame.pose {
+                MarketActorPose::Stand { .. } => "stand1",
+                MarketActorPose::Stand2 { .. } => "stand2",
+                MarketActorPose::Sit => "sit",
+                MarketActorPose::Alert { .. } => "alert",
+                other => panic!("pause samples must be complete stationary actions, got {other:?}"),
+            };
+            poses.insert(pose_name);
+            assert!(
+                !frame.stall_open,
+                "an idle/showcase actor never impersonates work"
+            );
+            assert_eq!(frame.foot_px(), geometry.target_foot);
+        }
+
+        assert!(
+            poses.len() >= 3,
+            "the deterministic schedule should expose several authored pause actions: {poses:?}"
         );
     }
 

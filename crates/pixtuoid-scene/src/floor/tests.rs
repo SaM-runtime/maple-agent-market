@@ -662,6 +662,7 @@ fn render_floor_paints_the_flame_crown_for_a_top_tier_agent() {
         &mut chitchat,
         FrameInputs {
             scene: &scene,
+            character_appearances: None,
             pack: &pack,
             theme,
             now,
@@ -706,6 +707,7 @@ fn render_floor_paints_records_coffee_state_and_survives_a_tiny_buffer() {
         &mut chitchat,
         FrameInputs {
             scene: &scene,
+            character_appearances: None,
             pack: &pack,
             theme,
             now,
@@ -732,6 +734,7 @@ fn render_floor_paints_records_coffee_state_and_survives_a_tiny_buffer() {
         &mut chitchat,
         FrameInputs {
             scene: &scene,
+            character_appearances: None,
             pack: &pack,
             theme,
             now,
@@ -776,6 +779,7 @@ fn floor_session_render_owns_the_dual_eviction() {
     let scene = SceneState::new([8; MAX_FLOORS]);
     let layout = session.render(FrameInputs {
         scene: &scene,
+        character_appearances: None,
         pack: &pack,
         theme,
         now,
@@ -828,6 +832,7 @@ fn floor_session_render_surfaces_the_sims_occupied_waypoints() {
         let layout = session
             .render(FrameInputs {
                 scene: &scene,
+                character_appearances: None,
                 pack: &pack,
                 theme,
                 now,
@@ -865,6 +870,7 @@ fn floor_session_render_surfaces_the_sims_occupied_waypoints() {
     // after a shrink must not replay the last big frame's occupancy.
     let none = session.render(FrameInputs {
         scene: &scene,
+        character_appearances: None,
         pack: &pack,
         theme,
         now: now0,

@@ -19,20 +19,27 @@ pub struct AppConfig {
         skip_serializing_if = "BTreeMap::is_empty"
     )]
     pub sources: BTreeMap<String, bool>,
-    /// Maple Agent Market desktop-window geometry — one `[floating]` table
-    /// (size/position/opacity). Absent ⇒ defaults from [`resolve_floating`]. Keep
+    /// Maple Agent Market desktop-window preferences — one `[floating]` table
+    /// (size/position/opacity/stacking). Absent ⇒ defaults from [`resolve_floating`]. Keep
     #[serde(rename = "floating", default, skip_serializing_if = "Option::is_none")]
     pub floating: Option<FloatingConfigRaw>,
+    /// Runtime paperdoll roster and presentation-only showcase choices.
+    #[serde(
+        rename = "characters",
+        default,
+        skip_serializing_if = "Option::is_none"
+    )]
+    pub characters: Option<CharacterConfigRaw>,
     /// Local window sound. An absent `[audio]` table starts muted.
     #[serde(rename = "audio", default, skip_serializing_if = "Option::is_none")]
     pub audio: Option<AudioConfigRaw>,
 }
 
-/// Default Maple Agent Market window size and its legibility floor.
+/// Default Maple Agent Market window size and its renderable ultra-compact floor.
 pub const FLOATING_DEFAULT_W: u32 = 360;
 pub const FLOATING_DEFAULT_H: u32 = 240;
-pub const FLOATING_MIN_W: u32 = 240;
-pub const FLOATING_MIN_H: u32 = 160;
+pub const FLOATING_MIN_W: u32 = 160;
+pub const FLOATING_MIN_H: u32 = 96;
 /// Floor the parsed floating-window opacity is clamped up to — below this the
 /// window is too transparent to read.
 pub const FLOATING_MIN_OPACITY: f32 = 0.2;
@@ -51,9 +58,17 @@ pub struct FloatingConfigRaw {
     pub y: Option<i32>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub opacity: Option<f32>,
+    /// Whether the companion stays above normal application windows. `None`
+    /// uses the non-topmost default; an explicit saved choice remains authoritative.
+    #[serde(
+        rename = "always-on-top",
+        default,
+        skip_serializing_if = "Option::is_none"
+    )]
+    pub always_on_top: Option<bool>,
 }
 
-/// Resolved floating-window geometry: defaults applied, size clamped up to the legible
+/// Resolved floating-window preferences: defaults applied, size clamped up to the renderable
 /// minimum, opacity clamped to `[0.2, 1.0]` (fully transparent / over-opaque are both
 /// useless). Position stays `Option` — `None` lets the OS place the window.
 #[derive(Debug, Clone, Copy, PartialEq)]
@@ -63,6 +78,7 @@ pub struct FloatingConfig {
     pub x: Option<i32>,
     pub y: Option<i32>,
     pub opacity: f32,
+    pub always_on_top: bool,
 }
 
 pub fn resolve_floating(config: &AppConfig) -> FloatingConfig {
@@ -73,6 +89,89 @@ pub fn resolve_floating(config: &AppConfig) -> FloatingConfig {
         x: raw.x,
         y: raw.y,
         opacity: raw.opacity.unwrap_or(1.0).clamp(FLOATING_MIN_OPACITY, 1.0),
+        always_on_top: raw.always_on_top.unwrap_or(false),
+    }
+}
+
+/// Raw `[characters]` preferences. Values are runtime sprite-slot indices;
+/// invalid/duplicate values are normalized by [`resolve_characters`].
+#[derive(Debug, Default, Clone, PartialEq, serde::Serialize, serde::Deserialize)]
+pub struct CharacterConfigRaw {
+    /// Character slots available to monitored Agents.
+    #[serde(
+        rename = "enabled-slots",
+        default,
+        skip_serializing_if = "Option::is_none"
+    )]
+    pub enabled_slots: Option<Vec<usize>>,
+    /// Character slots currently sent out as presentation-only market guests.
+    #[serde(
+        rename = "showcase-slots",
+        default,
+        skip_serializing_if = "Option::is_none"
+    )]
+    pub showcase_slots: Option<Vec<usize>>,
+    /// Character slots currently sent to the training field as presentation-only guests.
+    #[serde(
+        rename = "training-showcase-slots",
+        default,
+        skip_serializing_if = "Option::is_none"
+    )]
+    pub training_showcase_slots: Option<Vec<usize>>,
+}
+
+/// Resolved character preferences used by the floating renderer.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct CharacterConfig {
+    /// Stable appearance pool for real monitored Agents.
+    pub agent_roster: pixtuoid_scene::characters::CharacterRoster,
+    /// Canonical presentation-only slots; empty means no showcase actors.
+    pub showcase_slots: Vec<usize>,
+    /// Canonical presentation-only training slots; empty means no trainees.
+    pub training_showcase_slots: Vec<usize>,
+}
+
+fn normalize_showcase_slots(
+    slots: impl IntoIterator<Item = usize>,
+    available_count: usize,
+) -> Vec<usize> {
+    let available_count = if available_count == 0 {
+        pixtuoid_scene::characters::CHARACTER_SLOT_COUNT
+    } else {
+        available_count
+    };
+    let mut slots = slots
+        .into_iter()
+        .filter(|slot| *slot < available_count)
+        .collect::<Vec<_>>();
+    slots.sort_unstable();
+    slots.dedup();
+    slots
+}
+
+/// Normalize character preferences. Real Agents always retain at least one
+/// appearance; showcase actors remain opt-in and therefore default to empty.
+pub fn resolve_characters(config: &AppConfig) -> CharacterConfig {
+    resolve_characters_for_count(config, pixtuoid_scene::characters::CHARACTER_SLOT_COUNT)
+}
+
+/// Normalize character preferences against the currently loaded pack catalog.
+pub fn resolve_characters_for_count(config: &AppConfig, available_count: usize) -> CharacterConfig {
+    let raw = config.characters.clone().unwrap_or_default();
+    let agent_roster = pixtuoid_scene::characters::CharacterRoster::new_with_count(
+        raw.enabled_slots.unwrap_or_default(),
+        available_count,
+    );
+    let showcase_slots =
+        normalize_showcase_slots(raw.showcase_slots.unwrap_or_default(), available_count);
+    let training_showcase_slots = normalize_showcase_slots(
+        raw.training_showcase_slots.unwrap_or_default(),
+        available_count,
+    );
+    CharacterConfig {
+        agent_roster,
+        showcase_slots,
+        training_showcase_slots,
     }
 }
 
@@ -346,6 +445,79 @@ pub(crate) fn save_floating(
                 }
             }
         }
+    })
+}
+
+/// Persist the user's stacking choice immediately. This deliberately has its
+/// own write path: toggling `T` should survive a crash without waiting for the
+/// close-time geometry save, while comments and unknown sibling keys remain
+/// untouched through [`update_config`].
+pub(crate) fn save_floating_always_on_top(path: &Path, enabled: bool) -> Result<()> {
+    update_config(path, |doc| {
+        doc["floating"]["always-on-top"] = toml_edit::value(enabled);
+    })
+}
+
+fn character_slot_array(slots: &[usize]) -> toml_edit::Array {
+    let mut array = toml_edit::Array::new();
+    for slot in slots {
+        array.push(*slot as i64);
+    }
+    array
+}
+
+/// Borrowed character selections written as one coherent `[characters]` update.
+pub(crate) struct CharacterChoices<'a> {
+    pub enabled_slots: &'a [usize],
+    pub market_showcase_slots: &'a [usize],
+    pub training_showcase_slots: &'a [usize],
+    pub available_count: usize,
+}
+
+/// Persist normalized real-Agent and showcase character selections while
+/// preserving comments and unknown config keys through [`update_config`].
+#[cfg(test)]
+pub(crate) fn save_character_choices(
+    path: &Path,
+    enabled_slots: &[usize],
+    showcase_slots: &[usize],
+    training_showcase_slots: &[usize],
+) -> Result<()> {
+    save_character_choices_for_count(
+        path,
+        CharacterChoices {
+            enabled_slots,
+            market_showcase_slots: showcase_slots,
+            training_showcase_slots,
+            available_count: pixtuoid_scene::characters::CHARACTER_SLOT_COUNT,
+        },
+    )
+}
+
+/// Persist choices normalized against the active pack's dynamic catalog.
+pub(crate) fn save_character_choices_for_count(
+    path: &Path,
+    choices: CharacterChoices<'_>,
+) -> Result<()> {
+    let roster = pixtuoid_scene::characters::CharacterRoster::new_with_count(
+        choices.enabled_slots.iter().copied(),
+        choices.available_count,
+    );
+    let showcases = normalize_showcase_slots(
+        choices.market_showcase_slots.iter().copied(),
+        choices.available_count,
+    );
+    let training_showcases = normalize_showcase_slots(
+        choices.training_showcase_slots.iter().copied(),
+        choices.available_count,
+    );
+    update_config(path, |doc| {
+        doc["characters"]["enabled-slots"] =
+            toml_edit::Item::Value(character_slot_array(roster.slots()).into());
+        doc["characters"]["showcase-slots"] =
+            toml_edit::Item::Value(character_slot_array(&showcases).into());
+        doc["characters"]["training-showcase-slots"] =
+            toml_edit::Item::Value(character_slot_array(&training_showcases).into());
     })
 }
 

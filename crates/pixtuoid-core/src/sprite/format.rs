@@ -174,8 +174,18 @@ fn rows_to_frame(rows: Vec<Vec<Pixel>>) -> Result<Frame> {
 #[derive(Debug, Deserialize)]
 struct PackToml {
     pack: PackMeta,
+    #[serde(default)]
+    characters: CharacterCatalogToml,
     palette: HashMap<String, String>,
     animations: HashMap<String, AnimationToml>,
+}
+
+/// Optional friendly names for character identities stored by the pack.
+/// Packs created before the roster UI omit this table and remain valid.
+#[derive(Debug, Default, Deserialize)]
+struct CharacterCatalogToml {
+    #[serde(default)]
+    names: Vec<String>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -199,6 +209,8 @@ pub struct Pack {
     pub version: String,
     /// The shared color palette its frames reference by single-char code.
     pub palette: Palette,
+    /// Optional display names aligned with the pack's paperdoll identity order.
+    character_names: Vec<String>,
     animations: HashMap<String, Sprite>,
 }
 
@@ -211,6 +223,12 @@ impl Pack {
     /// The names of every animation in this pack.
     pub fn animation_names(&self) -> Vec<String> {
         self.animations.keys().cloned().collect()
+    }
+
+    /// Friendly character names aligned with paperdoll appearance indices.
+    /// An empty slice means the caller should provide its own fallback names.
+    pub fn character_names(&self) -> &[String] {
+        &self.character_names
     }
 
     /// Merge furniture/environment animations from `base` into self.
@@ -260,6 +278,7 @@ fn build_pack(parsed: PackToml, mut get_src: impl FnMut(&str) -> Result<String>)
         name: parsed.pack.name,
         version: parsed.pack.version,
         palette,
+        character_names: parsed.characters.names,
         animations,
     })
 }
@@ -509,6 +528,29 @@ mod validation_floor_tests {
              [animations.{name}]\nframes={frames_toml}\nframe_ms=100\n"
         );
         load_pack_from_strings(&pack_toml, &[("f.sprite", "@frame 0\nA")]).expect("pack builds")
+    }
+
+    #[test]
+    fn optional_character_catalog_names_round_trip_with_the_pack() {
+        let pack_toml = r##"
+[pack]
+name = "catalog-test"
+version = "1"
+
+[characters]
+names = ["素材狐", "星空法師", "逛街兔"]
+
+[palette]
+"A" = "#010203"
+
+[animations.market_avatar]
+frames = ["f.sprite", "f.sprite", "f.sprite", "f.sprite", "f.sprite", "f.sprite", "f.sprite", "f.sprite"]
+frame_ms = 100
+"##;
+        let pack = load_pack_from_strings(pack_toml, &[("f.sprite", "@frame 0\nA")])
+            .expect("catalog pack builds");
+
+        assert_eq!(pack.character_names(), &["素材狐", "星空法師", "逛街兔"]);
     }
 
     #[test]

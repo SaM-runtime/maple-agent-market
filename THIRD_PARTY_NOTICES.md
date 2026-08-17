@@ -30,6 +30,16 @@ Pixtuoid 的終端 TUI、辦公室 sprite 與範例角色 pack 已從本 fork �
 - 用途：本機素材 manager 的逐檔 SHA-256 與 pack fingerprint
 - 完整 MIT 文字：`LICENSES/RustCrypto-SHA2-MIT.txt`
 
+## Maple Atelier 與 maplestory.io（僅本機取得流程）
+
+- Maple Atelier source：[AndyWang505/maple-atelier](https://github.com/AndyWang505/maple-atelier)
+- Maple Atelier 授權：其應用程式原始碼採 MIT；本 repo 沒有複製其程式碼，只使用公開 outfit ID／URL 與服務 API
+- 角色 render 服務：[maplestory.io](https://maplestory.io/)
+- 本 repo 實際保留：`tools` 內本專案自行撰寫的 downloader／converter、固定來源配方與權利提示
+- 本 repo 不保留：任一服務回傳的 PNG、GIF、角色影格、遊戲 metadata dump 或衍生 `.sprite`
+
+Maple Atelier 的 README 將角色素材來源標為 maplestory.io，並另行聲明遊戲素材著作權屬 NEXON；maplestory.io 的服務頁也聲明其提供的媒體、圖示、描述與角色資料屬 NEXON。上述站台的程式碼授權不會把 API 回傳的遊戲素材改成 MIT。本專案工具只讓使用者在本機明確同意後重播來源配方，生成結果由使用者自行依原權利條件管理。
+
 ## 本專案產生的公開媒體
 
 `assets/readme/maple-agent-market-overview.png` 由目前 `floating_snapshot` example 使用內建程序化 renderer 產生，未載入私人素材或遊戲影格。

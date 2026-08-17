@@ -23,6 +23,11 @@ jobs:
         run: cargo clippy --locked --workspace --all-targets -- -D warnings
       - name: Rust tests
         run: cargo test --locked --workspace
+      - name: Offline local-asset bootstrap
+        shell: powershell
+        run: |
+          cargo build --locked -p pixtuoid --bin maple-agent-market
+          powershell.exe -NoLogo -NoProfile -NonInteractive -ExecutionPolicy Bypass -File tools/tests/LocalAssetBootstrap.Tests.ps1
       - name: Public release audit self-test
         run: python scripts/public-release-audit.py --selftest
       - name: Public release tooling self-tests

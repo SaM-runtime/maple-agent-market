@@ -25,6 +25,10 @@ pub const TRAINING_REFERENCE_WALK_PX_PER_SEC: u64 = 125;
 pub const TRAINING_PORTAL_IN_MS: u64 = 220;
 /// Portal dissolve pause after the exiting walk reaches the portal.
 pub const TRAINING_PORTAL_OUT_MS: u64 = 180;
+/// Conservative lifetime for a withdrawing presentation actor. This covers
+/// the longest authored platform/rope route plus the portal dissolve at every
+/// supported viewport, so render-only guests are not evicted mid-climb.
+pub const TRAINING_MAX_EXIT_MS: u64 = 16_000;
 
 const REFERENCE_WIDTH: u64 = 720;
 const REFERENCE_HEIGHT: u64 = 480;
@@ -33,15 +37,22 @@ const ACTIVE_RUN_END_MS: u64 = 900;
 const ACTIVE_ATTACK_START_MS: u64 = ACTIVE_RUN_END_MS;
 const ATTACK_FRAME_MS: u64 = 140;
 const ATTACK_FRAMES: usize = 3;
-const TRAINING_SKILL_FRAME_MS: u64 = 240;
-const TRAINING_SKILL_FRAMES: usize = 4;
 const ACTIVE_ATTACK_HIT_MS: u64 = ACTIVE_ATTACK_START_MS + ATTACK_FRAME_MS * 2;
+#[cfg(test)]
+const TRAINING_SKILL_FRAME_MS: u64 = 240;
+#[cfg(test)]
+const TRAINING_SKILL_FRAMES: usize = 4;
+#[cfg(test)]
 const ACTIVE_ATTACK_END_MS: u64 =
     ACTIVE_ATTACK_START_MS + TRAINING_SKILL_FRAME_MS * TRAINING_SKILL_FRAMES as u64;
+const ACTIVE_RECOVERY_MS: u64 = 540;
+const ACTIVE_RETURN_MS: u64 = 900;
 const CLASSIC_DEATH_TOTAL_MS: u64 = 840;
 const ACTIVE_DEATH_END_MS: u64 = ACTIVE_ATTACK_HIT_MS + CLASSIC_DEATH_TOTAL_MS;
-const ACTIVE_RECOVERY_END_MS: u64 = 2_400;
-const ACTIVE_RETURN_END_MS: u64 = 3_300;
+#[cfg(test)]
+const ACTIVE_RECOVERY_END_MS: u64 = ACTIVE_ATTACK_END_MS + ACTIVE_RECOVERY_MS;
+#[cfg(test)]
+const ACTIVE_RETURN_END_MS: u64 = ACTIVE_RECOVERY_END_MS + ACTIVE_RETURN_MS;
 const ACTIVE_RESPAWN_MS: u64 = 5_600;
 const WALK_FRAME_MS: u64 = 180;
 const STAND_FRAME_MS: u64 = 500;
@@ -53,6 +64,9 @@ const GREEN_MUSHROOM_MOVE_DELAYS_MS: [u64; 4] = [150, 150, 150, 150];
 const CLASSIC_DEATH_DELAYS_MS: [u64; 4] = [180, 180, 180, 300];
 const IDLE_CYCLE_MS: u64 = 9_000;
 const IDLE_ROAM_REF_PX: i32 = 52;
+const WAITING_ACTION_SEGMENT_MS: u64 = 4_200;
+const TRAINING_IDLE_MOTION_SALT: u64 = 0x5452_4149_4e5f_4944;
+const TRAINING_WAITING_MOTION_SALT: u64 = 0x5452_4149_4e5f_5741;
 
 #[derive(Debug, Clone, Copy)]
 struct RelativeTrainingSlot {
@@ -165,11 +179,27 @@ pub enum TrainingSkillKind {
     DragonPulse,
 }
 
+impl TrainingSkillKind {
+    /// Complete pre-Big-Bang source timeline used by the local optional pack.
+    /// The public procedural fallback stretches its four phases across the
+    /// same duration, so clean installs retain the same combat cadence.
+    #[must_use]
+    pub const fn duration_ms(self) -> u64 {
+        match self {
+            Self::MagicClaw => 960,
+            Self::HolyLight => 2_880,
+            Self::DragonPulse => 1_440,
+        }
+    }
+}
+
 /// One independently painted skill effect for the current actor frame.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct TrainingSkillEffect {
     pub kind: TrainingSkillKind,
-    pub frame_index: usize,
+    /// Elapsed time inside this one-shot effect. The painter resolves it
+    /// against the optional pack's authored frame count and frame interval.
+    pub elapsed_ms: u64,
 }
 
 /// Exact paperdoll geometry resolved for this frame.
@@ -262,8 +292,33 @@ pub fn training_slots(viewport: Bounds, count: usize) -> Vec<TrainingSlot> {
 
 /// Assign agents by immutable desk index so peer updates never reshuffle lanes.
 pub fn build_training_placements(scene: &SceneState, viewport: Bounds) -> Vec<TrainingPlacement> {
+    build_training_placements_for(scene, viewport, None)
+}
+
+/// Assign training lanes while resolving appearance through the floating
+/// window's shared character roster.
+#[doc(hidden)]
+pub fn build_training_placements_with_appearances(
+    scene: &SceneState,
+    viewport: Bounds,
+    appearances: &crate::characters::CharacterAppearances,
+) -> Vec<TrainingPlacement> {
+    build_training_placements_for(scene, viewport, Some(appearances))
+}
+
+fn build_training_placements_for(
+    scene: &SceneState,
+    viewport: Bounds,
+    appearances: Option<&crate::characters::CharacterAppearances>,
+) -> Vec<TrainingPlacement> {
     let mut agents = scene.agents.values().collect::<Vec<_>>();
-    agents.sort_by_key(|agent| (agent.desk_index, agent.agent_id));
+    agents.sort_by_key(|agent| {
+        (
+            agent.source.as_ref() == "showcase",
+            agent.desk_index,
+            agent.agent_id,
+        )
+    });
     let slots = training_slots(viewport, TRAINING_MAX_AGENTS);
     if slots.len() != TRAINING_MAX_AGENTS {
         return Vec::new();
@@ -281,7 +336,10 @@ pub fn build_training_placements(scene: &SceneState, viewport: Bounds) -> Vec<Tr
             Some(TrainingPlacement {
                 agent_id: agent.agent_id,
                 slot: slots[slot_index],
-                appearance_index: agent.desk_index.0 % TRAINING_MAX_AGENTS,
+                appearance_index: appearances
+                    .map_or(agent.desk_index.0 % TRAINING_MAX_AGENTS, |resolver| {
+                        resolver.appearance_for(agent.agent_id, agent.desk_index)
+                    }),
             })
         })
         .collect()
@@ -363,25 +421,33 @@ pub fn build_training_overlay(
         .filter_map(|placement| {
             let agent = scene.agents.get(&placement.agent_id)?;
             let actor = resolve_training_actor(agent, *placement, frame)?;
-            let fake_id = crate::market::MARKET_FAKE_PLAYER_IDS
-                [placement.appearance_index % crate::market::MARKET_FAKE_PLAYER_IDS.len()];
-            let task = agent
-                .label
-                .split_once('\u{b7}')
-                .map_or(agent.label.as_ref(), |(_, tail)| tail);
-            let mut text = format!("{fake_id}\u{b7}{task}");
-            if label_counts.get(&*agent.label).copied().unwrap_or(0) > 1
-                && agent.session_id.chars().count() >= 4
-            {
-                text.push('\u{b7}');
-                text.push_str(&disambig_suffix(&agent.session_id));
-            }
+            let is_showcase = agent.source.as_ref() == "showcase";
+            let text = if is_showcase {
+                agent.label.to_string()
+            } else {
+                let fake_id = crate::market::MARKET_FAKE_PLAYER_IDS
+                    [placement.appearance_index % crate::market::MARKET_FAKE_PLAYER_IDS.len()];
+                let task = agent
+                    .label
+                    .split_once('\u{b7}')
+                    .map_or(agent.label.as_ref(), |(_, tail)| tail);
+                let mut text = format!("{fake_id}\u{b7}{task}");
+                if label_counts.get(&*agent.label).copied().unwrap_or(0) > 1
+                    && agent.session_id.chars().count() >= 4
+                {
+                    text.push('\u{b7}');
+                    text.push_str(&disambig_suffix(&agent.session_id));
+                }
+                text
+            };
             Some(LabelElement {
                 anchor_px: actor.label_anchor_px,
                 text: truncate_label(&text, 16).into_owned(),
                 tone: label_tone(agent),
                 hovered: hovered == Some(agent.agent_id),
-                relation: crate::maple_world::agent_relation(scene, agent.agent_id),
+                relation: (!is_showcase)
+                    .then(|| crate::maple_world::agent_relation(scene, agent.agent_id))
+                    .flatten(),
             })
         })
         .collect()
@@ -465,6 +531,10 @@ fn resolve_settled(
     match &agent.state {
         ActivityState::Active { .. } => {
             let (work_cycle, phase) = active_clock(frame.now, placement.slot.index);
+            let skill_kind = training_skill_kind(placement.appearance_index, work_cycle);
+            let attack_end = ACTIVE_ATTACK_START_MS + skill_kind.duration_ms();
+            let recovery_end = attack_end + ACTIVE_RECOVERY_MS;
+            let return_end = recovery_end + ACTIVE_RETURN_MS;
             let contact = Point {
                 x: base.x.saturating_add(scaled_ref_x(frame.viewport, 52)),
                 y: base.y,
@@ -477,7 +547,7 @@ fn resolve_settled(
                     frame.viewport,
                     false,
                 )
-            } else if phase < ACTIVE_ATTACK_END_MS {
+            } else if phase < attack_end {
                 let local = phase - ACTIVE_ATTACK_START_MS;
                 let mut actor = actor_frame(
                     contact,
@@ -490,23 +560,19 @@ fn resolve_settled(
                     frame.viewport,
                     false,
                 );
-                actor.skill_effect = training_skill_effect(
-                    training_skill_kind(placement.appearance_index, work_cycle),
-                    local,
-                );
+                actor.skill_effect = training_skill_effect(skill_kind, local);
                 actor
-            } else if phase < ACTIVE_RECOVERY_END_MS {
+            } else if phase < recovery_end {
                 actor_frame(
                     contact,
                     TrainingActorPose::Stand { frame_index: 0 },
                     frame.viewport,
                     false,
                 )
-            } else if phase < ACTIVE_RETURN_END_MS {
-                let local = phase - ACTIVE_RECOVERY_END_MS;
-                let total = ACTIVE_RETURN_END_MS - ACTIVE_RECOVERY_END_MS;
+            } else if phase < return_end {
+                let local = phase - recovery_end;
                 actor_frame(
-                    lerp_point(contact, base, local, total),
+                    lerp_point(contact, base, local, ACTIVE_RETURN_MS),
                     walk_pose(local, TrainingFacing::Left),
                     frame.viewport,
                     false,
@@ -523,40 +589,78 @@ fn resolve_settled(
             }
         }
         ActivityState::Waiting { .. } => {
-            actor_frame(base, TrainingActorPose::Sit, frame.viewport, true)
+            let clock = elapsed_ms(frame.now, SystemTime::UNIX_EPOCH)
+                .saturating_add(placement.slot.index as u64 * 613);
+            let segment = clock / WAITING_ACTION_SEGMENT_MS;
+            let local = clock % WAITING_ACTION_SEGMENT_MS;
+            let pose = training_rest_pose(
+                crate::characters::stable_motion_choice(
+                    agent.agent_id,
+                    segment,
+                    TRAINING_WAITING_MOTION_SALT,
+                ),
+                local,
+            );
+            actor_frame(base, pose, frame.viewport, true)
         }
         ActivityState::Idle => {
-            let phase = (elapsed_ms(frame.now, SystemTime::UNIX_EPOCH)
-                + placement.slot.index as u64 * 731)
-                % IDLE_CYCLE_MS;
-            let roam = scaled_ref_x(frame.viewport, IDLE_ROAM_REF_PX);
-            let left = Point {
-                x: base.x.saturating_sub(roam),
+            let clock = elapsed_ms(frame.now, SystemTime::UNIX_EPOCH)
+                .saturating_add(placement.slot.index as u64 * 731);
+            let cycle_index = clock / IDLE_CYCLE_MS;
+            let phase = clock % IDLE_CYCLE_MS;
+            let choice = crate::characters::stable_motion_choice(
+                agent.agent_id,
+                cycle_index,
+                TRAINING_IDLE_MOTION_SALT,
+            );
+            let roam_ref = match (choice >> 2) % 3 {
+                0 => IDLE_ROAM_REF_PX * 2 / 3,
+                1 => IDLE_ROAM_REF_PX * 5 / 6,
+                _ => IDLE_ROAM_REF_PX,
+            };
+            let roam = scaled_ref_x(frame.viewport, roam_ref);
+            let roam_right = choice & 1 == 1;
+            let destination = Point {
+                x: if roam_right {
+                    base.x.saturating_add(roam)
+                } else {
+                    base.x.saturating_sub(roam)
+                },
                 y: base.y,
+            };
+            let outward_facing = if roam_right {
+                TrainingFacing::Right
+            } else {
+                TrainingFacing::Left
+            };
+            let homeward_facing = if roam_right {
+                TrainingFacing::Left
+            } else {
+                TrainingFacing::Right
             };
             let (foot, pose) = match phase {
                 0..=1_799 => (
-                    lerp_point(base, left, phase, 1_800),
-                    walk_pose(phase, TrainingFacing::Left),
+                    lerp_point(base, destination, phase, 1_800),
+                    walk_pose(phase, outward_facing),
                 ),
-                1_800..=4_099 => (
-                    left,
-                    TrainingActorPose::Stand {
-                        frame_index: (phase / STAND_FRAME_MS) as usize % 3,
-                    },
-                ),
+                1_800..=4_099 => (destination, training_rest_pose(choice >> 8, phase - 1_800)),
                 4_100..=5_899 => (
-                    lerp_point(left, base, phase - 4_100, 1_800),
-                    walk_pose(phase, TrainingFacing::Right),
+                    lerp_point(destination, base, phase - 4_100, 1_800),
+                    walk_pose(phase, homeward_facing),
                 ),
-                _ => (
-                    base,
-                    TrainingActorPose::Stand {
-                        frame_index: (phase / STAND_FRAME_MS) as usize % 3,
-                    },
-                ),
+                _ => (base, training_rest_pose(choice >> 16, phase - 5_900)),
             };
             actor_frame(foot, pose, frame.viewport, false)
+        }
+    }
+}
+
+fn training_rest_pose(choice: u64, elapsed: u64) -> TrainingActorPose {
+    if choice & 1 == 0 {
+        TrainingActorPose::Sit
+    } else {
+        TrainingActorPose::Stand {
+            frame_index: (elapsed / STAND_FRAME_MS) as usize % 3,
         }
     }
 }
@@ -596,8 +700,10 @@ fn training_skill_kind(appearance_index: usize, work_cycle: u64) -> TrainingSkil
 }
 
 fn training_skill_effect(kind: TrainingSkillKind, local_ms: u64) -> Option<TrainingSkillEffect> {
-    let frame_index = (local_ms / TRAINING_SKILL_FRAME_MS) as usize;
-    (frame_index < TRAINING_SKILL_FRAMES).then_some(TrainingSkillEffect { kind, frame_index })
+    (local_ms < kind.duration_ms()).then_some(TrainingSkillEffect {
+        kind,
+        elapsed_ms: local_ms,
+    })
 }
 
 fn monster_pose(kind: TrainingMonsterKind, phase: u64) -> TrainingMonsterPose {
@@ -930,6 +1036,73 @@ mod tests {
     }
 
     #[test]
+    fn selected_roster_drives_training_appearance_without_moving_the_lane() {
+        let id = AgentId::from_parts("codex", "selected-training-skin");
+        let mut scene = SceneState::uniform(8);
+        scene.agents.insert(id, agent(id, 5, ActivityState::Idle));
+        let appearances = crate::characters::CharacterAppearances::new(
+            crate::characters::CharacterRoster::new([2, 7]),
+        );
+        let placement =
+            build_training_placements_with_appearances(&scene, viewport(), &appearances)[0];
+        assert_eq!(placement.slot.index, 5, "desk still owns the stable lane");
+        assert_eq!(placement.appearance_index, 7);
+    }
+
+    #[test]
+    fn real_agents_keep_all_training_lanes_when_a_showcase_guest_is_present() {
+        let mut scene = SceneState::uniform(8);
+        for index in 0..TRAINING_MAX_AGENTS {
+            let id = AgentId::from_parts("codex", &format!("real-{index}"));
+            scene
+                .agents
+                .insert(id, agent(id, 20_000 + index, ActivityState::Idle));
+        }
+        let guest_id = AgentId::from_parts("showcase", "training-character-0");
+        let mut guest = agent(guest_id, 0, active("showcase-training"));
+        guest.source = Arc::from("showcase");
+        guest.label = "練功中".into();
+        scene.agents.insert(guest_id, guest);
+
+        let placements = build_training_placements(&scene, viewport());
+        assert_eq!(placements.len(), TRAINING_MAX_AGENTS);
+        assert!(
+            placements.iter().all(|placement| {
+                scene.agents[&placement.agent_id].source.as_ref() != "showcase"
+            }),
+            "presentation actors never displace monitored Agents"
+        );
+    }
+
+    #[test]
+    fn training_showcase_cards_use_only_the_plain_non_agent_label() {
+        let now = SystemTime::UNIX_EPOCH + Duration::from_secs(100);
+        let mut scene = SceneState::uniform(8);
+        for index in 0..2 {
+            let id = AgentId::from_parts("showcase", &format!("training-character-{index}"));
+            let mut guest = agent(id, 10_000 + index, active("showcase-training"));
+            guest.source = Arc::from("showcase");
+            guest.label = "練功中".into();
+            guest.created_at = SystemTime::UNIX_EPOCH;
+            scene.agents.insert(id, guest);
+        }
+        let placements = build_training_placements(&scene, viewport());
+        let labels = build_training_overlay(
+            &scene,
+            &placements,
+            None,
+            TrainingFrameContext {
+                viewport: viewport(),
+                now,
+            },
+        );
+
+        assert_eq!(labels.len(), 2);
+        assert!(labels.iter().all(|label| label.text == "練功中"));
+        assert!(labels.iter().all(|label| label.relation.is_none()));
+    }
+
+    #[test]
     fn training_cards_preserve_the_same_root_child_lineage_as_the_market() {
         let root_id = AgentId::from_parts("codex", "training-root");
         let child_id = AgentId::from_parts("codex", "training-child");
@@ -1025,7 +1198,10 @@ mod tests {
             now: SystemTime::UNIX_EPOCH + Duration::from_secs(100),
         };
         let waiting_actor = resolve_training_actor(&waiting, p, frame).unwrap();
-        assert_eq!(waiting_actor.pose, TrainingActorPose::Sit);
+        assert!(matches!(
+            waiting_actor.pose,
+            TrainingActorPose::Sit | TrainingActorPose::Stand { .. }
+        ));
         assert!(waiting_actor.question_bubble);
 
         waiting.state = ActivityState::Idle;
@@ -1048,6 +1224,98 @@ mod tests {
         )
         .unwrap();
         assert!(a.foot_px.x.abs_diff(b.foot_px.x) >= 10);
+    }
+
+    #[test]
+    fn idle_training_actor_varies_direction_distance_and_rest_pose_by_complete_cycle() {
+        let id = AgentId::from_parts("showcase", "varied-training-actions");
+        let mut actor = agent(id, 0, ActivityState::Idle);
+        actor.created_at = SystemTime::UNIX_EPOCH;
+        actor.state_started_at = SystemTime::UNIX_EPOCH;
+        let placement = placement(id, 0);
+        let base_x = placement.slot.foot_px.x;
+        let mut saw_left = false;
+        let mut saw_right = false;
+        let mut distances = std::collections::BTreeSet::new();
+        let mut rests = std::collections::BTreeSet::new();
+
+        for cycle in 0..24_u64 {
+            let cycle_start = IDLE_CYCLE_MS * 10 + cycle * IDLE_CYCLE_MS;
+            let away = resolve_training_actor(
+                &actor,
+                placement,
+                TrainingFrameContext {
+                    viewport: viewport(),
+                    now: SystemTime::UNIX_EPOCH + Duration::from_millis(cycle_start + 2_100),
+                },
+            )
+            .expect("the idle actor remains visible at its roam destination");
+            saw_left |= away.foot_px.x < base_x;
+            saw_right |= away.foot_px.x > base_x;
+            distances.insert(away.foot_px.x.abs_diff(base_x));
+            rests.insert(match away.pose {
+                TrainingActorPose::Stand { .. } => "stand",
+                TrainingActorPose::Sit => "sit",
+                other => panic!("destination pause must finish a stationary action, got {other:?}"),
+            });
+        }
+
+        assert!(
+            saw_left && saw_right,
+            "roaming should use both platform directions"
+        );
+        assert!(
+            distances.len() >= 3,
+            "roaming should use several safe distances"
+        );
+        assert_eq!(
+            rests.len(),
+            2,
+            "both stand and sit rest actions should appear"
+        );
+    }
+
+    #[test]
+    fn waiting_training_actor_changes_stationary_pose_but_keeps_the_question_signal() {
+        let id = AgentId::from_parts("codex", "varied-waiting-actions");
+        let mut waiting = agent(
+            id,
+            0,
+            ActivityState::Waiting {
+                reason: Arc::from("user"),
+            },
+        );
+        waiting.created_at = SystemTime::UNIX_EPOCH;
+        waiting.state_started_at = SystemTime::UNIX_EPOCH;
+        let placement = placement(id, 0);
+        let mut rests = std::collections::BTreeSet::new();
+
+        for segment in 0..16_u64 {
+            let segment_start =
+                WAITING_ACTION_SEGMENT_MS * 20 + segment * WAITING_ACTION_SEGMENT_MS;
+            let frame = resolve_training_actor(
+                &waiting,
+                placement,
+                TrainingFrameContext {
+                    viewport: viewport(),
+                    now: SystemTime::UNIX_EPOCH + Duration::from_millis(segment_start + 300),
+                },
+            )
+            .expect("a waiting actor remains visible");
+            assert_eq!(frame.foot_px, placement.slot.foot_px);
+            assert!(frame.question_bubble);
+            rests.insert(match frame.pose {
+                TrainingActorPose::Stand { .. } => "stand",
+                TrainingActorPose::Sit => "sit",
+                other => panic!("waiting must stay stationary, got {other:?}"),
+            });
+        }
+
+        assert_eq!(
+            rests.len(),
+            2,
+            "waiting should breathe and sit without walking away"
+        );
     }
 
     #[test]
@@ -1149,22 +1417,31 @@ mod tests {
     }
 
     #[test]
-    fn training_skill_effect_stays_legible_for_four_240_ms_frames() {
+    fn classic_skill_timelines_keep_their_complete_source_durations() {
+        for (kind, duration_ms) in [
+            (TrainingSkillKind::MagicClaw, 960),
+            (TrainingSkillKind::HolyLight, 2_880),
+            (TrainingSkillKind::DragonPulse, 1_440),
+        ] {
+            let final_elapsed = duration_ms - 1;
+            assert_eq!(
+                training_skill_effect(kind, final_elapsed),
+                Some(TrainingSkillEffect {
+                    kind,
+                    elapsed_ms: final_elapsed,
+                })
+            );
+            assert_eq!(training_skill_effect(kind, duration_ms), None);
+        }
+    }
+
+    #[test]
+    fn magic_claw_keeps_its_existing_960_ms_actor_timeline() {
         let id = AgentId::from_parts("codex", "skill-overlay");
         let active_agent = agent(id, 0, active("tool"));
         let placement = placement(id, 0);
 
-        for (local_ms, expected) in [
-            (0, Some(0)),
-            (239, Some(0)),
-            (240, Some(1)),
-            (479, Some(1)),
-            (480, Some(2)),
-            (719, Some(2)),
-            (720, Some(3)),
-            (959, Some(3)),
-            (960, None),
-        ] {
+        for (local_ms, expected) in [(0, true), (959, true), (960, false)] {
             let actor = resolve_training_actor(
                 &active_agent,
                 placement,
@@ -1180,12 +1457,12 @@ mod tests {
 
             assert_eq!(
                 actor.skill_effect,
-                expected.map(|frame_index| TrainingSkillEffect {
+                expected.then_some(TrainingSkillEffect {
                     kind: TrainingSkillKind::MagicClaw,
-                    frame_index,
+                    elapsed_ms: local_ms,
                 })
             );
-            if expected.is_some() {
+            if expected {
                 assert!(matches!(actor.pose, TrainingActorPose::Attack { .. }));
             } else {
                 assert!(matches!(actor.pose, TrainingActorPose::Stand { .. }));
@@ -1219,7 +1496,7 @@ mod tests {
                 actor.skill_effect,
                 Some(TrainingSkillEffect {
                     kind: expected,
-                    frame_index: 0,
+                    elapsed_ms: 0,
                 })
             );
         }
@@ -1478,5 +1755,19 @@ mod tests {
             }
         )
         .is_none());
+    }
+
+    #[test]
+    fn public_exit_lifetime_covers_every_authored_training_route() {
+        for slot in training_slots(viewport(), TRAINING_MAX_AGENTS) {
+            let route_ms = training_route_duration(&training_entry_route(viewport(), slot.foot_px));
+            assert!(
+                route_ms + TRAINING_PORTAL_OUT_MS <= TRAINING_MAX_EXIT_MS,
+                "slot {} needs {} ms but the public lifetime is only {} ms",
+                slot.index,
+                route_ms + TRAINING_PORTAL_OUT_MS,
+                TRAINING_MAX_EXIT_MS
+            );
+        }
     }
 }

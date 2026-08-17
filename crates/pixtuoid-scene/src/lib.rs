@@ -52,6 +52,10 @@ pub mod board;
 #[doc(hidden)]
 pub mod burn;
 pub mod chitchat;
+// Fixed-slot character roster and per-actor appearance selection shared by
+// both Maple maps and the floating character panel.
+#[doc(hidden)]
+pub mod characters;
 pub(crate) mod creatures;
 pub mod embedded_pack;
 pub mod floor;

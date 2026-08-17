@@ -36,11 +36,27 @@ fn local_bgm_path_round_trips() {
 }
 
 #[test]
-fn floating_defaults_and_clamps_to_legible_bounds() {
+fn floating_defaults_to_normal_window_level_and_clamps_to_compact_bounds() {
+    assert_eq!(
+        (FLOATING_MIN_W, FLOATING_MIN_H),
+        (160, 96),
+        "manual edge dragging supports an ultra-compact but still rendered view"
+    );
     let defaults = resolve_floating(&AppConfig::default());
     assert_eq!(defaults.width, FLOATING_DEFAULT_W);
     assert_eq!(defaults.height, FLOATING_DEFAULT_H);
     assert_eq!(defaults.opacity, 1.0);
+    assert!(
+        !defaults.always_on_top,
+        "a fresh or partial config starts as a normal non-topmost window"
+    );
+
+    let explicitly_topmost: AppConfig =
+        toml::from_str("[floating]\nalways-on-top = true\n").expect("valid floating config");
+    assert!(
+        resolve_floating(&explicitly_topmost).always_on_top,
+        "an existing explicit user preference must remain authoritative"
+    );
 
     let cfg = AppConfig {
         floating: Some(FloatingConfigRaw {
@@ -49,6 +65,7 @@ fn floating_defaults_and_clamps_to_legible_bounds() {
             x: Some(-20),
             y: Some(30),
             opacity: Some(0.01),
+            always_on_top: Some(false),
         }),
         ..Default::default()
     };
@@ -58,6 +75,89 @@ fn floating_defaults_and_clamps_to_legible_bounds() {
     assert_eq!(resolved.x, Some(-20));
     assert_eq!(resolved.y, Some(30));
     assert_eq!(resolved.opacity, FLOATING_MIN_OPACITY);
+    assert!(!resolved.always_on_top);
+}
+
+#[test]
+fn character_roster_defaults_to_all_and_normalizes_configured_slots() {
+    let defaults = resolve_characters(&AppConfig::default());
+    assert_eq!(defaults.agent_roster.slots(), &[0, 1, 2, 3, 4, 5, 6, 7]);
+    assert!(defaults.showcase_slots.is_empty());
+    assert!(defaults.training_showcase_slots.is_empty());
+
+    let cfg: AppConfig = toml::from_str(
+        "[characters]\nenabled-slots = [7, 2, 2, 99]\nshowcase-slots = [6, 6, 1, 88]\ntraining-showcase-slots = [5, 5, 0, 77]\n",
+    )
+    .expect("valid character config");
+    let resolved = resolve_characters(&cfg);
+    assert_eq!(resolved.agent_roster.slots(), &[2, 7]);
+    assert_eq!(resolved.showcase_slots, vec![1, 6]);
+    assert_eq!(resolved.training_showcase_slots, vec![0, 5]);
+}
+
+#[test]
+fn character_preferences_resolve_against_twenty_eight_available_slots() {
+    let cfg: AppConfig = toml::from_str(
+        "[characters]\nenabled-slots = [27, 8, 8, 99]\nshowcase-slots = [24, 27, 88]\ntraining-showcase-slots = [23, 27, 99]\n",
+    )
+    .expect("valid character config");
+
+    let resolved = resolve_characters_for_count(&cfg, 28);
+    assert_eq!(resolved.agent_roster.slots(), &[8, 27]);
+    assert_eq!(resolved.agent_roster.available_count(), 28);
+    assert_eq!(resolved.showcase_slots, vec![24, 27]);
+    assert_eq!(resolved.training_showcase_slots, vec![23, 27]);
+}
+
+#[test]
+fn empty_or_invalid_agent_roster_keeps_every_character_available() {
+    for source in [
+        "[characters]\nenabled-slots = []\n",
+        "[characters]\nenabled-slots = [88, 99]\n",
+    ] {
+        let cfg: AppConfig = toml::from_str(source).unwrap();
+        assert_eq!(
+            resolve_characters(&cfg).agent_roster.slots(),
+            &[0, 1, 2, 3, 4, 5, 6, 7]
+        );
+    }
+}
+
+#[test]
+fn character_choices_save_without_rewriting_comments_or_unknown_keys() {
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("config.toml");
+    std::fs::write(&path, "# keep me\nfuture-key = 13\n").unwrap();
+
+    save_character_choices(&path, &[7, 2, 2, 99], &[6, 1, 6, 88], &[7, 0, 7, 99]).unwrap();
+    let written = std::fs::read_to_string(&path).unwrap();
+    assert!(written.contains("# keep me"));
+    assert!(written.contains("future-key = 13"));
+    let resolved = resolve_characters(&load(&path, &mut Vec::new()));
+    assert_eq!(resolved.agent_roster.slots(), &[2, 7]);
+    assert_eq!(resolved.showcase_slots, vec![1, 6]);
+    assert_eq!(resolved.training_showcase_slots, vec![0, 7]);
+}
+
+#[test]
+fn twenty_eight_character_choices_persist_high_catalog_indices() {
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("config.toml");
+
+    save_character_choices_for_count(
+        &path,
+        CharacterChoices {
+            enabled_slots: &[27, 8],
+            market_showcase_slots: &[24],
+            training_showcase_slots: &[23, 27],
+            available_count: 28,
+        },
+    )
+    .unwrap();
+    let resolved = resolve_characters_for_count(&load(&path, &mut Vec::new()), 28);
+    assert_eq!(resolved.agent_roster.slots(), &[8, 27]);
+    assert_eq!(resolved.showcase_slots, vec![24]);
+    assert_eq!(resolved.training_showcase_slots, vec![23, 27]);
 }
 
 #[test]
@@ -196,6 +296,24 @@ fn floating_save_can_persist_negative_monitor_coordinates() {
 }
 
 #[test]
+fn floating_topmost_choice_persists_without_rewriting_siblings() {
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("config.toml");
+    std::fs::write(
+        &path,
+        "# keep me\nfuture-key = 7\n[floating]\nwidth = 360\nheight = 240\n",
+    )
+    .unwrap();
+
+    save_floating_always_on_top(&path, false).unwrap();
+    let written = std::fs::read_to_string(&path).unwrap();
+    assert!(written.contains("# keep me"));
+    assert!(written.contains("future-key = 7"));
+    assert!(written.contains("always-on-top = false"));
+    assert!(!resolve_floating(&load(&path, &mut Vec::new())).always_on_top);
+}
+
+#[test]
 fn config_round_trip_contains_only_current_product_sections() {
     let cfg = AppConfig {
         pack_dir: Some("C:/packs/team".into()),
@@ -210,12 +328,18 @@ fn config_round_trip_contains_only_current_product_sections() {
             volume: Some(0.5),
             ..Default::default()
         }),
+        characters: Some(CharacterConfigRaw {
+            enabled_slots: Some(vec![0, 2, 4, 6]),
+            showcase_slots: Some(vec![1, 3]),
+            training_showcase_slots: Some(vec![5, 7]),
+        }),
     };
     let encoded = toml::to_string(&cfg).unwrap();
     assert!(encoded.contains("pack-dir"));
     assert!(encoded.contains("[sources]"));
     assert!(encoded.contains("[floating]"));
     assert!(encoded.contains("[audio]"));
+    assert!(encoded.contains("[characters]"));
     for removed in ["theme", "max-desks", "last-seen-version", "[[pets]]"] {
         assert!(!encoded.contains(removed), "removed key leaked: {removed}");
     }

@@ -1,4 +1,4 @@
-//! Frameless, always-on-top Maple Agent Market desktop window.
+//! Frameless Maple Agent Market desktop window with user-selectable stacking.
 //!
 //! A binary-only front-end on the shared engine: the runtime pipeline produces
 //! `SceneState`, and this module presents each frame as a full-resolution
@@ -7,9 +7,12 @@
 //! window-free (invariant #1) — all windowing lives here.
 
 mod cadence;
+mod characters;
 mod geometry;
 mod input;
+mod maple_atelier;
 pub mod offscreen;
+mod startup;
 mod window;
 
 use anyhow::{Context, Result};
@@ -40,8 +43,13 @@ pub fn run(cfg: RunConfig) -> Result<()> {
     } = cfg;
     let app_config = config::load(&config_path, &mut Vec::new());
     let floating_cfg = config::resolve_floating(&app_config);
+    let active_pack_dir = pack_dir.clone();
     let pack = pixtuoid_scene::embedded_pack::load_sprite_pack(pack_dir)
         .context("loading the sprite pack for the floating window")?;
+    let character_cfg = config::resolve_characters_for_count(
+        &app_config,
+        pixtuoid_scene::market::market_avatar_count(&pack),
+    );
 
     let rt = tokio::runtime::Builder::new_multi_thread()
         .enable_all()
@@ -91,9 +99,10 @@ pub fn run(cfg: RunConfig) -> Result<()> {
     // (`send_event` → `EventLoopClosed`) or the reducer drops its sender — never unwraps.
     {
         let mut scene_rx = scene_rx.clone();
+        let scene_proxy = proxy.clone();
         rt.spawn(async move {
             while scene_rx.changed().await.is_ok() {
-                if proxy.send_event(FloatingEvent::SceneChanged).is_err() {
+                if scene_proxy.send_event(FloatingEvent::SceneChanged).is_err() {
                     break;
                 }
             }
@@ -130,10 +139,13 @@ pub fn run(cfg: RunConfig) -> Result<()> {
         floating_cfg,
         theme,
         pack,
+        active_pack_dir,
         config_path,
         scene_rx,
         floor_caps,
         audio,
+        character_cfg,
+        proxy,
     );
     event_loop
         .run_app(&mut app)

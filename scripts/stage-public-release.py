@@ -24,6 +24,34 @@ SOURCE_BUNDLE_FILES = (
     ("LICENSES/RustCrypto-SHA2-MIT.txt", "RustCrypto-SHA2-MIT.txt", "MIT"),
     ("docs/OPEN_SOURCE_RELEASE.md", "OPEN_SOURCE_RELEASE.md", "MIT"),
     ("crates/pixtuoid/fonts/OFL-Monaspace.txt", "OFL-Monaspace.txt", "OFL-1.1"),
+    ("建立本機素材.cmd", "建立本機素材.cmd", "MIT"),
+    (
+        "tools/Bootstrap-MapleLocalAssets.ps1",
+        "tools/Bootstrap-MapleLocalAssets.ps1",
+        "MIT",
+    ),
+    (
+        "tools/Import-MapleAtelierCharacter.ps1",
+        "tools/Import-MapleAtelierCharacter.ps1",
+        "MIT",
+    ),
+    ("tools/MapleSkinWorkshop.psm1", "tools/MapleSkinWorkshop.psm1", "MIT"),
+    ("tools/New-MapleStarterPack.ps1", "tools/New-MapleStarterPack.ps1", "MIT"),
+    (
+        "tools/Sync-ClassicSkillEffects.ps1",
+        "tools/Sync-ClassicSkillEffects.ps1",
+        "MIT",
+    ),
+    (
+        "tools/Sync-MapleAtelierCharacters.ps1",
+        "tools/Sync-MapleAtelierCharacters.ps1",
+        "MIT",
+    ),
+    (
+        "tools/recipes/community-maple-atelier.json",
+        "tools/recipes/community-maple-atelier.json",
+        "MIT",
+    ),
 )
 
 PUBLIC_EXECUTABLES = ("maple-agent-market", "pixtuoid-hook")
@@ -104,6 +132,7 @@ def copy_source_components(
     components: list[dict[str, str]] = []
     for source, staged_name, licence in source_entries:
         destination = staging / staged_name
+        destination.parent.mkdir(parents=True, exist_ok=True)
         shutil.copy2(source, destination)
         components.append(
             {"path": staged_name, "sha256": sha256(destination), "spdx": licence}
@@ -155,6 +184,7 @@ def write_bundle_manifest(
         "entrypoint": executable_names[0],
         "entrypoints": executable_names,
         "contains_private_maple_assets": False,
+        "includes_local_asset_bootstrap_tools": True,
         "excluded_asset_classes": [
             "NEXON or MapleStory images, sprites, maps, monsters, portals, and skill frames",
             "MapleStory music or downloaded streaming audio",
@@ -174,11 +204,16 @@ def write_checksum_inventory(staging: pathlib.Path) -> None:
     """Write SHA-256 entries for every staged file except the inventory itself."""
 
     checksum_paths = sorted(
-        (path for path in staging.iterdir() if path.name != "SHA256SUMS.txt"),
-        key=lambda path: path.name,
+        (
+            path
+            for path in staging.rglob("*")
+            if path.is_file() and path.name != "SHA256SUMS.txt"
+        ),
+        key=lambda path: path.relative_to(staging).as_posix(),
     )
     checksum_text = "".join(
-        f"{sha256(path)}  {path.name}\n" for path in checksum_paths
+        f"{sha256(path)}  {path.relative_to(staging).as_posix()}\n"
+        for path in checksum_paths
     )
     (staging / "SHA256SUMS.txt").write_text(
         checksum_text,
@@ -350,6 +385,14 @@ homepage = "https://github.com/IvanWng97/pixtuoid"
             "LICENSES/RustCrypto-SHA2-MIT.txt": "RustCrypto MIT fixture\n",
             "docs/OPEN_SOURCE_RELEASE.md": "release fixture\n",
             "crates/pixtuoid/fonts/OFL-Monaspace.txt": "OFL fixture\n",
+            "tools/Bootstrap-MapleLocalAssets.ps1": "# bootstrap fixture\n",
+            "tools/Import-MapleAtelierCharacter.ps1": "# importer fixture\n",
+            "tools/MapleSkinWorkshop.psm1": "# workshop fixture\n",
+            "tools/New-MapleStarterPack.ps1": "# starter fixture\n",
+            "tools/Sync-ClassicSkillEffects.ps1": "# skills fixture\n",
+            "tools/Sync-MapleAtelierCharacters.ps1": "# roster fixture\n",
+            "tools/recipes/community-maple-atelier.json": "{}\n",
+            "建立本機素材.cmd": "@echo off\n",
         }
         for relative, content in source_files.items():
             path = root / relative
@@ -410,8 +453,20 @@ homepage = "https://example.github.io/maple-agent-market"
             "THIRD_PARTY_NOTICES.md",
             "maple-agent-market.exe",
             "pixtuoid-hook.exe",
+            "tools/Bootstrap-MapleLocalAssets.ps1",
+            "tools/Import-MapleAtelierCharacter.ps1",
+            "tools/MapleSkinWorkshop.psm1",
+            "tools/New-MapleStarterPack.ps1",
+            "tools/Sync-ClassicSkillEffects.ps1",
+            "tools/Sync-MapleAtelierCharacters.ps1",
+            "tools/recipes/community-maple-atelier.json",
+            "建立本機素材.cmd",
         }
-        observed = {path.name for path in output.iterdir()}
+        observed = {
+            path.relative_to(output).as_posix()
+            for path in output.rglob("*")
+            if path.is_file()
+        }
         if observed != expected:
             failures.append(f"bundle mismatch: expected {expected}, observed {observed}")
 
@@ -427,6 +482,8 @@ homepage = "https://example.github.io/maple-agent-market"
             failures.append("manifest does not list both public executables")
         if manifest.get("entrypoint") != "maple-agent-market.exe":
             failures.append("manifest does not preserve the main entrypoint")
+        if manifest.get("includes_local_asset_bootstrap_tools") is not True:
+            failures.append("manifest does not declare the local asset bootstrap tools")
 
         checksum_lines = (output / "SHA256SUMS.txt").read_text("utf-8").splitlines()
         checksum_by_name = {
