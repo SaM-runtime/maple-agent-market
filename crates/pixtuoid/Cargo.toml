@@ -37,7 +37,7 @@ sha2               = "0.11"
 # is the maintained yaml-rust successor (serde_yaml/serde_yml are both abandoned);
 # it data-preserves a user's other config keys on merge but does NOT round-trip
 # comments (a YAML-ecosystem limitation — see install/hermes.rs). Binary-only.
-saphyr             = "0.0.11"
+saphyr             = "0.1.0"
 anyhow             = { workspace = true }
 tracing            = { workspace = true }
 tracing-subscriber = { workspace = true }
